@@ -1,0 +1,498 @@
+"""
+Rare-event and classification metrics for low-visibility paper evaluation.
+Includes: CSI, POD, FAR, PSS, HSS, MCC, Brier, ECE, PR-AUC, threshold sweeps.
+"""
+import numpy as np
+from sklearn.metrics import (
+    precision_recall_curve,
+    average_precision_score,
+    roc_auc_score,
+    brier_score_loss,
+    confusion_matrix,
+    precision_score,
+    recall_score,
+    f1_score,
+)
+
+
+# -----------------------------------------------------------------------------
+# Binary contingency-table metrics (for Fog/Mist one-vs-rest)
+# -----------------------------------------------------------------------------
+
+def contingency_from_preds(y_true_binary, y_pred_binary):
+    """Compute hits, misses, false alarms, correct negatives from binary preds."""
+    hits = np.sum((y_true_binary == 1) & (y_pred_binary == 1))
+    misses = np.sum((y_true_binary == 1) & (y_pred_binary == 0))
+    false_alarms = np.sum((y_true_binary == 0) & (y_pred_binary == 1))
+    correct_negatives = np.sum((y_true_binary == 0) & (y_pred_binary == 0))
+    return hits, misses, false_alarms, correct_negatives
+
+
+def pod(hits, misses):
+    """Probability of Detection = hits / (hits + misses)."""
+    denom = hits + misses
+    return hits / denom if denom > 0 else 0.0
+
+
+def far(hits, false_alarms):
+    """False Alarm Ratio = false_alarms / (hits + false_alarms)."""
+    denom = hits + false_alarms
+    return false_alarms / denom if denom > 0 else 0.0
+
+
+def csi(hits, misses, false_alarms):
+    """Critical Success Index / Threat Score = hits / (hits + misses + false_alarms)."""
+    denom = hits + misses + false_alarms
+    return hits / denom if denom > 0 else 0.0
+
+
+def success_ratio(hits, false_alarms):
+    """Success Ratio = 1 - FAR = hits / (hits + false_alarms)."""
+    denom = hits + false_alarms
+    return hits / denom if denom > 0 else 0.0
+
+
+def bias_score(hits, misses, false_alarms):
+    """Bias Score = (hits + false_alarms) / (hits + misses)."""
+    denom = hits + misses
+    return (hits + false_alarms) / denom if denom > 0 else 1.0
+
+
+def peirce_skill_score(hits, misses, false_alarms, correct_negatives):
+    """
+    Peirce Skill Score (PSS) = POD - FAR. Range [-1, 1].
+    Uses False Alarm RATIO (FAR = FA / (hits + FA)), not False Positive RATE (FPR = FA / (FA + CN)).
+    For prioritization, FPR can be more informative when the negative class (e.g. clear) dominates.
+    Use pss_using_fpr() when you want TSS-style: POD - FPR.
+    """
+    pod_val = pod(hits, misses)
+    far_val = far(hits, false_alarms)
+    return pod_val - far_val
+
+
+def pss_using_fpr(hits, misses, false_alarms, correct_negatives):
+    """
+    PSS variant using False Positive Rate instead of FAR: POD - FPR.
+    FPR = false_alarms / (false_alarms + correct_negatives). Range [-1, 1].
+    Prefer this when negative class (e.g. clear) is large and you care about false alarm rate
+    relative to all negatives.
+    """
+    pod_val = pod(hits, misses)
+    denom = false_alarms + correct_negatives
+    fpr_val = false_alarms / denom if denom > 0 else 0.0
+    return pod_val - fpr_val
+
+
+def heidke_skill_score(hits, misses, false_alarms, correct_negatives):
+    """HSS. Uses full 2x2 contingency."""
+    n = hits + misses + false_alarms + correct_negatives
+    if n == 0:
+        return 0.0
+    total_correct = hits + correct_negatives
+    random_correct = (
+        (hits + false_alarms) * (hits + misses) / n +
+        (misses + correct_negatives) * (false_alarms + correct_negatives) / n
+    )
+    denom = n - random_correct
+    return (total_correct - random_correct) / denom if denom > 0 else 0.0
+
+
+def binary_metrics_from_preds(y_true_binary, y_pred_binary):
+    """Compute POD, FAR, CSI, SR, Bias, PSS, HSS, PSS_FPR from binary arrays.
+    PSS uses FAR; PSS_FPR uses FPR (see peirce_skill_score vs pss_using_fpr)."""
+    h, m, fa, cn = contingency_from_preds(y_true_binary, y_pred_binary)
+    return {
+        "pod": pod(h, m),
+        "far": far(h, fa),
+        "csi": csi(h, m, fa),
+        "success_ratio": success_ratio(h, fa),
+        "bias": bias_score(h, m, fa),
+        "pss": peirce_skill_score(h, m, fa, cn),
+        "pss_fpr": pss_using_fpr(h, m, fa, cn),
+        "hss": heidke_skill_score(h, m, fa, cn),
+    }
+
+
+# -----------------------------------------------------------------------------
+# Multiclass metrics
+# -----------------------------------------------------------------------------
+
+def mcc_multiclass(y_true, y_pred, num_classes=3):
+    """Matthews Correlation Coefficient for multiclass."""
+    cm = confusion_matrix(y_true, y_pred, labels=np.arange(num_classes))
+    n = cm.sum()
+    if n == 0:
+        return 0.0
+    tp = np.trace(cm)
+    sum_rows = cm.sum(axis=1)
+    sum_cols = cm.sum(axis=0)
+    denom = np.sqrt((n**2 - (sum_rows**2).sum()) * (n**2 - (sum_cols**2).sum()))
+    return (n * tp - np.dot(sum_rows, sum_cols)) / denom if denom > 0 else 0.0
+
+
+def balanced_accuracy(y_true, y_pred, num_classes=3):
+    """Balanced accuracy = mean of per-class recall."""
+    cm = confusion_matrix(y_true, y_pred, labels=np.arange(num_classes))
+    recalls = []
+    for k in range(num_classes):
+        row_sum = cm[k, :].sum()
+        recalls.append(cm[k, k] / row_sum if row_sum > 0 else 0.0)
+    return np.mean(recalls)
+
+
+# -----------------------------------------------------------------------------
+# Probability-based metrics
+# -----------------------------------------------------------------------------
+
+def brier_score(probs, y_true_one_hot_or_class, class_idx=None):
+    """
+    Brier score for a class.
+    probs: (N, C) or (N,) for binary
+    y_true: (N,) class labels or (N,C) one-hot
+    class_idx: for multiclass one-vs-rest, which class
+    """
+    if class_idx is not None:
+        y_bin = (y_true_one_hot_or_class == class_idx).astype(np.float64)
+        if probs.ndim > 1:
+            p = probs[:, class_idx]
+        else:
+            p = probs
+    else:
+        y_bin = np.asarray(y_true_one_hot_or_class, dtype=np.float64).ravel()
+        p = np.asarray(probs, dtype=np.float64).ravel()
+    return brier_score_loss(y_bin, p)
+
+
+def ece(probs, y_true, n_bins=10):
+    """
+    Expected Calibration Error.
+    probs: (N, C) predicted probabilities
+    y_true: (N,) class labels
+    """
+    pred_class = np.argmax(probs, axis=1)
+    bin_boundaries = np.linspace(0, 1, n_bins + 1)
+    ece_val = 0.0
+    total = len(y_true)
+    if total == 0:
+        return 0.0
+    for i in range(n_bins):
+        in_bin = (probs.max(axis=1) >= bin_boundaries[i]) & (probs.max(axis=1) < bin_boundaries[i + 1])
+        prop = in_bin.sum() / total
+        if prop > 0:
+            acc = (pred_class[in_bin] == y_true[in_bin]).mean()
+            conf = probs[in_bin].max(axis=1).mean()
+            ece_val += prop * np.abs(acc - conf)
+    return float(ece_val)
+
+
+# -----------------------------------------------------------------------------
+# Threshold-based prediction from probabilities (3-class)
+# -----------------------------------------------------------------------------
+
+def pred_from_thresholds(probs, fog_th, mist_th):
+    """
+    Apply operational thresholds to (N, 3) probs.
+    Class 0: Fog, 1: Mist, 2: Clear.
+    pred: 0 if p_fog>=fog_th, 1 if p_mist>=mist_th and not fog, 2 else
+    fog_th, mist_th: scalar or (N,) array (per-sample thresholds).
+    """
+    p_fog = probs[:, 0]
+    p_mist = probs[:, 1]
+    fog_th = np.atleast_1d(np.asarray(fog_th, dtype=np.float64))
+    mist_th = np.atleast_1d(np.asarray(mist_th, dtype=np.float64))
+    if fog_th.size == 1:
+        fog_th = np.full(probs.shape[0], fog_th.flat[0])
+    if mist_th.size == 1:
+        mist_th = np.full(probs.shape[0], mist_th.flat[0])
+    pred = np.full(probs.shape[0], 2, dtype=np.int64)
+    pred[p_mist >= mist_th] = 1
+    pred[p_fog >= fog_th] = 0
+    return pred
+
+
+def pred_from_thresholds_mutual(probs, fog_th, mist_th):
+    """
+    Mutual Fog/Mist rule (aligned with training script ComprehensiveMetrics._build_full_metrics):
+    - Fog only when p_fog > fog_th AND p_fog > p_mist.
+    - Mist only when p_mist > mist_th AND p_mist > p_fog.
+    - When both exceed thresholds, the class with higher probability wins (reduces Mist->Fog overwrite).
+    fog_th, mist_th: scalar or (N,) array.
+    """
+    p_fog = np.asarray(probs[:, 0], dtype=np.float64)
+    p_mist = np.asarray(probs[:, 1], dtype=np.float64)
+    fog_th = np.atleast_1d(np.asarray(fog_th, dtype=np.float64))
+    mist_th = np.atleast_1d(np.asarray(mist_th, dtype=np.float64))
+    if fog_th.size == 1:
+        fog_th = np.full(probs.shape[0], fog_th.flat[0])
+    if mist_th.size == 1:
+        mist_th = np.full(probs.shape[0], mist_th.flat[0])
+
+    pred = np.full(probs.shape[0], 2, dtype=np.int64)
+    fog_confident = (p_fog > fog_th) & (p_fog > p_mist)
+    mist_confident = (p_mist > mist_th) & (p_mist > p_fog)
+    pred[fog_confident] = 0
+    pred[mist_confident] = 1
+    return pred
+
+
+def pred_from_joint_thresholds(probs, fog_th, mist_th):
+    """
+    Joint fog/mist decision rule:
+    - require a class to exceed its threshold
+    - if both exceed thresholds, choose the class with the larger normalized exceedance
+    """
+    probs = np.asarray(probs, dtype=np.float64)
+    fog_th = np.atleast_1d(np.asarray(fog_th, dtype=np.float64))
+    mist_th = np.atleast_1d(np.asarray(mist_th, dtype=np.float64))
+    if fog_th.size == 1:
+        fog_th = np.full(probs.shape[0], fog_th.flat[0])
+    if mist_th.size == 1:
+        mist_th = np.full(probs.shape[0], mist_th.flat[0])
+
+    fog_excess = (probs[:, 0] - fog_th) / np.maximum(1.0 - fog_th, 1e-6)
+    mist_excess = (probs[:, 1] - mist_th) / np.maximum(1.0 - mist_th, 1e-6)
+    pred = np.full(probs.shape[0], 2, dtype=np.int64)
+    fog_on = fog_excess >= 0.0
+    mist_on = mist_excess >= 0.0
+    pred[fog_on & ~mist_on] = 0
+    pred[mist_on & ~fog_on] = 1
+    both = fog_on & mist_on
+    pred[both] = np.where(fog_excess[both] >= mist_excess[both], 0, 1)
+    return pred
+
+
+def thresholds_from_season_thresholds(months, season_thresholds, default_fog_th=0.46, default_mist_th=0.38):
+    month_to_season = {
+        12: "DJF", 1: "DJF", 2: "DJF",
+        3: "MAM", 4: "MAM", 5: "MAM",
+        6: "JJA", 7: "JJA", 8: "JJA",
+        9: "SON", 10: "SON", 11: "SON",
+    }
+    months = np.asarray(months, dtype=np.int32).ravel()
+    n = len(months)
+    fog_th = np.full(n, default_fog_th, dtype=np.float64)
+    mist_th = np.full(n, default_mist_th, dtype=np.float64)
+    for i in range(n):
+        season = month_to_season.get(int(months[i]), None)
+        if season and season in season_thresholds:
+            fog_th[i] = season_thresholds[season]["fog_th"]
+            mist_th[i] = season_thresholds[season]["mist_th"]
+    return fog_th, mist_th
+
+
+def apply_daynight_offsets(fog_th, mist_th, months, is_day, offsets):
+    month_to_season = {
+        12: "DJF", 1: "DJF", 2: "DJF",
+        3: "MAM", 4: "MAM", 5: "MAM",
+        6: "JJA", 7: "JJA", 8: "JJA",
+        9: "SON", 10: "SON", 11: "SON",
+    }
+    fog_th = np.asarray(fog_th, dtype=np.float64).copy()
+    mist_th = np.asarray(mist_th, dtype=np.float64).copy()
+    months = np.asarray(months, dtype=np.int32).ravel()
+    is_day = np.asarray(is_day).astype(bool).ravel()
+    for i in range(len(months)):
+        key = f"{month_to_season.get(int(months[i]), 'SON')}_{'day' if is_day[i] else 'night'}"
+        if key in offsets:
+            fog_th[i] = np.clip(fog_th[i] + offsets[key]["fog"], 0.10, 0.95)
+            mist_th[i] = np.clip(mist_th[i] + offsets[key]["mist"], 0.10, 0.95)
+    return fog_th, mist_th
+
+
+def pred_from_season_thresholds(probs, months, season_thresholds, default_fog_th=0.46, default_mist_th=0.38, rule="default"):
+    """
+    Apply per-season thresholds. months: (N,) 1-12.
+    season_thresholds: dict season_name -> {'fog_th': float, 'mist_th': float}
+      with keys e.g. 'DJF','MAM','JJA','SON'.
+    rule: "default" (Fog overwrites Mist), "mutual" (match training: higher prob wins when both exceed),
+          "joint" (normalized exceedance when both exceed).
+    """
+    fog_th, mist_th = thresholds_from_season_thresholds(
+        months, season_thresholds, default_fog_th, default_mist_th
+    )
+    if rule == "mutual":
+        return pred_from_thresholds_mutual(probs, fog_th, mist_th)
+    if rule == "joint":
+        return pred_from_joint_thresholds(probs, fog_th, mist_th)
+    return pred_from_thresholds(probs, fog_th, mist_th)
+
+
+def threshold_sweep_metrics(probs, y_true, thresholds=None, fog_th_fixed=0.46, mist_th_fixed=0.38):
+    """
+    Sweep Fog and Mist thresholds and compute CSI/POD/FAR for each.
+    thresholds: array of threshold values (used for both fog and mist sweep).
+    Returns dict with flat arrays for plotting.
+    """
+    if thresholds is None:
+        thresholds = np.linspace(0.1, 0.9, 41)
+    thresholds = np.asarray(thresholds)
+
+    y_fog = (y_true == 0).astype(np.int64)
+    y_mist = (y_true == 1).astype(np.int64)
+
+    pod_fog, far_fog, csi_fog = [], [], []
+    pod_mist, far_mist, csi_mist = [], [], []
+
+    for th in thresholds:
+        pred = pred_from_thresholds(probs, th, mist_th_fixed)
+        pred_fog = (pred == 0).astype(np.int64)
+        m = binary_metrics_from_preds(y_fog, pred_fog)
+        pod_fog.append(m["pod"])
+        far_fog.append(m["far"])
+        csi_fog.append(m["csi"])
+
+    for th in thresholds:
+        pred = pred_from_thresholds(probs, fog_th_fixed, th)
+        pred_mist = (pred == 1).astype(np.int64)
+        m = binary_metrics_from_preds(y_mist, pred_mist)
+        pod_mist.append(m["pod"])
+        far_mist.append(m["far"])
+        csi_mist.append(m["csi"])
+
+    return {
+        "fog_thresholds": thresholds,
+        "mist_thresholds": thresholds,
+        "pod_fog": np.array(pod_fog),
+        "far_fog": np.array(far_fog),
+        "csi_fog": np.array(csi_fog),
+        "pod_mist": np.array(pod_mist),
+        "far_mist": np.array(far_mist),
+        "csi_mist": np.array(csi_mist),
+    }
+
+
+def compute_calibration_metrics(probs, y_true, n_bins=10):
+    """
+    Compute ECE, Brier, and per-bin accuracy/confidence for reliability diagram.
+    probs: (N, 3), y_true: (N,)
+    Returns: (ece_per_class, brier_per_class, bin_acc_per_class, bin_conf_per_class)
+    """
+    ece_per_class = []
+    brier_per_class = []
+    bin_acc_list = []
+    bin_conf_list = []
+
+    for class_idx in [0, 1]:  # Fog, Mist
+        y_bin = (y_true == class_idx).astype(np.float64)
+        p = probs[:, class_idx]
+
+        brier_per_class.append(brier_score_loss(y_bin, p))
+
+        bin_boundaries = np.linspace(0, 1, n_bins + 1)
+        bin_acc = []
+        bin_conf = []
+        ece_val = 0.0
+        total = len(y_true)
+        for i in range(n_bins):
+            low, high = bin_boundaries[i], bin_boundaries[i + 1]
+            in_bin = (p >= low) & (p < high)
+            if i == n_bins - 1:
+                in_bin = (p >= low) & (p <= high)
+            n_bin = in_bin.sum()
+            if n_bin > 0:
+                acc = (y_bin[in_bin] == 1).mean()
+                conf = p[in_bin].mean()
+                bin_acc.append(acc)
+                bin_conf.append(conf)
+                ece_val += (n_bin / total) * np.abs(acc - conf)
+            else:
+                bin_acc.append(0.0)
+                bin_conf.append((low + high) / 2)
+        ece_per_class.append(ece_val)
+        bin_acc_list.append(np.array(bin_acc))
+        bin_conf_list.append(np.array(bin_conf))
+
+    return (
+        np.array(ece_per_class),
+        np.array(brier_per_class),
+        bin_acc_list,
+        bin_conf_list,
+    )
+
+
+# -----------------------------------------------------------------------------
+# Comprehensive rare-event report
+# -----------------------------------------------------------------------------
+
+def compute_rare_event_report(probs, y_true, fog_th=0.46, mist_th=0.38, pred=None):
+    """
+    Compute full rare-event metric suite.
+    probs: (N, 3), y_true: (N,) with 0=Fog, 1=Mist, 2=Clear.
+    If pred is provided (N,), use it; otherwise pred = pred_from_thresholds(probs, fog_th, mist_th).
+    """
+    if pred is None:
+        pred = pred_from_thresholds(probs, fog_th, mist_th)
+
+    # Per-class
+    fog_prec = precision_score(y_true, pred, labels=[0], average="macro", zero_division=0)
+    fog_rec = recall_score(y_true, pred, labels=[0], average="macro", zero_division=0)
+    mist_prec = precision_score(y_true, pred, labels=[1], average="macro", zero_division=0)
+    mist_rec = recall_score(y_true, pred, labels=[1], average="macro", zero_division=0)
+    clear_prec = precision_score(y_true, pred, labels=[2], average="macro", zero_division=0)
+    clear_rec = recall_score(y_true, pred, labels=[2], average="macro", zero_division=0)
+
+    y_fog = (y_true == 0).astype(np.int64)
+    y_mist = (y_true == 1).astype(np.int64)
+    pred_fog = (pred == 0).astype(np.int64)
+    pred_mist = (pred == 1).astype(np.int64)
+
+    m_fog = binary_metrics_from_preds(y_fog, pred_fog)
+    m_mist = binary_metrics_from_preds(y_mist, pred_mist)
+
+    # Low-vis precision (Fog or Mist when predicted Fog or Mist)
+    low_vis_pred = (pred <= 1)
+    low_vis_true = (y_true <= 1)
+    low_vis_prec = (low_vis_true & low_vis_pred).sum() / low_vis_pred.sum() if low_vis_pred.sum() > 0 else 0.0
+
+    # FPR (false positive rate for low-vis)
+    clear_true = (y_true == 2)
+    fpr = (pred <= 1) & clear_true
+    fpr_val = fpr.sum() / clear_true.sum() if clear_true.sum() > 0 else 0.0
+
+    def _f1(p, r):
+        return 2 * p * r / (p + r) if (p + r) > 0 else 0.0
+
+    fog_f1 = _f1(fog_prec, fog_rec)
+    mist_f1 = _f1(mist_prec, mist_rec)
+    clear_f1 = _f1(clear_prec, clear_rec)
+
+    macro_f1 = f1_score(y_true, pred, average="macro", zero_division=0)
+    brier_fog = brier_score(probs, y_true, class_idx=0)
+    brier_mist = brier_score(probs, y_true, class_idx=1)
+    ece_val = ece(probs, y_true)
+
+    return {
+        "Fog_P": fog_prec, "Fog_R": fog_rec, "Fog_F1": fog_f1,
+        "Mist_P": mist_prec, "Mist_R": mist_rec, "Mist_F1": mist_f1,
+        "Clear_P": clear_prec, "Clear_R": clear_rec, "Clear_F1": clear_f1,
+        "Fog_CSI": m_fog["csi"], "Fog_POD": m_fog["pod"], "Fog_FAR": m_fog["far"],
+        "Fog_PSS": m_fog["pss"], "Fog_HSS": m_fog["hss"],
+        "Mist_P": mist_prec, "Mist_R": mist_rec,
+        "Mist_CSI": m_mist["csi"], "Mist_POD": m_mist["pod"], "Mist_FAR": m_mist["far"],
+        "Mist_PSS": m_mist["pss"], "Mist_HSS": m_mist["hss"],
+        "Clear_P": clear_prec, "Clear_R": clear_rec,
+        "low_vis_precision": low_vis_prec,
+        "false_positive_rate": fpr_val,
+        "macro_f1": macro_f1,
+        "balanced_acc": balanced_accuracy(y_true, pred),
+        "mcc": mcc_multiclass(y_true, pred),
+        "Brier_Fog": brier_fog, "Brier_Mist": brier_mist,
+        "ECE": ece_val,
+    }
+
+
+# Explicit public API (avoids stale .pyc omitting new names)
+__all__ = [
+    "pred_from_thresholds",
+    "pred_from_thresholds_mutual",
+    "pred_from_joint_thresholds",
+    "pred_from_season_thresholds",
+    "thresholds_from_season_thresholds",
+    "apply_daynight_offsets",
+    "compute_rare_event_report",
+    "compute_calibration_metrics",
+    "threshold_sweep_metrics",
+    "binary_metrics_from_preds",
+    "peirce_skill_score",
+    "pss_using_fpr",
+]
