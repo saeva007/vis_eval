@@ -136,10 +136,11 @@ def _compute_scenario_metrics(y_true, y_pred):
     m_fog = binary_metrics_from_preds(y_fog, pred_fog)
     m_mist = binary_metrics_from_preds(y_mist, pred_mist)
 
-    # Low-vis precision (when pred Fog or Mist, fraction that is truly Fog or Mist)
+    # Low-vis precision/recall for the combined Fog+Mist event.
     low_vis_pred = (y_pred <= 1)
     low_vis_true = (y_true <= 1)
     lv_prec = (low_vis_true & low_vis_pred).sum() / low_vis_pred.sum() if low_vis_pred.sum() > 0 else np.nan
+    lv_recall = (low_vis_true & low_vis_pred).sum() / low_vis_true.sum() if low_vis_true.sum() > 0 else np.nan
 
     # FPR: fraction of clear-sky samples predicted as low-vis
     fpr = (y_pred <= 1) & (y_true == 2)
@@ -182,6 +183,7 @@ def _compute_scenario_metrics(y_true, y_pred):
         "mist_hss": mist_hss,
         "mist_tss": mist_tss,
         "lv_precision": lv_prec,
+        "lv_recall": lv_recall,
         "fpr": fpr_val,
         "accuracy": acc,
         "macro_f1": macro_f1,
@@ -297,14 +299,14 @@ def _empty_result(n):
         "fog_f1": np.nan, "fog_hss": np.nan, "fog_tss": np.nan,
         "mist_csi": np.nan, "mist_pod": np.nan, "mist_precision": np.nan, "mist_far": np.nan, "mist_pss": np.nan,
         "mist_f1": np.nan, "mist_hss": np.nan, "mist_tss": np.nan,
-        "lv_precision": np.nan, "fpr": np.nan, "accuracy": np.nan, "macro_f1": np.nan,
+        "lv_precision": np.nan, "lv_recall": np.nan, "fpr": np.nan, "accuracy": np.nan, "macro_f1": np.nan,
         "n": n, "n_fog": np.nan, "n_mist": np.nan, "n_clear": np.nan,
     }
 
 
 def eval_scenario(meta, y_true, probs, fog_th=0.46, mist_th=0.38, threshold_rule="default", pred=None):
     """
-    Backward-compatible wrapper. Returns dict scenario_name -> {fog_csi, fog_pod, mist_csi, lv_precision, n}.
+    Backward-compatible wrapper. Returns dict scenario_name -> {fog_csi, fog_pod, mist_csi, lv_precision, lv_recall, n}.
     """
     results, _ = eval_scenario_detailed(
         meta, y_true, probs, fog_th, mist_th,
@@ -318,6 +320,7 @@ def eval_scenario(meta, y_true, probs, fog_th=0.46, mist_th=0.38, threshold_rule
             "fog_pod": v["fog_pod"],
             "mist_csi": v["mist_csi"],
             "lv_precision": v["lv_precision"],
+            "lv_recall": v.get("lv_recall", np.nan),
             "n": v["n"],
         }
     return out
@@ -352,6 +355,7 @@ def save_scenario_table(results, output_path):
             "mist_hss": m.get("mist_hss", np.nan),
             "mist_tss": m.get("mist_tss", np.nan),
             "lv_precision": m["lv_precision"],
+            "lv_recall": m.get("lv_recall", np.nan),
             "fpr": m.get("fpr", np.nan),
             "accuracy": m.get("accuracy", np.nan),
             "macro_f1": m.get("macro_f1", np.nan),
@@ -362,22 +366,22 @@ def save_scenario_table(results, output_path):
 
 
 def plot_scenario_robustness(scenario_results, output_path):
-    """Grouped bar chart of Fog CSI, Fog POD, Mist CSI, low-vis precision per scenario."""
+    """Grouped bar chart of Fog/Mist skill plus low-vis precision and recall."""
     setup_paper_style()
     apply_palette()
 
     names = [k for k in scenario_results if scenario_results[k]["n"] >= 50]
-    metrics = ["fog_csi", "fog_pod", "mist_csi", "lv_precision"]
-    labels = ["Fog CSI", "Fog POD", "Mist CSI", "Low-vis Prec"]
+    metrics = ["fog_csi", "fog_pod", "mist_csi", "lv_precision", "lv_recall"]
+    labels = ["Fog CSI", "Fog POD", "Mist CSI", "Low-vis Prec", "Low-vis Recall"]
 
     x = np.arange(len(names))
-    w = 0.2
+    w = 0.78 / max(len(metrics), 1)
 
     fig, ax = plt.subplots(figsize=(14, 5))
     for i, (m, lab) in enumerate(zip(metrics, labels)):
         vals = [scenario_results[n].get(m, np.nan) for n in names]
         vals = [float(v) if np.isfinite(v) else 0 for v in vals]
-        ax.bar(x + (i - 2) * w, vals, w, label=lab)
+        ax.bar(x + (i - (len(metrics) - 1) / 2.0) * w, vals, w * 0.92, label=lab)
 
     ax.set_xticks(x)
     ax.set_xticklabels(names, rotation=45, ha="right")
@@ -393,7 +397,7 @@ def plot_scenario_robustness(scenario_results, output_path):
 
 
 def plot_scenario_detailed_multipanel(scenario_results, output_path):
-    """Four-panel figure: Fog CSI, Mist CSI, Low-vis Precision, FPR by scenario."""
+    """Multipanel figure: Fog/Mist CSI, low-vis precision/recall, and FPR by scenario."""
     setup_paper_style()
     apply_palette()
 
@@ -405,10 +409,11 @@ def plot_scenario_detailed_multipanel(scenario_results, output_path):
         ("fog_csi", "Fog CSI", "viridis"),
         ("mist_csi", "Mist CSI", "plasma"),
         ("lv_precision", "Low-vis Precision", "cividis"),
+        ("lv_recall", "Low-vis Recall", "YlGnBu"),
         ("fpr", "False Positive Rate (lower=better)", "Reds_r"),
     ]
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig, axes = plt.subplots(2, 3, figsize=(16, 9.5))
     axes = axes.flatten()
 
     for idx, (metric, title, cmap) in enumerate(panels):
@@ -420,6 +425,9 @@ def plot_scenario_detailed_multipanel(scenario_results, output_path):
         ax.set_xlim(0, 1.05 if metric != "fpr" else max(vals) * 1.1 if vals else 1)
         ax.set_xlabel(title)
         ax.grid(axis="x", alpha=0.3)
+
+    for ax in axes[len(panels):]:
+        ax.axis("off")
 
     fig.suptitle("Detailed Scenario Evaluation (time/lon/lat derived)", fontsize=12, y=1.02)
     plt.tight_layout()
@@ -508,14 +516,14 @@ def plot_forecast_init_comparison(results, output_path, min_n=50):
         return None
     setup_paper_style()
     apply_palette()
-    metrics = ["fog_csi", "fog_pod", "mist_csi", "lv_precision"]
-    labels = ["Fog CSI", "Fog POD", "Mist CSI", "Low-vis Prec"]
+    metrics = ["fog_csi", "fog_pod", "mist_csi", "lv_precision", "lv_recall"]
+    labels = ["Fog CSI", "Fog POD", "Mist CSI", "Low-vis Prec", "Low-vis Recall"]
     x = np.arange(len(keys))
-    w = 0.2
+    w = 0.78 / max(len(metrics), 1)
     fig, ax = plt.subplots(figsize=(max(8, len(keys) * 1.8), 5))
     for i, (m, lab) in enumerate(zip(metrics, labels)):
         vals = [float(results[k].get(m, np.nan) or 0) if np.isfinite(results[k].get(m, np.nan)) else 0 for k in keys]
-        ax.bar(x + (i - 1.5) * w, vals, w, label=lab)
+        ax.bar(x + (i - (len(metrics) - 1) / 2.0) * w, vals, w * 0.92, label=lab)
     ax.set_xticks(x)
     ax.set_xticklabels(keys, rotation=15, ha="right")
     ax.set_ylabel("Score")

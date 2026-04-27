@@ -439,10 +439,11 @@ def compute_rare_event_report(probs, y_true, fog_th=0.46, mist_th=0.38, pred=Non
     m_fog = binary_metrics_from_preds(y_fog, pred_fog)
     m_mist = binary_metrics_from_preds(y_mist, pred_mist)
 
-    # Low-vis precision (Fog or Mist when predicted Fog or Mist)
+    # Low-vis precision/recall for combined Fog+Mist event.
     low_vis_pred = (pred <= 1)
     low_vis_true = (y_true <= 1)
     low_vis_prec = (low_vis_true & low_vis_pred).sum() / low_vis_pred.sum() if low_vis_pred.sum() > 0 else 0.0
+    low_vis_rec = (low_vis_true & low_vis_pred).sum() / low_vis_true.sum() if low_vis_true.sum() > 0 else 0.0
 
     # FPR (false positive rate for low-vis)
     clear_true = (y_true == 2)
@@ -472,6 +473,7 @@ def compute_rare_event_report(probs, y_true, fog_th=0.46, mist_th=0.38, pred=Non
         "Mist_PSS": m_mist["pss"], "Mist_HSS": m_mist["hss"],
         "Clear_P": clear_prec, "Clear_R": clear_rec,
         "low_vis_precision": low_vis_prec,
+        "low_vis_recall": low_vis_rec,
         "false_positive_rate": fpr_val,
         "macro_f1": macro_f1,
         "balanced_acc": balanced_accuracy(y_true, pred),
