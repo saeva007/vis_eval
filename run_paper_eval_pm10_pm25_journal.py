@@ -1,0 +1,1728 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Remote one-click inference, baseline evaluation, and journal-style plotting.
+
+This script is intentionally designed for the remote /public/home/putianshu/vis_mlp
+environment. It runs the PM10+PM2.5 S2 model, matches the operational IFS
+diagnostic visibility baseline, computes paper metrics, and writes publication
+figures plus a source manifest.
+
+Core class definition used throughout the paper:
+  0: 0 <= visibility < 500 m
+  1: 500 <= visibility < 1000 m
+  2: visibility >= 1000 m
+
+Examples
+--------
+Smoke test on remote:
+  python vis_eval/run_paper_eval_pm10_pm25_journal.py --mode main --limit_samples 20000
+
+Full run:
+  python vis_eval/run_paper_eval_pm10_pm25_journal.py --mode all
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import math
+import os
+import shutil
+import subprocess
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+
+import numpy as np
+import pandas as pd
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib.colors import BoundaryNorm, ListedColormap, Normalize
+from matplotlib.patches import Patch
+from sklearn.metrics import classification_report, confusion_matrix
+
+
+# ---------------------------------------------------------------------------
+# Paths and imports
+# ---------------------------------------------------------------------------
+
+
+SCRIPT_PATH = Path(__file__).resolve()
+VIS_EVAL_DIR = SCRIPT_PATH.parent
+LOCAL_ROOT = VIS_EVAL_DIR.parent
+
+for _p in (str(LOCAL_ROOT), str(VIS_EVAL_DIR)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+try:
+    from metrics_core import (
+        compute_rare_event_report,
+        pred_from_joint_thresholds,
+        pred_from_thresholds,
+        pred_from_thresholds_mutual,
+    )
+except Exception as exc:  # pragma: no cover - import failure should be explicit on remote.
+    raise RuntimeError(f"Cannot import vis_eval metrics_core from {VIS_EVAL_DIR}") from exc
+
+try:
+    from plot_spatial import (
+        run_widespread_event_evaluation,
+        detect_widespread_fog_events,
+    )
+except Exception:
+    run_widespread_event_evaluation = None
+    detect_widespread_fog_events = None
+
+
+# ---------------------------------------------------------------------------
+# Constants and style
+# ---------------------------------------------------------------------------
+
+
+FOG_COLOR = "#2E5A87"
+MIST_COLOR = "#E69F00"
+CLEAR_COLOR = "#7F7F7F"
+PMST_COLOR = "#2E5A87"
+IFS_PMST_COLOR = "#2A9D8F"
+IFS_DIAG_COLOR = "#5B5B5B"
+CLASS_COLORS = [FOG_COLOR, MIST_COLOR, CLEAR_COLOR]
+CLASS_NAMES = ["Fog", "Mist", "Clear"]
+CLASS_LONG = ["Fog (0-500 m)", "Mist (500-1000 m)", "Clear (>=1000 m)"]
+CLASS_CMAP = ListedColormap(CLASS_COLORS)
+CLASS_NORM = BoundaryNorm([-0.5, 0.5, 1.5, 2.5], CLASS_CMAP.N)
+
+REGION_DEFS = [
+    ("Northeast", 38.5, 54.0, 118.0, 136.0),
+    ("North China", 34.0, 42.5, 110.0, 122.5),
+    ("East China", 24.0, 34.5, 116.0, 123.5),
+    ("Central China", 26.0, 34.5, 108.0, 116.5),
+    ("South China", 18.0, 26.5, 108.0, 121.0),
+    ("Southwest", 21.0, 34.5, 97.0, 108.5),
+    ("Northwest", 34.0, 50.0, 73.0, 110.5),
+]
+
+
+def setup_journal_style() -> None:
+    plt.rcParams.update(
+        {
+            "font.family": "DejaVu Serif",
+            "font.size": 9,
+            "axes.labelsize": 10,
+            "axes.titlesize": 10,
+            "xtick.labelsize": 8,
+            "ytick.labelsize": 8,
+            "legend.fontsize": 8,
+            "figure.dpi": 150,
+            "savefig.dpi": 300,
+            "savefig.bbox": "tight",
+            "axes.grid": True,
+            "grid.alpha": 0.22,
+            "axes.axisbelow": True,
+            "xtick.direction": "out",
+            "ytick.direction": "out",
+            "pdf.fonttype": 42,
+            "ps.fonttype": 42,
+        }
+    )
+
+
+@dataclass
+class Manifest:
+    out_dir: Path
+    rows: List[Dict[str, object]] = field(default_factory=list)
+
+    def add(
+        self,
+        figure: str,
+        sources: Sequence[str],
+        notes: str = "",
+        n: Optional[int] = None,
+        matched_ifs: Optional[int] = None,
+    ) -> None:
+        self.rows.append(
+            {
+                "figure": figure,
+                "sources": ";".join(str(s) for s in sources if s),
+                "notes": notes,
+                "n": "" if n is None else int(n),
+                "matched_ifs": "" if matched_ifs is None else int(matched_ifs),
+            }
+        )
+
+    def write(self) -> None:
+        path = self.out_dir / "figure_source_manifest.csv"
+        pd.DataFrame(self.rows).to_csv(path, index=False)
+        print(f"[manifest] {path}", flush=True)
+
+
+def save_fig_pair(fig, out_dir: Path, stem: str, manifest: Optional[Manifest] = None,
+                  sources: Sequence[str] = (), notes: str = "", n: Optional[int] = None,
+                  matched_ifs: Optional[int] = None) -> List[str]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for ext in ("png", "pdf"):
+        path = out_dir / f"{stem}.{ext}"
+        fig.savefig(path, dpi=300, bbox_inches="tight")
+        paths.append(str(path))
+        print(f"  [Fig] Saved -> {path}", flush=True)
+    if manifest is not None:
+        manifest.add(f"{stem}.png/pdf", sources, notes=notes, n=n, matched_ifs=matched_ifs)
+    plt.close(fig)
+    return paths
+
+
+def add_panel_label(ax, label: str, x: float = -0.10, y: float = 1.03) -> None:
+    ax.text(
+        x,
+        y,
+        f"({label})",
+        transform=ax.transAxes,
+        fontsize=11,
+        fontweight="bold",
+        va="bottom",
+    )
+
+
+# ---------------------------------------------------------------------------
+# CLI and path helpers
+# ---------------------------------------------------------------------------
+
+
+def parse_args() -> argparse.Namespace:
+    ap = argparse.ArgumentParser(
+        description="Run PM10+PM2.5 paper evaluation, IFS baseline matching, and journal figures."
+    )
+    ap.add_argument("--mode", choices=["main", "overlap", "all"], default="all")
+    ap.add_argument("--base", default=os.environ.get("VIS_MLP_ROOT", "/public/home/putianshu/vis_mlp"))
+    ap.add_argument("--data_dir", default="ml_dataset_s2_tianji_12h_pm10_pm25_monthtail_2")
+    ap.add_argument("--data_48h_dir", default="ml_dataset_fe_12h_48h_pm10_pm25_testonly_leadtime")
+    ap.add_argument("--ckpt_path", default="")
+    ap.add_argument("--scaler_path", default="")
+    ap.add_argument("--season_th_path", default="")
+    ap.add_argument("--model_py", default="")
+    ap.add_argument("--ifs_vis_nc", default="VIS_IDW_KDTree_20250101_20251231.nc")
+    ap.add_argument("--ifs_48h_nc", default="IFS_VIS_0_48h_stations_2025_00_12.nc")
+    ap.add_argument("--ifs_vis_var", default="VIS")
+    ap.add_argument("--out_dir", default="paper_eval_results_pm10_pm25_journal")
+    ap.add_argument("--shp_path", default="/public/home/putianshu/中华人民共和国/中华人民共和国.shp")
+    ap.add_argument("--window_size", type=int, default=12)
+    ap.add_argument("--dyn_vars_count", type=int, default=0, help="0 means infer from X_test.npy")
+    ap.add_argument("--extra_feat_dim", type=int, default=0, help="0 means infer from X_test.npy")
+    ap.add_argument("--hidden_dim", type=int, default=512)
+    ap.add_argument("--dropout", type=float, default=0.3)
+    ap.add_argument("--fog_th", type=float, default=0.10)
+    ap.add_argument("--mist_th", type=float, default=0.42)
+    ap.add_argument("--lead_fog_th", type=float, default=0.10)
+    ap.add_argument("--lead_mist_th", type=float, default=0.30)
+    ap.add_argument("--threshold_rule", choices=["default", "mutual", "joint"], default="mutual")
+    ap.add_argument("--no_calibration", action="store_true")
+    ap.add_argument("--use_calibration", action="store_true", help="Load --season_th_path if present.")
+    ap.add_argument("--batch_size", type=int, default=8192)
+    ap.add_argument("--device", default="auto", help="auto, cpu, cuda, or cuda:N")
+    ap.add_argument("--limit_samples", type=int, default=0)
+    ap.add_argument("--skip_48h", action="store_true")
+    ap.add_argument("--event_top_k", type=int, default=3)
+    ap.add_argument("--event_window_hours", type=int, default=3)
+    ap.add_argument("--event_min_fog_stations", type=int, default=80)
+    ap.add_argument("--event_min_regions", type=int, default=3)
+    ap.add_argument("--event_min_lon_span", type=float, default=10.0)
+    ap.add_argument("--event_min_lat_span", type=float, default=4.0)
+    ap.add_argument("--event_gap_hours", type=int, default=24)
+    ap.add_argument("--overlap_script", default="")
+    ap.add_argument("--overlap_out_dir", default="")
+    ap.add_argument("--overlap_extra_args", default="", help="Extra args passed verbatim to overlap evaluator.")
+    ap.add_argument("--skip_overlap_bootstrap", action="store_true")
+    return ap.parse_args()
+
+
+def abs_under_base(base: Path, path_value: str) -> Path:
+    p = Path(path_value)
+    if p.is_absolute():
+        return p
+    return base / p
+
+
+def resolve_model_py(base: Path, explicit: str) -> Path:
+    candidates = []
+    if explicit:
+        candidates.append(abs_under_base(base, explicit))
+    candidates.extend(
+        [
+            base / "PMST_net_test_11_s2_pm10.py",
+            base / "vis_mlp" / "PMST_net_test_11_s2_pm10.py",
+            base / "train" / "PMST_net_test_11_s2_pm10.py",
+        ]
+    )
+    for p in candidates:
+        if p.is_file():
+            return p
+    raise FileNotFoundError("Cannot find PMST_net_test_11_s2_pm10.py; pass --model_py.")
+
+
+def infer_layout_from_x(x_path: Path, window_size: int) -> Tuple[int, int]:
+    shape = np.load(x_path, mmap_mode="r").shape
+    if len(shape) != 2:
+        raise ValueError(f"{x_path} must be 2D [N,D], got {shape}")
+    total_dim = int(shape[1])
+    rest = total_dim - 6
+    for dyn in (27, 26, 25, 24):
+        fe = rest - dyn * int(window_size)
+        if 20 <= fe <= 64:
+            return dyn, fe
+    raise ValueError(f"Cannot infer dyn/FE layout from {x_path}: total_dim={total_dim}")
+
+
+def import_model_class(model_py: Path):
+    spec = importlib.util.spec_from_file_location("pmst_model_for_journal_eval", str(model_py))
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot import model file: {model_py}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.ImprovedDualStreamPMSTNet
+
+
+def resolve_device(device_arg: str):
+    import torch
+
+    if device_arg == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return torch.device(device_arg)
+
+
+# ---------------------------------------------------------------------------
+# Labels, metrics, inference
+# ---------------------------------------------------------------------------
+
+
+def visibility_to_class(y_raw: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    y = np.asarray(y_raw, dtype=np.float32).copy()
+    finite = np.isfinite(y)
+    if finite.any() and np.nanmax(y[finite]) < 100.0:
+        y *= 1000.0
+    cls = np.full(len(y), 2, dtype=np.int64)
+    cls[y < 1000.0] = 1
+    cls[y < 500.0] = 0
+    cls[~np.isfinite(y)] = -1
+    return cls, y
+
+
+def pred_from_probs_rule(probs: np.ndarray, fog_th: float, mist_th: float, rule: str) -> np.ndarray:
+    if rule == "joint":
+        return pred_from_joint_thresholds(probs, fog_th, mist_th)
+    if rule == "mutual":
+        return pred_from_thresholds_mutual(probs, fog_th, mist_th)
+    return pred_from_thresholds(probs, fog_th, mist_th)
+
+
+def dyn_log_indices(dyn_vars_count: int) -> List[int]:
+    idxs = [2, 4, 9]
+    if dyn_vars_count >= 27:
+        idxs.extend([dyn_vars_count - 2, dyn_vars_count - 1])
+    else:
+        idxs.append(dyn_vars_count - 1)
+    return [i for i in idxs if 0 <= i < dyn_vars_count]
+
+
+def prepare_batch_rows(
+    rows: np.ndarray,
+    scaler,
+    window_size: int,
+    dyn_vars_count: int,
+    extra_feat_dim: int,
+) -> np.ndarray:
+    split_dyn = window_size * dyn_vars_count
+    log_mask = np.zeros(split_dyn, dtype=bool)
+    for t in range(window_size):
+        for i in dyn_log_indices(dyn_vars_count):
+            log_mask[t * dyn_vars_count + i] = True
+
+    feats = rows[:, : split_dyn + 5].astype(np.float32, copy=True)
+    feats[:, :split_dyn] = np.where(
+        log_mask,
+        np.log1p(np.maximum(feats[:, :split_dyn], 0.0)),
+        feats[:, :split_dyn],
+    )
+    if scaler is not None:
+        if len(scaler.center_) != feats.shape[1]:
+            raise ValueError(
+                f"Scaler dimension {len(scaler.center_)} does not match feature block {feats.shape[1]}"
+            )
+        feats = (feats - scaler.center_) / (scaler.scale_ + 1e-6)
+    veg = rows[:, split_dyn + 5 : split_dyn + 6].astype(np.float32, copy=False)
+    extra = rows[:, split_dyn + 6 :].astype(np.float32, copy=True)
+    if extra.shape[1] < extra_feat_dim:
+        extra = np.pad(extra, ((0, 0), (0, extra_feat_dim - extra.shape[1])), mode="constant")
+    elif extra.shape[1] > extra_feat_dim:
+        extra = extra[:, :extra_feat_dim]
+
+    final = np.concatenate([np.clip(feats, -10, 10), veg, np.clip(extra, -10, 10)], axis=1)
+    return np.nan_to_num(final, nan=0.0, posinf=10.0, neginf=-10.0).astype(np.float32)
+
+
+def run_model_inference(
+    x_path: Path,
+    scaler,
+    model,
+    device,
+    batch_size: int,
+    window_size: int,
+    dyn_vars_count: int,
+    extra_feat_dim: int,
+    limit_samples: int = 0,
+    temperature: Optional[float] = None,
+) -> np.ndarray:
+    import torch
+    import torch.nn.functional as F
+
+    X = np.load(x_path, mmap_mode="r")
+    n = len(X) if not limit_samples or limit_samples <= 0 else min(int(limit_samples), len(X))
+    temp = 1.0 if temperature is None else max(float(temperature), 1e-6)
+    out = []
+    model.eval()
+    for start in range(0, n, batch_size):
+        end = min(start + batch_size, n)
+        rows = np.asarray(X[start:end], dtype=np.float32)
+        final = prepare_batch_rows(rows, scaler, window_size, dyn_vars_count, extra_feat_dim)
+        x = torch.from_numpy(final).float().to(device, non_blocking=(device.type == "cuda"))
+        with torch.inference_mode():
+            logits = model(x)[0]
+            probs = F.softmax(logits / temp, dim=1)
+        out.append(probs.detach().cpu().numpy())
+        if start == 0 or end == n or (start // max(batch_size, 1)) % 20 == 0:
+            print(f"  [inference] {end}/{n}", flush=True)
+    return np.concatenate(out, axis=0) if out else np.zeros((0, 3), dtype=np.float32)
+
+
+def load_checkpoint_into_model(model, ckpt_path: Path, device) -> None:
+    import torch
+
+    state = torch.load(ckpt_path, map_location=device)
+    if isinstance(state, dict):
+        for key in ("state_dict", "model_state_dict", "model", "net"):
+            if key in state and isinstance(state[key], dict):
+                state = state[key]
+                break
+    if not isinstance(state, dict):
+        raise TypeError(f"Unsupported checkpoint object from {ckpt_path}: {type(state)}")
+    state = {str(k).replace("module.", ""): v for k, v in state.items()}
+    target = model.module if hasattr(model, "module") else model
+    missing, unexpected = target.load_state_dict(state, strict=False)
+    if missing:
+        print(f"  [ckpt] missing keys: {len(missing)} first={missing[:5]}", flush=True)
+    if unexpected:
+        print(f"  [ckpt] unexpected keys: {len(unexpected)} first={unexpected[:5]}", flush=True)
+
+
+def confusion_counts(y_true: np.ndarray, pred: np.ndarray) -> np.ndarray:
+    valid = (y_true >= 0) & (y_true <= 2) & (pred >= 0) & (pred <= 2)
+    return confusion_matrix(y_true[valid], pred[valid], labels=[0, 1, 2])
+
+
+def safe_div(num: float, den: float) -> float:
+    return float(num / den) if den else 0.0
+
+
+def classification_metrics(y_true: np.ndarray, pred: np.ndarray, probs: Optional[np.ndarray] = None) -> Dict[str, float]:
+    y_true = np.asarray(y_true, dtype=np.int64)
+    pred = np.asarray(pred, dtype=np.int64)
+    cm = confusion_counts(y_true, pred)
+    n = int(cm.sum())
+    d: Dict[str, float] = {"n": float(n)}
+    for cid, cname in enumerate(("Fog", "Mist", "Clear")):
+        tp = float(cm[cid, cid])
+        fp = float(cm[:, cid].sum() - cm[cid, cid])
+        fn = float(cm[cid, :].sum() - cm[cid, cid])
+        support = float(cm[cid, :].sum())
+        pred_count = float(cm[:, cid].sum())
+        p = safe_div(tp, tp + fp)
+        r = safe_div(tp, tp + fn)
+        f1 = safe_div(2.0 * p * r, p + r)
+        csi = safe_div(tp, tp + fp + fn)
+        far = safe_div(fp, tp + fp)
+        prefix = cname if cname != "Clear" else "Clear"
+        d[f"{prefix}_P"] = p
+        d[f"{prefix}_R"] = r
+        d[f"{prefix}_F1"] = f1
+        d[f"{prefix}_CSI"] = csi
+        d[f"{prefix}_FAR"] = far
+        d[f"{prefix}_support"] = support
+        d[f"pred_{prefix.lower()}"] = pred_count
+        if cname == "Fog":
+            d["Fog_POD"] = r
+        if cname == "Mist":
+            d["Mist_POD"] = r
+    true_low = y_true <= 1
+    pred_low = pred <= 1
+    true_clear = y_true == 2
+    low_tp = float((true_low & pred_low).sum())
+    low_fp = float((~true_low & pred_low).sum())
+    low_fn = float((true_low & ~pred_low).sum())
+    d["low_vis_precision"] = safe_div(low_tp, low_tp + low_fp)
+    d["low_vis_recall"] = safe_div(low_tp, low_tp + low_fn)
+    d["low_vis_csi"] = safe_div(low_tp, low_tp + low_fp + low_fn)
+    d["false_positive_rate"] = safe_div(float((true_clear & pred_low).sum()), float(true_clear.sum()))
+    d["accuracy"] = safe_div(float(np.trace(cm)), float(n))
+    d["macro_f1"] = float(np.mean([d["Fog_F1"], d["Mist_F1"], d["Clear_F1"]]))
+    if probs is not None and len(probs) == len(y_true):
+        try:
+            d.update(compute_rare_event_report(probs, y_true, pred=pred))
+        except Exception as exc:
+            print(f"  [WARN] probability metrics skipped: {exc}", flush=True)
+    return d
+
+
+def metrics_rows(rows: Sequence[Tuple[str, Dict[str, float], Dict[str, object]]]) -> pd.DataFrame:
+    out = []
+    for source, metrics, extra in rows:
+        row = {"source": source}
+        row.update(extra)
+        row.update(metrics)
+        out.append(row)
+    return pd.DataFrame(out)
+
+
+def metric_deltas(
+    a: Dict[str, float],
+    b: Dict[str, float],
+    a_name: str,
+    b_name: str,
+    metrics: Sequence[str],
+) -> pd.DataFrame:
+    lower_is_better = {"Fog_FAR", "Mist_FAR", "Clear_FAR", "false_positive_rate", "Brier_Fog", "Brier_Mist", "ECE"}
+    rows = []
+    for m in metrics:
+        if m not in a or m not in b:
+            continue
+        av = float(a[m])
+        bv = float(b[m])
+        delta = av - bv
+        direction = "lower" if m in lower_is_better else "higher"
+        better = delta < 0 if direction == "lower" else delta > 0
+        rows.append(
+            {
+                "metric": m,
+                f"{a_name}": av,
+                f"{b_name}": bv,
+                f"delta_{a_name}_minus_{b_name}": delta,
+                "preferred_direction": direction,
+                f"{a_name}_better": bool(better),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Data loading and IFS matching
+# ---------------------------------------------------------------------------
+
+
+def load_main_data(data_dir: Path, limit_samples: int = 0) -> Tuple[Path, np.ndarray, np.ndarray, pd.DataFrame]:
+    x_path = data_dir / "X_test.npy"
+    y_path = data_dir / "y_test.npy"
+    meta_path = data_dir / "meta_test.csv"
+    for p in (x_path, y_path, meta_path):
+        if not p.exists():
+            raise FileNotFoundError(f"Missing required input: {p}")
+    y_raw_all = np.load(y_path)
+    n = len(y_raw_all) if not limit_samples or limit_samples <= 0 else min(int(limit_samples), len(y_raw_all))
+    y_cls, y_raw = visibility_to_class(y_raw_all[:n])
+    meta = pd.read_csv(meta_path)
+    if len(meta) < n:
+        raise ValueError(f"{meta_path} has {len(meta)} rows, expected at least {n}")
+    meta = meta.iloc[:n].copy().reset_index(drop=True)
+    meta["time"] = pd.to_datetime(meta["time"], errors="coerce")
+    if "hour" not in meta:
+        meta["hour"] = meta["time"].dt.hour
+    if "month" not in meta:
+        meta["month"] = meta["time"].dt.month
+    return x_path, y_cls, y_raw, meta
+
+
+def normalize_station_ids(values) -> pd.Series:
+    s = pd.Series(values)
+    numeric = pd.to_numeric(s, errors="coerce")
+    out = s.astype(str)
+    m = numeric.notna()
+    if m.any():
+        out.loc[m] = numeric.loc[m].astype(np.int64).astype(str)
+    return out
+
+
+def classify_visibility_values(vis: np.ndarray) -> np.ndarray:
+    arr = np.asarray(vis, dtype=np.float64)
+    cls = np.full(arr.shape, 2, dtype=np.int64)
+    cls[arr < 1000.0] = 1
+    cls[arr < 500.0] = 0
+    cls[~np.isfinite(arr)] = -1
+    return cls
+
+
+def load_ifs_diagnostic(
+    meta: pd.DataFrame,
+    ifs_nc_path: Path,
+    vis_var: str = "VIS",
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if not ifs_nc_path.exists():
+        raise FileNotFoundError(f"IFS diagnostic NetCDF not found: {ifs_nc_path}")
+    try:
+        import xarray as xr
+    except ImportError as exc:
+        raise ImportError("xarray is required to match IFS diagnostic visibility.") from exc
+
+    ds = xr.open_dataset(ifs_nc_path)
+    try:
+        if vis_var not in ds:
+            raise KeyError(f"Variable {vis_var!r} not found in {ifs_nc_path}; vars={list(ds.data_vars)}")
+        station_coord = "station" if "station" in ds.coords else "station_id"
+        if "time" not in ds.coords or station_coord not in ds.coords:
+            raise KeyError(f"IFS NetCDF must have coords time and station/station_id: {ifs_nc_path}")
+
+        da = ds[vis_var].squeeze()
+        if "time" not in da.dims or station_coord not in da.dims:
+            raise ValueError(f"{vis_var} must have time and station dims, got dims={da.dims}")
+        da = da.transpose("time", station_coord, ...)
+        if da.ndim != 2:
+            raise ValueError(f"{vis_var} must be 2D after squeeze, got shape={da.shape}")
+        vis = np.asarray(da.values, dtype=np.float64)
+        times = pd.to_datetime(ds["time"].values)
+        stations = pd.Index(normalize_station_ids(ds[station_coord].values))
+
+        time_lookup = pd.Series(np.arange(len(times), dtype=np.int64), index=pd.Index(times))
+        station_lookup = pd.Series(np.arange(len(stations), dtype=np.int64), index=stations)
+
+        meta_times = pd.to_datetime(meta["time"], errors="coerce")
+        meta_station = normalize_station_ids(meta["station_id"].values)
+        time_idx = meta_times.map(time_lookup)
+        station_idx = meta_station.map(station_lookup)
+        key_valid = time_idx.notna() & station_idx.notna()
+
+        raw = np.full(len(meta), np.nan, dtype=np.float64)
+        pred = np.full(len(meta), -1, dtype=np.int64)
+        valid = np.zeros(len(meta), dtype=bool)
+        if key_valid.any():
+            pos = np.flatnonzero(key_valid.to_numpy())
+            ti = time_idx.iloc[pos].astype(np.int64).to_numpy()
+            si = station_idx.iloc[pos].astype(np.int64).to_numpy()
+            matched = vis[ti, si]
+            finite = np.isfinite(matched)
+            pos_f = pos[finite]
+            raw[pos_f] = matched[finite]
+            pred[pos_f] = classify_visibility_values(matched[finite])
+            valid[pos_f] = True
+        print(f"[IFS] matched finite rows: {int(valid.sum())}/{len(meta)} from {ifs_nc_path}", flush=True)
+        return pred, raw, valid
+    finally:
+        ds.close()
+
+
+def export_per_sample(
+    out_path: Path,
+    meta: pd.DataFrame,
+    y_true: np.ndarray,
+    y_raw: np.ndarray,
+    pred: np.ndarray,
+    probs: np.ndarray,
+    ifs_pred: Optional[np.ndarray] = None,
+    ifs_vis: Optional[np.ndarray] = None,
+    ifs_valid: Optional[np.ndarray] = None,
+) -> pd.DataFrame:
+    cols = [c for c in ["station_id", "lat", "lon", "time", "month", "hour", "init_time", "init_hour", "lead_hour"] if c in meta]
+    df = meta[cols].copy()
+    df["y_true"] = y_true
+    df["vis_raw_m"] = y_raw
+    df["pmst_pred"] = pred
+    df["pmst_p_fog"] = probs[:, 0]
+    df["pmst_p_mist"] = probs[:, 1]
+    df["pmst_p_clear"] = probs[:, 2]
+    df["pmst_correct"] = pred == y_true
+    if ifs_pred is not None:
+        df["ifs_diagnostic_valid"] = ifs_valid
+        df["ifs_diagnostic_vis_m"] = ifs_vis
+        df["ifs_diagnostic_pred"] = ifs_pred
+        df["ifs_diagnostic_correct"] = np.asarray(ifs_valid, dtype=bool) & (ifs_pred == y_true)
+    df.to_csv(out_path, index=False, float_format="%.6f")
+    print(f"[table] {out_path} rows={len(df)}", flush=True)
+    return df
+
+
+def write_report(path: Path, y_true: np.ndarray, pred: np.ndarray, metrics: Dict[str, float],
+                 ifs_metrics: Optional[Dict[str, float]] = None) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("Class definitions:\n")
+        f.write("  0: 0 <= visibility < 500 m\n")
+        f.write("  1: 500 <= visibility < 1000 m\n")
+        f.write("  2: visibility >= 1000 m\n\n")
+        f.write("PMST classification report:\n")
+        f.write(classification_report(y_true, pred, labels=[0, 1, 2], target_names=CLASS_NAMES, zero_division=0))
+        f.write("\n\nPMST rare-event metrics:\n")
+        for k in sorted(metrics):
+            v = metrics[k]
+            if isinstance(v, (int, float, np.integer, np.floating)):
+                f.write(f"  {k}: {float(v):.6f}\n")
+        if ifs_metrics is not None:
+            f.write("\nIFS diagnostic visibility metrics on matched rows:\n")
+            for k in sorted(ifs_metrics):
+                v = ifs_metrics[k]
+                if isinstance(v, (int, float, np.integer, np.floating)):
+                    f.write(f"  {k}: {float(v):.6f}\n")
+    print(f"[report] {path}", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Scenario and station products
+# ---------------------------------------------------------------------------
+
+
+def add_scenario_columns(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out["time"] = pd.to_datetime(out["time"], errors="coerce")
+    if "hour" not in out:
+        out["hour"] = out["time"].dt.hour
+    if "month" not in out:
+        out["month"] = out["time"].dt.month
+    season_map = {12: "DJF", 1: "DJF", 2: "DJF", 3: "MAM", 4: "MAM", 5: "MAM", 6: "JJA", 7: "JJA", 8: "JJA", 9: "SON", 10: "SON", 11: "SON"}
+    out["season"] = out["month"].map(season_map)
+    h = out["hour"].astype(int)
+    out["time_of_day"] = np.select(
+        [h.between(0, 5), h.between(6, 11), h.between(12, 17), h.between(18, 23)],
+        ["Night (00-06)", "Morning (06-12)", "Afternoon (12-18)", "Evening (18-24)"],
+        default="Unknown",
+    )
+    region = np.full(len(out), "Other", dtype=object)
+    lats = out["lat"].astype(float).to_numpy()
+    lons = out["lon"].astype(float).to_numpy()
+    for name, lat_min, lat_max, lon_min, lon_max in REGION_DEFS:
+        m = (lats >= lat_min) & (lats <= lat_max) & (lons >= lon_min) & (lons <= lon_max)
+        region[m] = name
+    out["region"] = region
+    if "init_time" in out and "init_hour" not in out:
+        init_dt = pd.to_datetime(out["init_time"], errors="coerce")
+        out["init_hour"] = init_dt.dt.hour
+    return out
+
+
+def build_scenario_metrics(eval_df: pd.DataFrame) -> pd.DataFrame:
+    df = add_scenario_columns(eval_df)
+    rows = []
+    specs = [
+        ("All", np.ones(len(df), dtype=bool)),
+    ]
+    for col, values in (
+        ("time_of_day", ["Night (00-06)", "Morning (06-12)", "Afternoon (12-18)", "Evening (18-24)"]),
+        ("season", ["DJF", "MAM", "JJA", "SON"]),
+        ("region", sorted(df["region"].dropna().unique())),
+    ):
+        for val in values:
+            specs.append((f"{col}:{val}", (df[col] == val).to_numpy()))
+
+    for scenario, mask in specs:
+        if int(mask.sum()) < 50:
+            continue
+        y = df.loc[mask, "y_true"].to_numpy(dtype=np.int64)
+        pmst = df.loc[mask, "pmst_pred"].to_numpy(dtype=np.int64)
+        rows.append({"source": "pmst", "scenario": scenario, **classification_metrics(y, pmst)})
+        if "ifs_diagnostic_pred" in df:
+            vm = mask & df["ifs_diagnostic_valid"].to_numpy(dtype=bool)
+            if int(vm.sum()) >= 50:
+                yi = df.loc[vm, "y_true"].to_numpy(dtype=np.int64)
+                ip = df.loc[vm, "ifs_diagnostic_pred"].to_numpy(dtype=np.int64)
+                rows.append({"source": "ifs_diagnostic", "scenario": scenario, **classification_metrics(yi, ip)})
+    return pd.DataFrame(rows)
+
+
+def aggregate_station_metrics(eval_df: pd.DataFrame, pred_col: str = "pmst_pred") -> pd.DataFrame:
+    rows = []
+    for sid, sub in eval_df.groupby("station_id", sort=False):
+        y = sub["y_true"].to_numpy(dtype=np.int64)
+        p = sub[pred_col].to_numpy(dtype=np.int64)
+        n_fog = int((y == 0).sum())
+        n_mist = int((y == 1).sum())
+        n_clear = int((y == 2).sum())
+        pred_low = p <= 1
+        row = {
+            "station_id": sid,
+            "lat": float(sub["lat"].iloc[0]),
+            "lon": float(sub["lon"].iloc[0]),
+            "n_total": int(len(sub)),
+            "n_fog": n_fog,
+            "n_mist": n_mist,
+            "n_clear": n_clear,
+            "fog_recall": safe_div(float(((y == 0) & (p == 0)).sum()), float(n_fog)),
+            "mist_recall": safe_div(float(((y == 1) & (p == 1)).sum()), float(n_mist)),
+            "fpr_fog": safe_div(float(((y == 2) & pred_low).sum()), float(n_clear)),
+            "overall_acc": float((y == p).mean()) if len(sub) else math.nan,
+        }
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Plotting
+# ---------------------------------------------------------------------------
+
+
+def plot_confusion_pmst_vs_ifs(
+    y_true: np.ndarray,
+    pmst_pred: np.ndarray,
+    ifs_pred: Optional[np.ndarray],
+    ifs_valid: Optional[np.ndarray],
+    out_dir: Path,
+    manifest: Manifest,
+    sources: Sequence[str],
+) -> None:
+    setup_journal_style()
+    if ifs_pred is not None and ifs_valid is not None and int(np.sum(ifs_valid)) > 0:
+        y = y_true[ifs_valid]
+        pmst = pmst_pred[ifs_valid]
+        ifs = ifs_pred[ifs_valid]
+        panels = [("PMST", pmst), ("IFS diagnostic VIS", ifs)]
+        matched = int(np.sum(ifs_valid))
+    else:
+        y = y_true
+        panels = [("PMST", pmst_pred)]
+        matched = None
+    fig, axes = plt.subplots(1, len(panels), figsize=(5.2 * len(panels), 4.2), squeeze=False)
+    for ax, (title, pred) in zip(axes.ravel(), panels):
+        cm = confusion_counts(y, pred)
+        cm_norm = cm.astype(float) / np.maximum(cm.sum(axis=1, keepdims=True), 1)
+        im = ax.imshow(cm_norm, cmap="Blues", vmin=0, vmax=1)
+        ax.set_xticks([0, 1, 2])
+        ax.set_yticks([0, 1, 2])
+        ax.set_xticklabels(CLASS_NAMES)
+        ax.set_yticklabels(CLASS_NAMES)
+        ax.set_xlabel("Predicted class")
+        ax.set_ylabel("Observed class")
+        ax.set_title(title)
+        for i in range(3):
+            for j in range(3):
+                txt = f"{cm_norm[i, j]:.2f}\n{cm[i, j]:,}"
+                ax.text(j, i, txt, ha="center", va="center", fontsize=8, color="#111111")
+    fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.82, label="Row-normalized fraction")
+    save_fig_pair(
+        fig,
+        out_dir,
+        "fig3_confusion_matrix_pmst_vs_ifs_diagnostic",
+        manifest,
+        sources,
+        notes="Row-normalized confusion matrix; IFS panel uses matched finite IFS VIS rows.",
+        n=len(y),
+        matched_ifs=matched,
+    )
+
+
+def plot_prf1_pmst_vs_ifs(
+    pmst_metrics: Dict[str, float],
+    ifs_metrics: Optional[Dict[str, float]],
+    out_dir: Path,
+    manifest: Manifest,
+    sources: Sequence[str],
+    n: int,
+    matched_ifs: Optional[int],
+) -> None:
+    setup_journal_style()
+    metrics = [
+        ("Fog_P", "Precision"),
+        ("Fog_R", "Recall"),
+        ("Fog_F1", "F1"),
+        ("Mist_P", "Precision"),
+        ("Mist_R", "Recall"),
+        ("Mist_F1", "F1"),
+        ("low_vis_precision", "Low-vis P"),
+        ("low_vis_recall", "Low-vis R"),
+        ("false_positive_rate", "Clear FPR"),
+    ]
+    groups = ["Fog", "Mist", "Low-vis"]
+    fig, axes = plt.subplots(1, 3, figsize=(12.0, 3.6), sharey=False)
+    for ax_idx, (ax, group) in enumerate(zip(axes, groups)):
+        start = ax_idx * 3
+        sub = metrics[start:start + 3]
+        x = np.arange(len(sub))
+        width = 0.36
+        pmst_vals = [float(pmst_metrics.get(k, np.nan)) for k, _ in sub]
+        ax.bar(x - width / 2, pmst_vals, width, label="PMST", color=PMST_COLOR, edgecolor="white", linewidth=0.5)
+        if ifs_metrics is not None:
+            ifs_vals = [float(ifs_metrics.get(k, np.nan)) for k, _ in sub]
+            ax.bar(x + width / 2, ifs_vals, width, label="IFS diagnostic", color=IFS_DIAG_COLOR, edgecolor="white", linewidth=0.5)
+        ax.set_xticks(x)
+        ax.set_xticklabels([label for _, label in sub], rotation=20, ha="right")
+        ax.set_title(group)
+        ax.set_ylim(0, 1.05)
+        if ax_idx == 0:
+            ax.set_ylabel("Score")
+        add_panel_label(ax, "abc"[ax_idx])
+        ax.grid(axis="y", alpha=0.25)
+        ax.grid(axis="x", visible=False)
+    handles, labels = axes[0].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, labels, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.05))
+    fig.tight_layout()
+    save_fig_pair(
+        fig,
+        out_dir,
+        "fig3_prf1_pmst_vs_ifs_diagnostic",
+        manifest,
+        sources,
+        notes="Precision/Recall/F1 and low-visibility operating metrics.",
+        n=n,
+        matched_ifs=matched_ifs,
+    )
+
+
+def plot_ifs_visibility_bias(
+    y_true: np.ndarray,
+    y_raw: np.ndarray,
+    ifs_vis: np.ndarray,
+    ifs_valid: np.ndarray,
+    out_dir: Path,
+    manifest: Manifest,
+    sources: Sequence[str],
+) -> None:
+    if ifs_vis is None or ifs_valid is None or int(np.sum(ifs_valid)) == 0:
+        return
+    setup_journal_style()
+    m = ifs_valid & np.isfinite(ifs_vis) & np.isfinite(y_raw)
+    low = m & (y_true <= 1)
+    if int(low.sum()) == 0:
+        return
+    diff = np.clip(ifs_vis[low] - y_raw[low], -2000, 20000)
+    fig, axes = plt.subplots(1, 2, figsize=(10.2, 3.8))
+    axes[0].hist(diff, bins=50, color=IFS_DIAG_COLOR, alpha=0.88)
+    axes[0].axvline(0, color="#111111", lw=1.2)
+    axes[0].set_xlabel("IFS VIS - observed VIS (m), true low-vis cases")
+    axes[0].set_ylabel("Sample count")
+    axes[0].set_title("IFS visibility bias in low-vis observations")
+    add_panel_label(axes[0], "a")
+
+    data = []
+    labels = []
+    for cls, label in [(0, "Fog obs"), (1, "Mist obs")]:
+        mm = m & (y_true == cls)
+        if int(mm.sum()) > 0:
+            data.append(np.clip(ifs_vis[mm], 0, 20000))
+            labels.append(label)
+    axes[1].boxplot(data, labels=labels, showfliers=False, patch_artist=True,
+                    boxprops={"facecolor": "#D9D9D9", "color": "#555555"},
+                    medianprops={"color": PMST_COLOR, "linewidth": 1.4})
+    axes[1].axhline(500, color=FOG_COLOR, ls="--", lw=1.0, label="500 m")
+    axes[1].axhline(1000, color=MIST_COLOR, ls="--", lw=1.0, label="1000 m")
+    axes[1].set_ylabel("IFS diagnostic visibility (m)")
+    axes[1].set_title("IFS VIS distribution by observed class")
+    axes[1].legend(frameon=False)
+    add_panel_label(axes[1], "b")
+    fig.tight_layout()
+    save_fig_pair(
+        fig,
+        out_dir,
+        "fig3c_ifs_visibility_bias_lowvis",
+        manifest,
+        sources,
+        notes="Diagnostic plot for IFS visibility overestimation in observed low-visibility cases.",
+        n=int(low.sum()),
+        matched_ifs=int(m.sum()),
+    )
+
+
+def plot_scenario_split(
+    scenario_df: pd.DataFrame,
+    split: str,
+    order: Sequence[str],
+    out_dir: Path,
+    manifest: Manifest,
+    sources: Sequence[str],
+) -> None:
+    setup_journal_style()
+    src_df = scenario_df[scenario_df["source"] == "pmst"].copy()
+    rows = []
+    for name in order:
+        sc = f"{split}:{name}"
+        sub = src_df[src_df["scenario"] == sc]
+        if sub.empty:
+            continue
+        r = sub.iloc[0].to_dict()
+        r["name"] = name
+        rows.append(r)
+    if not rows:
+        print(f"  [WARN] No scenario rows for split={split}", flush=True)
+        return
+    df = pd.DataFrame(rows)
+    metrics = [("Fog_CSI", "Fog CSI"), ("Fog_R", "Fog R"), ("Mist_CSI", "Mist CSI"), ("Mist_R", "Mist R"), ("low_vis_precision", "Low-vis P")]
+    colors = [FOG_COLOR, "#6E91B5", MIST_COLOR, "#F0B84A", "#4B5563"]
+    x = np.arange(len(df))
+    width = min(0.16, 0.80 / len(metrics))
+    fig, ax = plt.subplots(figsize=(max(7.5, 0.78 * len(df)), 4.2))
+    for i, ((key, label), color) in enumerate(zip(metrics, colors)):
+        vals = df[key].astype(float).to_numpy()
+        ax.bar(x + (i - (len(metrics) - 1) / 2) * width, vals, width * 0.94, label=label, color=color)
+    ax.set_xticks(x)
+    ax.set_xticklabels(df["name"], rotation=25 if len(df) > 4 else 0, ha="right" if len(df) > 4 else "center")
+    ax.set_ylim(0, 1.0)
+    ax.set_ylabel("Score")
+    title = {"time_of_day": "Metrics by time of day", "season": "Metrics by season", "region": "Metrics by region"}.get(split, split)
+    ax.set_title(title)
+    ax.legend(ncol=min(5, len(metrics)), frameon=False, loc="upper center", bbox_to_anchor=(0.5, 1.16))
+    fig.tight_layout()
+    stem = {
+        "time_of_day": "fig7_split_time_of_day",
+        "season": "fig7_split_season",
+        "region": "fig7_split_region",
+    }[split]
+    save_fig_pair(fig, out_dir, stem, manifest, sources, notes=f"PMST scenario split: {split}.", n=int(df["n"].sum()))
+
+
+def read_shapefile(shp_path: str):
+    if not shp_path or not os.path.exists(shp_path):
+        return None
+    try:
+        import geopandas as gpd
+        return gpd.read_file(shp_path)
+    except Exception as exc:
+        print(f"  [WARN] Could not read shapefile {shp_path}: {exc}", flush=True)
+        return None
+
+
+def draw_basemap(ax, shp_gdf=None) -> None:
+    if shp_gdf is not None:
+        shp_gdf.boundary.plot(ax=ax, color="#333333", linewidth=0.45)
+    ax.set_xlim(72, 136)
+    ax.set_ylim(17, 55)
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel("Longitude")
+    ax.set_ylabel("Latitude")
+    ax.grid(alpha=0.18)
+
+
+def plot_station_metric_map(
+    station_df: pd.DataFrame,
+    value_col: str,
+    mask_col: str,
+    min_count: int,
+    title: str,
+    stem: str,
+    out_dir: Path,
+    manifest: Manifest,
+    sources: Sequence[str],
+    shp_gdf=None,
+    cmap: str = "cividis",
+    vmin: float = 0.0,
+    vmax: float = 1.0,
+) -> None:
+    setup_journal_style()
+    df = station_df.copy()
+    df = df[df[mask_col] >= min_count]
+    fig, ax = plt.subplots(figsize=(7.2, 5.4))
+    draw_basemap(ax, shp_gdf)
+    vals = df[value_col].to_numpy(dtype=float)
+    valid = np.isfinite(vals)
+    sc = ax.scatter(
+        df.loc[valid, "lon"],
+        df.loc[valid, "lat"],
+        c=vals[valid],
+        s=8,
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+        linewidths=0,
+        alpha=0.92,
+    )
+    cb = fig.colorbar(sc, ax=ax, shrink=0.78)
+    cb.set_label(value_col)
+    ax.set_title(title)
+    fig.tight_layout()
+    save_fig_pair(fig, out_dir, stem, manifest, sources, notes=f"Station map masked by {mask_col}>={min_count}.", n=len(df))
+
+
+def plot_event_peak_grid(
+    eval_df: pd.DataFrame,
+    event_df: pd.DataFrame,
+    out_dir: Path,
+    manifest: Manifest,
+    sources: Sequence[str],
+    shp_gdf=None,
+) -> None:
+    if event_df is None or event_df.empty:
+        print("  [WARN] No event summary for peak grid.", flush=True)
+        return
+    setup_journal_style()
+    events = event_df.head(3).copy()
+    n_cols = len(events)
+    if n_cols == 0:
+        return
+    fig, axes = plt.subplots(3, n_cols, figsize=(4.1 * n_cols, 9.0), squeeze=False)
+    row_specs = [
+        ("Observed class", "y_true"),
+        ("PMST", "pmst_pred"),
+        ("IFS diagnostic", "ifs_diagnostic_pred"),
+    ]
+    df = eval_df.copy()
+    df["time"] = pd.to_datetime(df["time"], errors="coerce")
+    for col_idx, (_, ev) in enumerate(events.iterrows()):
+        peak = pd.Timestamp(ev["peak_time"])
+        sub = df[df["time"] == peak]
+        for row_idx, (row_label, col) in enumerate(row_specs):
+            ax = axes[row_idx, col_idx]
+            draw_basemap(ax, shp_gdf)
+            if sub.empty or col not in sub:
+                ax.set_title(f"Event {int(ev.get('event_rank', col_idx + 1))}\nmissing peak rows")
+                continue
+            if col == "ifs_diagnostic_pred" and "ifs_diagnostic_valid" in sub:
+                valid = sub["ifs_diagnostic_valid"].astype(bool).to_numpy()
+                if (~valid).any():
+                    ax.scatter(sub.loc[~valid, "lon"], sub.loc[~valid, "lat"], s=4, color="#D3D3D3", alpha=0.45, linewidths=0)
+                plot_sub = sub.loc[valid]
+            else:
+                plot_sub = sub
+            ax.scatter(
+                plot_sub["lon"],
+                plot_sub["lat"],
+                c=plot_sub[col].astype(int),
+                s=7,
+                cmap=CLASS_CMAP,
+                norm=CLASS_NORM,
+                linewidths=0,
+                alpha=0.95,
+            )
+            if row_idx == 0:
+                ax.set_title(f"Event {int(ev.get('event_rank', col_idx + 1))}\n{peak:%Y-%m-%d %H:00 UTC}")
+            if col_idx == 0:
+                ax.text(-0.18, 0.5, row_label, transform=ax.transAxes, rotation=90, va="center", ha="center", fontsize=10, fontweight="bold")
+    handles = [Patch(facecolor=CLASS_COLORS[i], label=CLASS_NAMES[i]) for i in range(3)]
+    handles.append(Patch(facecolor="#D3D3D3", label="IFS missing"))
+    fig.legend(handles=handles, loc="lower center", ncol=4, frameon=False)
+    fig.tight_layout(rect=(0, 0.05, 1, 1))
+    save_fig_pair(
+        fig,
+        out_dir,
+        "fig9_events_peak_grid_3x3",
+        manifest,
+        sources,
+        notes="Rows are observed, PMST, and IFS diagnostic visibility class at event peak times.",
+        n=len(eval_df),
+    )
+
+
+def plot_event_footprint(
+    hourly_paths: Sequence[Path],
+    out_dir: Path,
+    manifest: Manifest,
+    sources: Sequence[str],
+) -> None:
+    dfs = []
+    for p in hourly_paths:
+        if p.exists():
+            dfs.append(pd.read_csv(p))
+    if not dfs:
+        print("  [WARN] No event hourly metrics for footprint figure.", flush=True)
+        return
+    setup_journal_style()
+    ymax = 0
+    for df in dfs:
+        for col in ("obs_low_vis_count", "pmst_low_vis_count", "ifs_low_vis_count"):
+            if col in df:
+                ymax = max(ymax, int(np.nanmax(df[col].to_numpy(dtype=float))))
+    fig, axes = plt.subplots(1, len(dfs), figsize=(4.3 * len(dfs), 3.7), sharey=True, squeeze=False)
+    for i, (ax, df) in enumerate(zip(axes.ravel(), dfs), start=1):
+        x = df["hour_offset"].to_numpy(dtype=float)
+        ax.plot(x, df["obs_fog_count"], color="#111111", marker="o", lw=1.9, label="Obs fog")
+        ax.plot(x, df["obs_low_vis_count"], color="#111111", marker="o", lw=1.2, ls="--", label="Obs low-vis")
+        ax.plot(x, df["pmst_fog_count"], color=PMST_COLOR, marker="s", lw=1.9, label="PMST fog")
+        ax.plot(x, df["pmst_low_vis_count"], color=PMST_COLOR, marker="s", lw=1.2, ls="--", label="PMST low-vis")
+        if "ifs_fog_count" in df:
+            ax.plot(x, df["ifs_fog_count"], color=IFS_DIAG_COLOR, marker="^", lw=1.9, label="IFS fog")
+            ax.plot(x, df["ifs_low_vis_count"], color=IFS_DIAG_COLOR, marker="^", lw=1.2, ls="--", label="IFS low-vis")
+        ax.axvline(0, color="#333333", lw=1.0, ls=":")
+        ax.set_title(f"Event {i}")
+        ax.set_xlabel("Hour relative to peak")
+        ax.set_ylim(0, max(10, ymax * 1.08))
+        if i == 1:
+            ax.set_ylabel("Station count")
+        add_panel_label(ax, chr(ord("a") + i - 1))
+    handles, labels = axes.ravel()[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=3, frameon=False, bbox_to_anchor=(0.5, 1.12))
+    fig.tight_layout()
+    save_fig_pair(
+        fig,
+        out_dir,
+        "fig9_events_footprint_evolution_1x3",
+        manifest,
+        sources,
+        notes="Event footprint growth/decay from hourly station counts.",
+    )
+
+
+def plot_overlap_fig10(overlap_out: Path, out_dir: Path, manifest: Manifest) -> None:
+    metrics_path = overlap_out / "ifs_diagnostic_matched_metrics.csv"
+    if not metrics_path.exists():
+        metrics_path = overlap_out / "overall_metrics.csv"
+    if not metrics_path.exists():
+        print(f"  [WARN] Overlap metrics not found under {overlap_out}; skip fig10.", flush=True)
+        return
+    df = pd.read_csv(metrics_path)
+    if "source" not in df:
+        print(f"  [WARN] Overlap metrics missing source column: {metrics_path}", flush=True)
+        return
+    setup_journal_style()
+    source_order = [s for s in ("tianji", "ifs", "ifs_diagnostic") if s in set(df["source"].astype(str))]
+    if not source_order:
+        return
+    labels = {"tianji": "Tianji-input PMST", "ifs": "IFS-input PMST", "ifs_diagnostic": "IFS diagnostic VIS"}
+    colors = {"tianji": PMST_COLOR, "ifs": IFS_PMST_COLOR, "ifs_diagnostic": IFS_DIAG_COLOR}
+    panels = [
+        ("Fog", [("fog_csi", "CSI"), ("fog_pod", "Recall"), ("fog_precision", "Precision"), ("fog_far", "FAR")]),
+        ("Mist", [("mist_csi", "CSI"), ("mist_pod", "Recall"), ("mist_precision", "Precision"), ("mist_far", "FAR")]),
+        ("Low visibility", [("low_vis_csi", "CSI"), ("low_vis_recall", "Recall"), ("low_vis_precision", "Precision"), ("low_vis_fpr", "FPR")]),
+    ]
+    row_by_src = {str(r["source"]): r for _, r in df.iterrows()}
+    fig, axes = plt.subplots(1, 3, figsize=(13.0, 3.9), sharey=True)
+    for ax_idx, (ax, (title, metric_specs)) in enumerate(zip(axes, panels)):
+        x = np.arange(len(metric_specs))
+        width = min(0.28, 0.80 / max(len(source_order), 1))
+        for si, src in enumerate(source_order):
+            vals = [float(row_by_src[src].get(m, np.nan)) for m, _ in metric_specs]
+            vals_plot = [0.0 if not np.isfinite(v) else v for v in vals]
+            ax.bar(
+                x + (si - (len(source_order) - 1) / 2) * width,
+                vals_plot,
+                width * 0.92,
+                color=colors.get(src, "#777777"),
+                label=labels.get(src, src) if ax_idx == 0 else None,
+                edgecolor="white",
+                linewidth=0.4,
+            )
+        ax.set_title(title)
+        ax.set_xticks(x)
+        ax.set_xticklabels([lab for _, lab in metric_specs], rotation=25, ha="right")
+        ax.set_ylim(0, 1.05)
+        if ax_idx == 0:
+            ax.set_ylabel("Score")
+        add_panel_label(ax, chr(ord("a") + ax_idx))
+    handles, leg_labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, leg_labels, loc="upper center", ncol=3, frameon=False, bbox_to_anchor=(0.5, 1.12))
+    fig.tight_layout()
+    save_fig_pair(
+        fig,
+        out_dir,
+        "fig10_overlap_forecast_source_comparison",
+        manifest,
+        [str(metrics_path)],
+        notes="Controlled overlap-variable experiment: Tianji-input PMST vs IFS-input PMST vs IFS diagnostic VIS.",
+    )
+
+
+def plot_fig11_lead_init(
+    lead_pooled: pd.DataFrame,
+    lead00: pd.DataFrame,
+    lead12: pd.DataFrame,
+    out_dir: Path,
+    manifest: Manifest,
+    sources: Sequence[str],
+) -> None:
+    setup_journal_style()
+    fig, axes = plt.subplots(2, 2, figsize=(11.0, 7.0), sharex=True)
+    specs = [
+        ("Fog_CSI", "Fog CSI"),
+        ("Fog_R", "Fog recall"),
+        ("Mist_CSI", "Mist CSI"),
+        ("low_vis_precision", "Low-vis precision"),
+    ]
+    for ax, (metric, title), letter in zip(axes.ravel(), specs, "abcd"):
+        if metric in lead_pooled:
+            ax.plot(lead_pooled["lead_hour"], lead_pooled[metric], color=PMST_COLOR, lw=2.2, label="Pooled")
+        if metric in lead00 and not lead00.empty:
+            ax.plot(lead00["lead_hour"], lead00[metric], "o-", color="#4C78A8", lw=1.4, ms=3, label="00Z")
+        if metric in lead12 and not lead12.empty:
+            ax.plot(lead12["lead_hour"], lead12[metric], "s-", color="#F58518", lw=1.4, ms=3, label="12Z")
+        ax.set_title(title)
+        ax.set_xlabel("Lead time (h)")
+        ax.set_ylabel("Score")
+        ax.set_ylim(0, 1.0)
+        add_panel_label(ax, letter)
+    handles, labels = axes.ravel()[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=3, frameon=False, bbox_to_anchor=(0.5, 1.03))
+    fig.tight_layout()
+    save_fig_pair(
+        fig,
+        out_dir,
+        "fig11_48h_lead_init_00Z_12Z",
+        manifest,
+        sources,
+        notes="Model-only 48h lead diagnostics stratified by forecast initialization hour.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# 48h lead diagnostics
+# ---------------------------------------------------------------------------
+
+
+def parse_init_hour(meta: pd.DataFrame) -> pd.Series:
+    if "init_hour" in meta:
+        return pd.to_numeric(meta["init_hour"], errors="coerce")
+    if "init_time" not in meta:
+        return pd.Series(np.nan, index=meta.index)
+    s = meta["init_time"]
+    dt = pd.to_datetime(s, errors="coerce")
+    if dt.isna().all():
+        raw = s.astype(str).str.replace(r"\.0$", "", regex=True)
+        dt = pd.to_datetime(raw, format="%Y%m%d%H", errors="coerce")
+    return dt.dt.hour
+
+
+def lead_metrics_table(
+    y: np.ndarray,
+    pred: np.ndarray,
+    probs: np.ndarray,
+    lead: np.ndarray,
+    mask: Optional[np.ndarray] = None,
+    min_n: int = 50,
+) -> pd.DataFrame:
+    if mask is None:
+        mask = np.ones(len(y), dtype=bool)
+    rows = []
+    lead_i = np.rint(lead).astype(np.int32)
+    for h in sorted(np.unique(lead_i[mask])):
+        m = mask & (lead_i == h)
+        if int(m.sum()) < min_n:
+            continue
+        met = classification_metrics(y[m], pred[m], probs=probs[m])
+        row = {"lead_hour": int(h)}
+        row.update(met)
+        rows.append(row)
+    return pd.DataFrame(rows).sort_values("lead_hour").reset_index(drop=True) if rows else pd.DataFrame()
+
+
+def run_48h_optional(
+    args: argparse.Namespace,
+    base: Path,
+    out_dir: Path,
+    model,
+    device,
+    scaler,
+    manifest: Manifest,
+) -> None:
+    if args.skip_48h:
+        print("[48h] skipped by --skip_48h", flush=True)
+        return
+    data_48h = abs_under_base(base, args.data_48h_dir)
+    if not data_48h.is_dir():
+        fallback = base / "ml_dataset_fe_12h_48h_pm10_pm25"
+        if fallback.is_dir():
+            data_48h = fallback
+        else:
+            print(f"[48h] data dir not found: {data_48h}; skip fig11.", flush=True)
+            return
+    try:
+        x_path, y_cls, _, meta = load_main_data(data_48h, args.limit_samples)
+        dyn, fe = infer_layout_from_x(x_path, args.window_size)
+        raw_model = model.module if hasattr(model, "module") else model
+        model_dyn = int(getattr(raw_model, "dyn_vars", dyn))
+        model_extra = 0
+        try:
+            if getattr(raw_model, "extra_encoder", None) is not None:
+                model_extra = int(raw_model.extra_encoder[0].in_features)
+        except Exception:
+            model_extra = fe
+        if dyn != model_dyn:
+            print(f"[48h] dyn layout {dyn} differs from loaded model; skip.", flush=True)
+            return
+        if fe != model_extra:
+            print(f"[48h] extra layout {fe} differs from loaded model extra {model_extra}; skip.", flush=True)
+            return
+        if "lead_hour" not in meta:
+            print("[48h] meta_test.csv has no lead_hour; skip fig11.", flush=True)
+            return
+        init_hour = parse_init_hour(meta)
+        if init_hour.isna().all():
+            print("[48h] meta_test.csv has no parseable init_time/init_hour; skip fig11.", flush=True)
+            return
+        probs = run_model_inference(
+            x_path,
+            scaler,
+            model,
+            device,
+            args.batch_size,
+            args.window_size,
+            dyn,
+            fe,
+            limit_samples=args.limit_samples,
+            temperature=None,
+        )
+        pred = pred_from_probs_rule(probs, args.lead_fog_th, args.lead_mist_th, args.threshold_rule)
+        lead = pd.to_numeric(meta["lead_hour"], errors="coerce").to_numpy(dtype=float)
+        pooled = lead_metrics_table(y_cls, pred, probs, lead)
+        lead00 = lead_metrics_table(y_cls, pred, probs, lead, mask=(init_hour.to_numpy() == 0))
+        lead12 = lead_metrics_table(y_cls, pred, probs, lead, mask=(init_hour.to_numpy() == 12))
+        pooled.to_csv(out_dir / "metrics_by_lead_hour_48h_model.csv", index=False)
+        lead00.to_csv(out_dir / "metrics_by_lead_hour_init00Z.csv", index=False)
+        lead12.to_csv(out_dir / "metrics_by_lead_hour_init12Z.csv", index=False)
+        plot_fig11_lead_init(
+            pooled,
+            lead00,
+            lead12,
+            out_dir,
+            manifest,
+            [str(x_path), str(data_48h / "meta_test.csv")],
+        )
+    except Exception as exc:
+        print(f"[48h] skipped after error: {exc}", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Main and overlap execution
+# ---------------------------------------------------------------------------
+
+
+def run_overlap_subprocess(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Manifest) -> Optional[Path]:
+    overlap_script = abs_under_base(base, args.overlap_script) if args.overlap_script else base / "ifs_baseline" / "test_PMST_overlap_forecast_source_s2.py"
+    if not overlap_script.is_file():
+        print(f"[overlap] script not found: {overlap_script}; skip.", flush=True)
+        return None
+    overlap_out = abs_under_base(base, args.overlap_out_dir) if args.overlap_out_dir else out_dir / "overlap_forecast_source"
+    cmd = [
+        sys.executable,
+        str(overlap_script),
+        "--out_dir",
+        str(overlap_out),
+        "--ifs_forecast_nc",
+        str(abs_under_base(base, args.ifs_vis_nc)),
+        "--ifs_forecast_var",
+        args.ifs_vis_var,
+        "--device",
+        args.device,
+        "--batch_size",
+        str(args.batch_size),
+    ]
+    if args.limit_samples and args.limit_samples > 0:
+        cmd.extend(["--limit_samples", str(args.limit_samples)])
+        cmd.extend(["--bootstrap", "50", "--bootstrap_size", str(min(args.limit_samples, 20000))])
+    if args.skip_overlap_bootstrap:
+        cmd.append("--skip_bootstrap")
+    if args.overlap_extra_args.strip():
+        cmd.extend(args.overlap_extra_args.strip().split())
+    print("[overlap] running:", " ".join(cmd), flush=True)
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as exc:
+        print(f"[overlap] evaluator failed with exit code {exc.returncode}; continuing.", flush=True)
+        return overlap_out
+    plot_overlap_fig10(overlap_out, out_dir, manifest)
+    # Also copy the overlap script's own figure when present for traceability.
+    for name in ("fig_forecast_source_key_metrics.png", "fig_forecast_source_key_metrics.pdf"):
+        src = overlap_out / name
+        if src.exists():
+            dst = out_dir / f"source_{name}"
+            shutil.copy2(src, dst)
+    return overlap_out
+
+
+def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Manifest):
+    import torch
+    import joblib
+
+    data_dir = abs_under_base(base, args.data_dir)
+    ckpt_path = abs_under_base(
+        base,
+        args.ckpt_path or "checkpoints/exp_1776227576_pm10_more_temp_search_S2_PhaseB_best_score.pt",
+    )
+    scaler_path = abs_under_base(
+        base,
+        args.scaler_path or "checkpoints/robust_scaler_w12_dyn27_s2_48h_pm10.pkl",
+    )
+    season_th_path = abs_under_base(
+        base,
+        args.season_th_path or "checkpoints/exp_1776227576_pm10_more_temp_search_season_thresholds.pt",
+    )
+    ifs_nc = abs_under_base(base, args.ifs_vis_nc)
+    x_path, y_cls, y_raw, meta = load_main_data(data_dir, args.limit_samples)
+    dyn_inferred, fe_inferred = infer_layout_from_x(x_path, args.window_size)
+    dyn = args.dyn_vars_count or dyn_inferred
+    fe = args.extra_feat_dim or fe_inferred
+    print(f"[layout] dyn_vars_count={dyn}, extra_feat_dim={fe}", flush=True)
+
+    model_cls = import_model_class(resolve_model_py(base, args.model_py))
+    device = resolve_device(args.device)
+    scaler = joblib.load(scaler_path)
+    model = model_cls(
+        dyn_vars_count=dyn,
+        window_size=args.window_size,
+        hidden_dim=args.hidden_dim,
+        dropout=args.dropout,
+        extra_feat_dim=fe,
+    ).to(device)
+    load_checkpoint_into_model(model, ckpt_path, device)
+    if device.type == "cuda" and torch.cuda.device_count() > 1:
+        model = torch.nn.DataParallel(model)
+        print(f"[model] DataParallel on {torch.cuda.device_count()} devices", flush=True)
+    model.eval()
+
+    temperature = None
+    if args.use_calibration and season_th_path.exists():
+        try:
+            try:
+                cal = torch.load(season_th_path, map_location="cpu", weights_only=True)
+            except TypeError:
+                cal = torch.load(season_th_path, map_location="cpu")
+            temperature = cal.get("temperature")
+            if temperature is not None:
+                temperature = float(temperature)
+            print(f"[calibration] temperature={temperature} from {season_th_path}", flush=True)
+        except Exception as exc:
+            print(f"[calibration] could not load {season_th_path}: {exc}", flush=True)
+
+    probs = run_model_inference(
+        x_path,
+        scaler,
+        model,
+        device,
+        args.batch_size,
+        args.window_size,
+        dyn,
+        fe,
+        limit_samples=args.limit_samples,
+        temperature=temperature,
+    )
+    pmst_pred = pred_from_probs_rule(probs, args.fog_th, args.mist_th, args.threshold_rule)
+    pmst_metrics = classification_metrics(y_cls, pmst_pred, probs=probs)
+    overall_df = metrics_rows(
+        [
+            (
+                "pmst",
+                pmst_metrics,
+                {
+                    "sample_scope": "test",
+                    "fog_threshold": args.fog_th,
+                    "mist_threshold": args.mist_th,
+                    "threshold_rule": args.threshold_rule,
+                    "checkpoint": str(ckpt_path),
+                    "data_dir": str(data_dir),
+                },
+            )
+        ]
+    )
+
+    ifs_pred = ifs_vis = ifs_valid = None
+    ifs_metrics = None
+    try:
+        ifs_pred, ifs_vis, ifs_valid = load_ifs_diagnostic(meta, ifs_nc, args.ifs_vis_var)
+        if int(np.sum(ifs_valid)) > 0:
+            ifs_metrics = classification_metrics(y_cls[ifs_valid], ifs_pred[ifs_valid])
+            matched_pmst_metrics = classification_metrics(y_cls[ifs_valid], pmst_pred[ifs_valid], probs=probs[ifs_valid])
+            ifs_df = metrics_rows(
+                [
+                    ("pmst", matched_pmst_metrics, {"sample_scope": "ifs_diagnostic_matched_test", "matched_rows": int(np.sum(ifs_valid))}),
+                    ("ifs_diagnostic", ifs_metrics, {"sample_scope": "ifs_diagnostic_matched_test", "matched_rows": int(np.sum(ifs_valid)), "ifs_forecast_nc": str(ifs_nc)}),
+                ]
+            )
+            ifs_df.to_csv(out_dir / "ifs_diagnostic_matched_metrics.csv", index=False)
+            delta_df = metric_deltas(
+                matched_pmst_metrics,
+                ifs_metrics,
+                "pmst",
+                "ifs_diagnostic",
+                [
+                    "Fog_CSI",
+                    "Fog_R",
+                    "Fog_P",
+                    "Fog_F1",
+                    "Fog_FAR",
+                    "Mist_CSI",
+                    "Mist_R",
+                    "Mist_P",
+                    "Mist_F1",
+                    "Mist_FAR",
+                    "low_vis_precision",
+                    "low_vis_recall",
+                    "low_vis_csi",
+                    "false_positive_rate",
+                    "accuracy",
+                    "macro_f1",
+                ],
+            )
+            delta_df.to_csv(out_dir / "metric_deltas_pmst_minus_ifs_diagnostic.csv", index=False)
+            overall_df = pd.concat([overall_df, ifs_df], ignore_index=True)
+    except Exception as exc:
+        print(f"[IFS] diagnostic baseline skipped: {exc}", flush=True)
+        ifs_valid = np.zeros(len(y_cls), dtype=bool)
+
+    overall_df.to_csv(out_dir / "overall_metrics.csv", index=False)
+    eval_df = export_per_sample(
+        out_dir / "per_sample_eval.csv",
+        meta,
+        y_cls,
+        y_raw,
+        pmst_pred,
+        probs,
+        ifs_pred=ifs_pred,
+        ifs_vis=ifs_vis,
+        ifs_valid=ifs_valid,
+    )
+    write_report(out_dir / "rare_event_report.txt", y_cls, pmst_pred, pmst_metrics, ifs_metrics)
+
+    station_df = aggregate_station_metrics(eval_df, "pmst_pred")
+    station_df.to_csv(out_dir / "station_metrics.csv", index=False)
+    scenario_df = build_scenario_metrics(eval_df)
+    scenario_df.to_csv(out_dir / "scenario_metrics.csv", index=False)
+
+    setup_journal_style()
+    sources_main = [str(x_path), str(data_dir / "y_test.npy"), str(data_dir / "meta_test.csv"), str(ckpt_path), str(scaler_path)]
+    if ifs_nc.exists():
+        sources_main.append(str(ifs_nc))
+    plot_confusion_pmst_vs_ifs(y_cls, pmst_pred, ifs_pred, ifs_valid, out_dir, manifest, sources_main)
+    plot_prf1_pmst_vs_ifs(
+        pmst_metrics if ifs_metrics is None else classification_metrics(y_cls[ifs_valid], pmst_pred[ifs_valid], probs=probs[ifs_valid]),
+        ifs_metrics,
+        out_dir,
+        manifest,
+        sources_main,
+        n=len(y_cls),
+        matched_ifs=int(np.sum(ifs_valid)) if ifs_valid is not None else None,
+    )
+    if ifs_vis is not None and ifs_valid is not None:
+        plot_ifs_visibility_bias(y_cls, y_raw, ifs_vis, ifs_valid, out_dir, manifest, sources_main)
+
+    for split, order in (
+        ("time_of_day", ["Night (00-06)", "Morning (06-12)", "Afternoon (12-18)", "Evening (18-24)"]),
+        ("season", ["DJF", "MAM", "JJA", "SON"]),
+        ("region", [r[0] for r in REGION_DEFS] + ["Other"]),
+    ):
+        plot_scenario_split(scenario_df, split, order, out_dir, manifest, [str(out_dir / "scenario_metrics.csv")])
+
+    shp_gdf = read_shapefile(args.shp_path)
+    plot_station_metric_map(
+        station_df,
+        "fog_recall",
+        "n_fog",
+        5,
+        "Station Fog Recall",
+        "fig8_station_fog_recall",
+        out_dir,
+        manifest,
+        [str(out_dir / "station_metrics.csv")],
+        shp_gdf=shp_gdf,
+        cmap="cividis",
+        vmin=0,
+        vmax=1,
+    )
+    plot_station_metric_map(
+        station_df,
+        "mist_recall",
+        "n_mist",
+        5,
+        "Station Mist Recall",
+        "fig8_station_mist_recall",
+        out_dir,
+        manifest,
+        [str(out_dir / "station_metrics.csv")],
+        shp_gdf=shp_gdf,
+        cmap="cividis",
+        vmin=0,
+        vmax=1,
+    )
+    plot_station_metric_map(
+        station_df,
+        "fpr_fog",
+        "n_clear",
+        20,
+        "Station Low-Visibility False Positive Rate",
+        "fig8_station_fpr",
+        out_dir,
+        manifest,
+        [str(out_dir / "station_metrics.csv")],
+        shp_gdf=shp_gdf,
+        cmap="magma_r",
+        vmin=0,
+        vmax=0.2,
+    )
+
+    event_df = pd.DataFrame()
+    if run_widespread_event_evaluation is not None:
+        try:
+            event_df = run_widespread_event_evaluation(
+                meta=meta,
+                y_true=y_cls,
+                y_true_raw=y_raw,
+                pmst_pred=pmst_pred,
+                output_dir=str(out_dir),
+                shp_path=args.shp_path,
+                ifs_nc_path=str(ifs_nc),
+                top_k=args.event_top_k,
+                window_hours=args.event_window_hours,
+                min_fog_stations=args.event_min_fog_stations,
+                min_regions=args.event_min_regions,
+                min_lon_span=args.event_min_lon_span,
+                min_lat_span=args.event_min_lat_span,
+                gap_hours=args.event_gap_hours,
+            )
+        except Exception as exc:
+            print(f"[events] run_widespread_event_evaluation failed: {exc}", flush=True)
+    event_path = out_dir / "event_case_summary.csv"
+    if event_path.exists():
+        event_df = pd.read_csv(event_path, parse_dates=["peak_time", "start_time", "end_time"])
+    elif event_df is not None and not event_df.empty:
+        event_df.to_csv(event_path, index=False)
+    if "ifs_diagnostic_pred" not in eval_df and ifs_pred is not None:
+        eval_df["ifs_diagnostic_pred"] = ifs_pred
+        eval_df["ifs_diagnostic_valid"] = ifs_valid
+    plot_event_peak_grid(eval_df, event_df, out_dir, manifest, [str(event_path), str(out_dir / "per_sample_eval.csv")], shp_gdf=shp_gdf)
+    hourly_paths = [out_dir / f"fig9_event_{k}_hourly_metrics.csv" for k in (1, 2, 3)]
+    plot_event_footprint(hourly_paths, out_dir, manifest, [str(p) for p in hourly_paths])
+
+    run_48h_optional(args, base, out_dir, model, device, scaler, manifest)
+
+    run_config = {
+        "args": vars(args),
+        "base": str(base),
+        "data_dir": str(data_dir),
+        "x_path": str(x_path),
+        "ckpt_path": str(ckpt_path),
+        "scaler_path": str(scaler_path),
+        "ifs_vis_nc": str(ifs_nc),
+        "dyn_vars_count": int(dyn),
+        "extra_feat_dim": int(fe),
+        "n_samples": int(len(y_cls)),
+        "ifs_matched_rows": int(np.sum(ifs_valid)) if ifs_valid is not None else 0,
+        "class_definition": {
+            "0": "0 <= visibility < 500 m",
+            "1": "500 <= visibility < 1000 m",
+            "2": "visibility >= 1000 m",
+        },
+    }
+    with open(out_dir / "run_config.json", "w", encoding="utf-8") as f:
+        json.dump(run_config, f, ensure_ascii=False, indent=2)
+    return model, device, scaler
+
+
+def main() -> None:
+    args = parse_args()
+    setup_journal_style()
+    base = Path(args.base).resolve()
+    out_dir = abs_under_base(base, args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    manifest = Manifest(out_dir)
+
+    print("=" * 72, flush=True)
+    print("PM10+PM2.5 journal paper evaluation", flush=True)
+    print(f"mode     : {args.mode}", flush=True)
+    print(f"base     : {base}", flush=True)
+    print(f"out_dir  : {out_dir}", flush=True)
+    print("=" * 72, flush=True)
+
+    if args.mode in ("main", "all"):
+        run_main(args, base, out_dir, manifest)
+    if args.mode in ("overlap", "all"):
+        run_overlap_subprocess(args, base, out_dir, manifest)
+
+    manifest.write()
+    print("=" * 72, flush=True)
+    print(f"[OK] journal evaluation outputs written to: {out_dir}", flush=True)
+    print("=" * 72, flush=True)
+
+
+if __name__ == "__main__":
+    main()
