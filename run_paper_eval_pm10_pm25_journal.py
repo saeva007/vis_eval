@@ -75,10 +75,14 @@ try:
     from plot_spatial import (
         run_widespread_event_evaluation,
         detect_widespread_fog_events,
+        load_china_shapefile as _load_china_shapefile,
+        _draw_event_basemap as _plot_spatial_event_basemap,
     )
 except Exception:
     run_widespread_event_evaluation = None
     detect_widespread_fog_events = None
+    _load_china_shapefile = None
+    _plot_spatial_event_basemap = None
 
 
 # ---------------------------------------------------------------------------
@@ -976,26 +980,134 @@ def plot_scenario_split(
     save_fig_pair(fig, out_dir, stem, manifest, sources, notes=f"PMST scenario split: {split}.", n=int(df["n"].sum()))
 
 
+def _has_boundary_object(shp_obj) -> bool:
+    if shp_obj is None:
+        return False
+    if isinstance(shp_obj, dict):
+        return bool(shp_obj.get("segments"))
+    try:
+        return len(shp_obj) > 0
+    except Exception:
+        return True
+
+
+def _read_shp_segments(shp_path: Path) -> Optional[Dict[str, object]]:
+    """Minimal shapefile polygon/polyline reader used only if geopandas fails."""
+    try:
+        import struct
+
+        data = shp_path.read_bytes()
+        if len(data) < 100:
+            return None
+        segments = []
+        pos = 100
+        while pos + 8 <= len(data):
+            content_bytes = int(struct.unpack(">i", data[pos + 4 : pos + 8])[0]) * 2
+            pos += 8
+            rec = data[pos : pos + content_bytes]
+            pos += content_bytes
+            if len(rec) < 44:
+                continue
+            shape_type = int(struct.unpack("<i", rec[:4])[0])
+            if shape_type == 0:
+                continue
+            if shape_type not in (3, 5, 13, 15):
+                continue
+            num_parts, num_points = struct.unpack("<2i", rec[36:44])
+            parts_start = 44
+            points_start = parts_start + 4 * int(num_parts)
+            points_bytes = 16 * int(num_points)
+            if num_parts <= 0 or num_points <= 0 or len(rec) < points_start + points_bytes:
+                continue
+            parts = list(struct.unpack(f"<{int(num_parts)}i", rec[parts_start:points_start]))
+            parts.append(int(num_points))
+            points = np.frombuffer(
+                rec,
+                dtype="<f8",
+                count=int(num_points) * 2,
+                offset=points_start,
+            ).reshape(int(num_points), 2)
+            for i in range(len(parts) - 1):
+                a, b = int(parts[i]), int(parts[i + 1])
+                if b > a:
+                    seg = points[a:b].copy()
+                    segments.append((seg[:, 0], seg[:, 1]))
+        if segments:
+            return {"kind": "shp_segments", "path": str(shp_path), "segments": segments}
+    except Exception as exc:
+        print(f"  [WARN] Pure-Python shapefile fallback failed for {shp_path}: {exc}", flush=True)
+    return None
+
+
 def read_shapefile(shp_path: str):
-    if not shp_path or not os.path.exists(shp_path):
+    if not shp_path:
+        print("  [WARN] Empty shapefile path; maps will be drawn without boundaries.", flush=True)
         return None
+    shp_file = Path(shp_path)
+    if not shp_file.exists():
+        print(f"  [WARN] Shapefile not found: {shp_file}; maps will be drawn without boundaries.", flush=True)
+        return None
+
+    # First follow the original paper-evaluation scripts exactly.
+    if _load_china_shapefile is not None:
+        shp = _load_china_shapefile(str(shp_file))
+        if _has_boundary_object(shp):
+            print(f"  [Map] Loaded boundary via plot_spatial.load_china_shapefile: {shp_file}", flush=True)
+            return shp
+
     try:
         import geopandas as gpd
-        return gpd.read_file(shp_path)
+
+        shp = gpd.read_file(str(shp_file))
+        if _has_boundary_object(shp):
+            print(f"  [Map] Loaded boundary via geopandas.read_file: {shp_file}", flush=True)
+            return shp
     except Exception as exc:
-        print(f"  [WARN] Could not read shapefile {shp_path}: {exc}", flush=True)
-        return None
+        print(f"  [WARN] Could not read shapefile with geopandas {shp_file}: {exc}", flush=True)
+
+    shp = _read_shp_segments(shp_file)
+    if _has_boundary_object(shp):
+        print(f"  [Map] Loaded boundary via pure-Python .shp fallback: {shp_file}", flush=True)
+        return shp
+    print(f"  [WARN] Boundary loading failed for {shp_file}; maps will be drawn without boundaries.", flush=True)
+    return None
 
 
-def draw_basemap(ax, shp_gdf=None) -> None:
-    if shp_gdf is not None:
-        shp_gdf.boundary.plot(ax=ax, color="#333333", linewidth=0.45)
+def draw_boundary(ax, shp_obj=None, color: str = "#333333", linewidth: float = 0.55, zorder: int = 5) -> bool:
+    if not _has_boundary_object(shp_obj):
+        return False
+    if isinstance(shp_obj, dict):
+        for xs, ys in shp_obj.get("segments", []):
+            ax.plot(xs, ys, color=color, linewidth=linewidth, zorder=zorder)
+        return True
+    try:
+        shp_obj.boundary.plot(ax=ax, color=color, linewidth=linewidth, zorder=zorder)
+        return True
+    except Exception as exc:
+        print(f"  [WARN] Could not draw boundary: {exc}", flush=True)
+        return False
+
+
+def draw_basemap(ax, shp_gdf=None, compact: bool = False) -> None:
+    if compact and _plot_spatial_event_basemap is not None and not isinstance(shp_gdf, dict):
+        _plot_spatial_event_basemap(ax, shp_gdf)
+        draw_boundary(ax, shp_gdf, color="#404040", linewidth=0.50, zorder=6)
+        return
+    draw_boundary(ax, shp_gdf, color="#333333" if not compact else "#404040", linewidth=0.55, zorder=6)
     ax.set_xlim(72, 136)
-    ax.set_ylim(17, 55)
+    ax.set_ylim(17, 54 if compact else 55)
     ax.set_aspect("equal", adjustable="box")
-    ax.set_xlabel("Longitude")
-    ax.set_ylabel("Latitude")
-    ax.grid(alpha=0.18)
+    if compact:
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.grid(False)
+        for spine in ax.spines.values():
+            spine.set_color("#8A8A8A")
+            spine.set_linewidth(0.6)
+    else:
+        ax.set_xlabel("Longitude")
+        ax.set_ylabel("Latitude")
+        ax.grid(alpha=0.18)
 
 
 def plot_station_metric_map(
@@ -1030,7 +1142,9 @@ def plot_station_metric_map(
         vmax=vmax,
         linewidths=0,
         alpha=0.92,
+        zorder=3,
     )
+    draw_boundary(ax, shp_gdf, color="#202020", linewidth=0.55, zorder=6)
     cb = fig.colorbar(sc, ax=ax, shrink=0.78)
     cb.set_label(value_col)
     ax.set_title(title)
@@ -1067,14 +1181,14 @@ def plot_event_peak_grid(
         sub = df[df["time"] == peak]
         for row_idx, (row_label, col) in enumerate(row_specs):
             ax = axes[row_idx, col_idx]
-            draw_basemap(ax, shp_gdf)
+            draw_basemap(ax, shp_gdf, compact=True)
             if sub.empty or col not in sub:
                 ax.set_title(f"Event {int(ev.get('event_rank', col_idx + 1))}\nmissing peak rows")
                 continue
             if col == "ifs_diagnostic_pred" and "ifs_diagnostic_valid" in sub:
                 valid = sub["ifs_diagnostic_valid"].astype(bool).to_numpy()
                 if (~valid).any():
-                    ax.scatter(sub.loc[~valid, "lon"], sub.loc[~valid, "lat"], s=4, color="#D3D3D3", alpha=0.45, linewidths=0)
+                    ax.scatter(sub.loc[~valid, "lon"], sub.loc[~valid, "lat"], s=4, color="#D3D3D3", alpha=0.45, linewidths=0, zorder=2)
                 plot_sub = sub.loc[valid]
             else:
                 plot_sub = sub
@@ -1087,7 +1201,9 @@ def plot_event_peak_grid(
                 norm=CLASS_NORM,
                 linewidths=0,
                 alpha=0.95,
+                zorder=3,
             )
+            draw_boundary(ax, shp_gdf, color="#202020", linewidth=0.45, zorder=6)
             if row_idx == 0:
                 ax.set_title(f"Event {int(ev.get('event_rank', col_idx + 1))}\n{peak:%Y-%m-%d %H:00 UTC}")
             if col_idx == 0:
@@ -1167,6 +1283,44 @@ def plot_overlap_fig10(overlap_out: Path, out_dir: Path, manifest: Manifest) -> 
     if "source" not in df:
         print(f"  [WARN] Overlap metrics missing source column: {metrics_path}", flush=True)
         return
+
+    def _fbeta_from_cols(precision_col: str, recall_col: str, beta: float = 2.0) -> pd.Series:
+        p = (
+            pd.to_numeric(df[precision_col], errors="coerce")
+            if precision_col in df
+            else pd.Series(np.nan, index=df.index)
+        )
+        r = (
+            pd.to_numeric(df[recall_col], errors="coerce")
+            if recall_col in df
+            else pd.Series(np.nan, index=df.index)
+        )
+        beta2 = beta * beta
+        den = beta2 * p + r
+        return ((1.0 + beta2) * p * r / den).where(den > 0)
+
+    if "fog_f2" not in df:
+        df["fog_f2"] = _fbeta_from_cols("fog_precision", "fog_pod", beta=2.0)
+    if "mist_f2" not in df:
+        df["mist_f2"] = _fbeta_from_cols("mist_precision", "mist_pod", beta=2.0)
+    if "low_vis_f2" not in df:
+        recall_col = "low_vis_recall" if "low_vis_recall" in df else "low_vis_pod"
+        df["low_vis_f2"] = _fbeta_from_cols("low_vis_precision", recall_col, beta=2.0)
+
+    def _adaptive_ylim(values: Sequence[float]) -> float:
+        arr = np.asarray(values, dtype=float)
+        arr = arr[np.isfinite(arr)]
+        if arr.size == 0:
+            return 1.0
+        vmax = float(np.nanmax(arr))
+        if vmax <= 0:
+            return 0.10
+        padded = vmax * 1.22
+        if padded >= 0.92:
+            return 1.0
+        step = 0.02 if padded <= 0.20 else 0.05 if padded <= 0.50 else 0.10
+        return min(1.0, max(step * 3, math.ceil(padded / step) * step))
+
     setup_journal_style()
     source_order = [s for s in ("tianji", "ifs", "ifs_diagnostic") if s in set(df["source"].astype(str))]
     if not source_order:
@@ -1174,18 +1328,20 @@ def plot_overlap_fig10(overlap_out: Path, out_dir: Path, manifest: Manifest) -> 
     labels = {"tianji": "Tianji-input PMST", "ifs": "IFS-input PMST", "ifs_diagnostic": "IFS diagnostic VIS"}
     colors = {"tianji": PMST_COLOR, "ifs": IFS_PMST_COLOR, "ifs_diagnostic": IFS_DIAG_COLOR}
     panels = [
-        ("Fog", [("fog_csi", "CSI"), ("fog_pod", "Recall"), ("fog_precision", "Precision"), ("fog_far", "FAR")]),
-        ("Mist", [("mist_csi", "CSI"), ("mist_pod", "Recall"), ("mist_precision", "Precision"), ("mist_far", "FAR")]),
-        ("Low visibility", [("low_vis_csi", "CSI"), ("low_vis_recall", "Recall"), ("low_vis_precision", "Precision"), ("low_vis_fpr", "FPR")]),
+        ("Fog", [("fog_csi", "CSI"), ("fog_pod", "Recall"), ("fog_precision", "Precision"), ("fog_f2", "F2 score")]),
+        ("Mist", [("mist_csi", "CSI"), ("mist_pod", "Recall"), ("mist_precision", "Precision"), ("mist_f2", "F2 score")]),
+        ("Low visibility", [("low_vis_csi", "CSI"), ("low_vis_recall", "Recall"), ("low_vis_precision", "Precision"), ("low_vis_f2", "F2 score")]),
     ]
     row_by_src = {str(r["source"]): r for _, r in df.iterrows()}
-    fig, axes = plt.subplots(1, 3, figsize=(13.0, 3.9), sharey=True)
+    fig, axes = plt.subplots(1, 3, figsize=(13.0, 3.9), sharey=False)
     for ax_idx, (ax, (title, metric_specs)) in enumerate(zip(axes, panels)):
         x = np.arange(len(metric_specs))
         width = min(0.28, 0.80 / max(len(source_order), 1))
+        panel_values = []
         for si, src in enumerate(source_order):
             vals = [float(row_by_src[src].get(m, np.nan)) for m, _ in metric_specs]
             vals_plot = [0.0 if not np.isfinite(v) else v for v in vals]
+            panel_values.extend(vals)
             ax.bar(
                 x + (si - (len(source_order) - 1) / 2) * width,
                 vals_plot,
@@ -1198,9 +1354,8 @@ def plot_overlap_fig10(overlap_out: Path, out_dir: Path, manifest: Manifest) -> 
         ax.set_title(title)
         ax.set_xticks(x)
         ax.set_xticklabels([lab for _, lab in metric_specs], rotation=25, ha="right")
-        ax.set_ylim(0, 1.05)
-        if ax_idx == 0:
-            ax.set_ylabel("Score")
+        ax.set_ylim(0, _adaptive_ylim(panel_values))
+        ax.set_ylabel("Score")
         add_panel_label(ax, chr(ord("a") + ax_idx))
     handles, leg_labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, leg_labels, loc="upper center", ncol=3, frameon=False, bbox_to_anchor=(0.5, 1.12))
@@ -1211,7 +1366,7 @@ def plot_overlap_fig10(overlap_out: Path, out_dir: Path, manifest: Manifest) -> 
         "fig10_overlap_forecast_source_comparison",
         manifest,
         [str(metrics_path)],
-        notes="Controlled overlap-variable experiment: Tianji-input PMST vs IFS-input PMST vs IFS diagnostic VIS.",
+        notes="Controlled overlap-variable experiment; F2 is derived from precision and recall for this figure.",
     )
 
 
