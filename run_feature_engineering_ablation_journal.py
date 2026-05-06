@@ -479,6 +479,23 @@ def order_metrics(df: pd.DataFrame, order_spec: str) -> pd.DataFrame:
     return out.sort_values(["_rank", "variant"]).drop(columns=["_rank"])
 
 
+def ensure_f2_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+
+    def _fbeta(p_col: str, r_col: str, out_col: str) -> None:
+        if out_col in out or p_col not in out or r_col not in out:
+            return
+        p = pd.to_numeric(out[p_col], errors="coerce")
+        r = pd.to_numeric(out[r_col], errors="coerce")
+        den = 4.0 * p + r
+        out[out_col] = np.where(den > 0, 5.0 * p * r / den, 0.0)
+
+    _fbeta("Fog_P", "Fog_R", "Fog_F2")
+    _fbeta("Mist_P", "Mist_R", "Mist_F2")
+    _fbeta("low_vis_precision", "low_vis_recall", "low_vis_f2")
+    return out
+
+
 def adaptive_ylim(values: Sequence[float], lower_is_better: bool = False) -> Tuple[float, float]:
     vals = np.asarray([v for v in values if np.isfinite(v)], dtype=float)
     if vals.size == 0:
@@ -499,11 +516,11 @@ def plot_ablation_bars(
     variant_order: str,
 ) -> None:
     setup_journal_style()
-    df = order_metrics(metrics_df, variant_order)
+    df = order_metrics(ensure_f2_metrics(metrics_df), variant_order)
     panels = [
-        ("Fog", [("Fog_CSI", "CSI"), ("Fog_R", "Recall"), ("Fog_P", "Precision")]),
-        ("Mist", [("Mist_CSI", "CSI"), ("Mist_R", "Recall"), ("Mist_P", "Precision")]),
-        ("Low visibility", [("low_vis_csi", "CSI"), ("low_vis_precision", "Precision"), ("false_positive_rate", "Clear FPR")]),
+        ("Fog", [("Fog_CSI", "CSI"), ("Fog_R", "Recall"), ("Fog_P", "Precision"), ("Fog_F2", "F2 score")]),
+        ("Mist", [("Mist_CSI", "CSI"), ("Mist_R", "Recall"), ("Mist_P", "Precision"), ("Mist_F2", "F2 score")]),
+        ("Low visibility", [("low_vis_csi", "CSI"), ("low_vis_recall", "Recall"), ("low_vis_f2", "F2 score"), ("false_positive_rate", "Clear FPR")]),
     ]
 
     variants = df["variant"].astype(str).tolist()
@@ -553,6 +570,7 @@ def plot_ablation_bars(
 
 
 def write_delta_table(metrics_df: pd.DataFrame, out_dir: Path, baseline_variant: str) -> Optional[Path]:
+    metrics_df = ensure_f2_metrics(metrics_df)
     if "variant" not in metrics_df or baseline_variant not in set(metrics_df["variant"].astype(str)):
         print(f"[delta] baseline variant not found: {baseline_variant}; skip delta table.", flush=True)
         return None
@@ -560,11 +578,15 @@ def write_delta_table(metrics_df: pd.DataFrame, out_dir: Path, baseline_variant:
         "Fog_CSI",
         "Fog_R",
         "Fog_P",
+        "Fog_F2",
         "Mist_CSI",
         "Mist_R",
         "Mist_P",
+        "Mist_F2",
         "low_vis_csi",
+        "low_vis_recall",
         "low_vis_precision",
+        "low_vis_f2",
         "false_positive_rate",
         "accuracy",
     ]

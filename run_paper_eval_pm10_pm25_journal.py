@@ -448,12 +448,14 @@ def classification_metrics(y_true: np.ndarray, pred: np.ndarray, probs: Optional
         p = safe_div(tp, tp + fp)
         r = safe_div(tp, tp + fn)
         f1 = safe_div(2.0 * p * r, p + r)
+        f2 = safe_div(5.0 * p * r, 4.0 * p + r)
         csi = safe_div(tp, tp + fp + fn)
         far = safe_div(fp, tp + fp)
         prefix = cname if cname != "Clear" else "Clear"
         d[f"{prefix}_P"] = p
         d[f"{prefix}_R"] = r
         d[f"{prefix}_F1"] = f1
+        d[f"{prefix}_F2"] = f2
         d[f"{prefix}_CSI"] = csi
         d[f"{prefix}_FAR"] = far
         d[f"{prefix}_support"] = support
@@ -468,12 +470,16 @@ def classification_metrics(y_true: np.ndarray, pred: np.ndarray, probs: Optional
     low_tp = float((true_low & pred_low).sum())
     low_fp = float((~true_low & pred_low).sum())
     low_fn = float((true_low & ~pred_low).sum())
-    d["low_vis_precision"] = safe_div(low_tp, low_tp + low_fp)
-    d["low_vis_recall"] = safe_div(low_tp, low_tp + low_fn)
+    low_p = safe_div(low_tp, low_tp + low_fp)
+    low_r = safe_div(low_tp, low_tp + low_fn)
+    d["low_vis_precision"] = low_p
+    d["low_vis_recall"] = low_r
+    d["low_vis_f2"] = safe_div(5.0 * low_p * low_r, 4.0 * low_p + low_r)
     d["low_vis_csi"] = safe_div(low_tp, low_tp + low_fp + low_fn)
     d["false_positive_rate"] = safe_div(float((true_clear & pred_low).sum()), float(true_clear.sum()))
     d["accuracy"] = safe_div(float(np.trace(cm)), float(n))
     d["macro_f1"] = float(np.mean([d["Fog_F1"], d["Mist_F1"], d["Clear_F1"]]))
+    d["macro_f2"] = float(np.mean([d["Fog_F2"], d["Mist_F2"], d["Clear_F2"]]))
     if probs is not None and len(probs) == len(y_true):
         try:
             d.update(compute_rare_event_report(probs, y_true, pred=pred))
@@ -835,18 +841,21 @@ def plot_prf1_pmst_vs_ifs(
         ("Fog_P", "Precision"),
         ("Fog_R", "Recall"),
         ("Fog_F1", "F1"),
+        ("Fog_F2", "F2"),
         ("Mist_P", "Precision"),
         ("Mist_R", "Recall"),
         ("Mist_F1", "F1"),
+        ("Mist_F2", "F2"),
         ("low_vis_precision", "Low-vis P"),
         ("low_vis_recall", "Low-vis R"),
+        ("low_vis_f2", "Low-vis F2"),
         ("false_positive_rate", "Clear FPR"),
     ]
     groups = ["Fog", "Mist", "Low-vis"]
-    fig, axes = plt.subplots(1, 3, figsize=(12.0, 3.6), sharey=False)
+    fig, axes = plt.subplots(1, 3, figsize=(13.0, 3.6), sharey=False)
     for ax_idx, (ax, group) in enumerate(zip(axes, groups)):
-        start = ax_idx * 3
-        sub = metrics[start:start + 3]
+        start = ax_idx * 4
+        sub = metrics[start:start + 4]
         x = np.arange(len(sub))
         width = 0.36
         pmst_vals = [float(pmst_metrics.get(k, np.nan)) for k, _ in sub]
@@ -873,7 +882,7 @@ def plot_prf1_pmst_vs_ifs(
         "fig3_prf1_pmst_vs_ifs_diagnostic",
         manifest,
         sources,
-        notes="Precision/Recall/F1 and low-visibility operating metrics.",
+        notes="Precision/Recall/F1/F2 and low-visibility operating metrics.",
         n=n,
         matched_ifs=matched_ifs,
     )
@@ -1685,18 +1694,22 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
                     "Fog_R",
                     "Fog_P",
                     "Fog_F1",
+                    "Fog_F2",
                     "Fog_FAR",
                     "Mist_CSI",
                     "Mist_R",
                     "Mist_P",
                     "Mist_F1",
+                    "Mist_F2",
                     "Mist_FAR",
                     "low_vis_precision",
                     "low_vis_recall",
                     "low_vis_csi",
+                    "low_vis_f2",
                     "false_positive_rate",
                     "accuracy",
                     "macro_f1",
+                    "macro_f2",
                 ],
             )
             delta_df.to_csv(out_dir / "metric_deltas_pmst_minus_ifs_diagnostic.csv", index=False)
