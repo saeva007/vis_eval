@@ -1,0 +1,135 @@
+Data Processing Job started at: Wed Apr 29 10:07:54 CST 2026
+Node: e03r1n05
+Running Python script: /public/home/putianshu/vis_mlp/paper_eval/run_paper_eval_pm10_pm25_journal.py
+========================================================================
+PM10+PM2.5 journal paper evaluation
+mode     : all
+base     : /public/home/putianshu/vis_mlp
+out_dir  : /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal
+========================================================================
+[layout] dyn_vars_count=27, extra_feat_dim=36
+[model] DataParallel on 4 devices
+  [inference] 8192/1730226
+  [inference] 172032/1730226
+  [inference] 335872/1730226
+  [inference] 499712/1730226
+  [inference] 663552/1730226
+  [inference] 827392/1730226
+  [inference] 991232/1730226
+  [inference] 1155072/1730226
+  [inference] 1318912/1730226
+  [inference] 1482752/1730226
+  [inference] 1646592/1730226
+  [inference] 1730226/1730226
+[IFS] matched finite rows: 1593051/1730226 from /public/home/putianshu/vis_mlp/VIS_IDW_KDTree_20250101_20251231.nc
+[table] /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/per_sample_eval.csv rows=1730226
+[report] /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/rare_event_report.txt
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig3_confusion_matrix_pmst_vs_ifs_diagnostic.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig3_confusion_matrix_pmst_vs_ifs_diagnostic.pdf
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig3_prf1_pmst_vs_ifs_diagnostic.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig3_prf1_pmst_vs_ifs_diagnostic.pdf
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig3c_ifs_visibility_bias_lowvis.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig3c_ifs_visibility_bias_lowvis.pdf
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig7_split_time_of_day.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig7_split_time_of_day.pdf
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig7_split_season.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig7_split_season.pdf
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig7_split_region.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig7_split_region.pdf
+  [Map] Loaded boundary via plot_spatial.load_china_shapefile: /public/home/putianshu/中华人民共和国/中华人民共和国.shp
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig8_station_fog_recall.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig8_station_fog_recall.pdf
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig8_station_mist_recall.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig8_station_mist_recall.pdf
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig8_station_fpr.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig8_station_fpr.pdf
+  [IFS] Matched 1593051/1730226 samples from VIS_IDW_KDTree_20250101_20251231.nc
+  [Event] Summary saved → /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/event_case_summary.csv
+  [Event] Event 1 hourly metrics → /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_event_1_hourly_metrics.csv
+  [Fig] Saved → /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_event_1_spatial.png
+  [Fig] Saved → /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_event_1_metrics.png
+  [Event] Event 2 hourly metrics → /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_event_2_hourly_metrics.csv
+  [Fig] Saved → /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_event_2_spatial.png
+  [Fig] Saved → /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_event_2_metrics.png
+  [Event] Event 3 hourly metrics → /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_event_3_hourly_metrics.csv
+  [Fig] Saved → /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_event_3_spatial.png
+  [Fig] Saved → /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_event_3_metrics.png
+  [Event] Summary metrics → /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_event_summary_metrics.csv
+  [Fig] Saved → /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_event_summary.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_events_peak_grid_3x3.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_events_peak_grid_3x3.pdf
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_events_footprint_evolution_1x3.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_events_footprint_evolution_1x3.pdf
+[48h] data dir not found: /public/home/putianshu/vis_mlp/ml_dataset_fe_12h_48h_pm10_pm25_testonly_leadtime; skip fig11.
+[overlap] running: /public/home/putianshu/miniconda3/envs/torch/bin/python /public/home/putianshu/vis_mlp/ifs_baseline/test_PMST_overlap_forecast_source_s2.py --out_dir /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/overlap_forecast_source --ifs_forecast_nc /public/home/putianshu/vis_mlp/VIS_IDW_KDTree_20250101_20251231.nc --ifs_forecast_var VIS --device auto --batch_size 8192
+[device] cuda
+[tianji] data_dir=/public/home/putianshu/vis_mlp/ifs_baseline/ml_dataset_overlap_tianji_12h_pm10_pm25_baseline
+[tianji] ckpt=/public/home/putianshu/vis_mlp/ifs_baseline/checkpoints/exp_overlap_pmst_baseline_s2_tianji_pm10_pm25_S2_PhaseB_best_score.pt
+[tianji] scaler=/public/home/putianshu/vis_mlp/ifs_baseline/checkpoints/robust_scaler_w12_dyn27_overlap_baseline_tianji.pkl
+[tianji] running validation inference: N=1735024
+[tianji] temperature=1.1572, thresholds={'fog': 0.3400000000000001, 'mist': 0.53}, val target_achievement=0.6834
+[tianji] running test inference: N=1730226
+[ifs] data_dir=/public/home/putianshu/vis_mlp/ifs_baseline/ml_dataset_overlap_ifs_12h_pm10_pm25_baseline
+[ifs] ckpt=/public/home/putianshu/vis_mlp/ifs_baseline/checkpoints/exp_overlap_pmst_baseline_s2_ifs_pm10_pm25_S2_PhaseB_best_score.pt
+[ifs] scaler=/public/home/putianshu/vis_mlp/ifs_baseline/checkpoints/robust_scaler_w12_dyn27_overlap_baseline_ifs.pkl
+[ifs] running validation inference: N=1735024
+[ifs] temperature=1.1395, thresholds={'fog': 0.38, 'mist': 0.53}, val target_achievement=0.6287
+[ifs] running test inference: N=1730226
+[IFS diagnostic] Matched 1593051/1730226 finite samples from VIS_IDW_KDTree_20250101_20251231.nc::VIS
+[bootstrap] 50/500
+[bootstrap] 100/500
+[bootstrap] 150/500
+[bootstrap] 200/500
+[bootstrap] 250/500
+[bootstrap] 300/500
+[bootstrap] 350/500
+[bootstrap] 400/500
+[bootstrap] 450/500
+[bootstrap] 500/500
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/overlap_forecast_source/fig_forecast_source_key_metrics.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/overlap_forecast_source/fig_forecast_source_key_metrics.pdf
+
+[OK] wrote paired evaluation outputs to: /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/overlap_forecast_source
+           metric   tianji      ifs  delta_tianji_minus_ifs preferred_direction  tianji_better
+         accuracy 0.947216 0.954189               -0.006973              higher          False
+          fog_csi 0.129599 0.126136                0.003463              higher           True
+           fog_f1 0.229460 0.224015                0.005445              higher           True
+          fog_far 0.846774 0.840033                0.006742               lower          False
+          fog_pod 0.456665 0.373595                0.083070              higher           True
+    fog_precision 0.153226 0.159967               -0.006742              higher          False
+      low_vis_csi 0.159473 0.157378                0.002095              higher           True
+       low_vis_f1 0.275078 0.271957                0.003122              higher           True
+      low_vis_fpr 0.040397 0.031899                0.008498               lower          False
+low_vis_precision 0.194348 0.206070               -0.011722              higher          False
+   low_vis_recall 0.470533 0.399778                0.070755              higher           True
+         mist_csi 0.081069 0.069061                0.012008              higher           True
+          mist_f1 0.149979 0.129200                0.020779              higher           True
+         mist_far 0.879052 0.888651               -0.009599               lower           True
+         mist_pod 0.197349 0.153867                0.043481              higher           True
+   mist_precision 0.120948 0.111349                0.009599              higher           True
+
+[IFS diagnostic matched deltas: Tianji PMST minus IFS diagnostic VIS]
+           metric   tianji  ifs_diagnostic  delta_tianji_minus_ifs_diagnostic preferred_direction  tianji_better
+         accuracy 0.948123        0.973453                          -0.025330              higher          False
+          fog_csi 0.128522        0.009113                           0.119410              higher           True
+           fog_f1 0.227771        0.018061                           0.209710              higher           True
+          fog_far 0.847979        0.961519                          -0.113540               lower           True
+          fog_pod 0.453983        0.011799                           0.442184              higher           True
+    fog_precision 0.152021        0.038481                           0.113540              higher           True
+      low_vis_csi 0.158396        0.011444                           0.146952              higher           True
+       low_vis_f1 0.273474        0.022629                           0.250845              higher           True
+      low_vis_fpr 0.039441        0.006728                           0.032713               lower          False
+low_vis_precision 0.194107        0.044317                           0.149790              higher           True
+   low_vis_recall 0.462640        0.015194                           0.447446              higher           True
+         mist_csi 0.077076        0.002212                           0.074865              higher           True
+          mist_f1 0.143121        0.004414                           0.138708              higher           True
+         mist_far 0.880668        0.992221                          -0.111553               lower           True
+         mist_pod 0.178758        0.003081                           0.175678              higher           True
+   mist_precision 0.119332        0.007779                           0.111553              higher           True
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig10_overlap_forecast_source_comparison.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig10_overlap_forecast_source_comparison.pdf
+[manifest] /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/figure_source_manifest.csv
+========================================================================
+[OK] journal evaluation outputs written to: /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal
+========================================================================
+Job finished at: Wed Apr 29 10:31:23 CST 2026

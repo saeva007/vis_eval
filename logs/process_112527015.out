@@ -1,0 +1,67 @@
+Data Processing Job started at: Wed Apr 29 09:59:47 CST 2026
+Node: e03r1n05
+Running Python script: /public/home/putianshu/vis_mlp/paper_eval/run_paper_eval_pm10_pm25_journal.py
+========================================================================
+PM10+PM2.5 journal paper evaluation
+mode     : all
+base     : /public/home/putianshu/vis_mlp
+out_dir  : /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal
+========================================================================
+[layout] dyn_vars_count=27, extra_feat_dim=36
+[model] DataParallel on 4 devices
+  [inference] 8192/1730226
+  [inference] 172032/1730226
+  [inference] 335872/1730226
+  [inference] 499712/1730226
+  [inference] 663552/1730226
+  [inference] 827392/1730226
+  [inference] 991232/1730226
+  [inference] 1155072/1730226
+  [inference] 1318912/1730226
+  [inference] 1482752/1730226
+  [inference] 1646592/1730226
+  [inference] 1730226/1730226
+[IFS] matched finite rows: 1593051/1730226 from /public/home/putianshu/vis_mlp/VIS_IDW_KDTree_20250101_20251231.nc
+[table] /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/per_sample_eval.csv rows=1730226
+[report] /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/rare_event_report.txt
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig3_confusion_matrix_pmst_vs_ifs_diagnostic.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig3_confusion_matrix_pmst_vs_ifs_diagnostic.pdf
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig3_prf1_pmst_vs_ifs_diagnostic.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig3_prf1_pmst_vs_ifs_diagnostic.pdf
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig3c_ifs_visibility_bias_lowvis.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig3c_ifs_visibility_bias_lowvis.pdf
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig7_split_time_of_day.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig7_split_time_of_day.pdf
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig7_split_season.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig7_split_season.pdf
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig7_split_region.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig7_split_region.pdf
+  [Spatial] WARN: Could not load shapefile /public/home/putianshu/中华人民共和国/中华人民共和国.shp: No module named 'geopandas'
+  [WARN] Could not read shapefile with geopandas /public/home/putianshu/中华人民共和国/中华人民共和国.shp: No module named 'geopandas'
+  [Map] Loaded boundary via pure-Python .shp fallback: /public/home/putianshu/中华人民共和国/中华人民共和国.shp
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig8_station_fog_recall.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig8_station_fog_recall.pdf
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig8_station_mist_recall.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig8_station_mist_recall.pdf
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig8_station_fpr.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig8_station_fpr.pdf
+  [Spatial] WARN: Could not load shapefile /public/home/putianshu/中华人民共和国/中华人民共和国.shp: No module named 'geopandas'
+  [IFS] Matched 1593051/1730226 samples from VIS_IDW_KDTree_20250101_20251231.nc
+  [Event] Summary saved → /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/event_case_summary.csv
+  [Event] Event 1 hourly metrics → /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_event_1_hourly_metrics.csv
+  [Fig] Saved → /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_event_1_spatial.png
+  [Fig] Saved → /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_event_1_metrics.png
+  [Event] Event 2 hourly metrics → /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_event_2_hourly_metrics.csv
+  [Fig] Saved → /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_event_2_spatial.png
+  [Fig] Saved → /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_event_2_metrics.png
+  [Event] Event 3 hourly metrics → /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_event_3_hourly_metrics.csv
+  [Fig] Saved → /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_event_3_spatial.png
+  [Fig] Saved → /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_event_3_metrics.png
+  [Event] Summary metrics → /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_event_summary_metrics.csv
+  [Fig] Saved → /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_event_summary.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_events_peak_grid_3x3.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_events_peak_grid_3x3.pdf
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_events_footprint_evolution_1x3.png
+  [Fig] Saved -> /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/fig9_events_footprint_evolution_1x3.pdf
+[48h] data dir not found: /public/home/putianshu/vis_mlp/ml_dataset_fe_12h_48h_pm10_pm25_testonly_leadtime; skip fig11.
+[overlap] running: /public/home/putianshu/miniconda3/envs/torch/bin/python /public/home/putianshu/vis_mlp/ifs_baseline/test_PMST_overlap_forecast_source_s2.py --out_dir /public/home/putianshu/vis_mlp/paper_eval_results_pm10_pm25_journal/overlap_forecast_source --ifs_forecast_nc /public/home/putianshu/vis_mlp/VIS_IDW_KDTree_20250101_20251231.nc --ifs_forecast_var VIS --device auto --batch_size 8192
