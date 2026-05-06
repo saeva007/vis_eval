@@ -21,6 +21,8 @@ module load compiler/devtoolset/7.3.1
 module load mpi/hpcx/2.11.0/gcc-7.3.1
 source /public/home/xichen/ncydata/dtk/dtk-24.04.1/env.sh
 export LD_LIBRARY_PATH=/public/home/xichen/ncydata/dtk/dtk-24.04.1/.hyhal/lib:$LD_LIBRARY_PATH
+export CONDA_NO_PLUGINS=true
+export CONDA_SOLVER=classic
 source /public/home/putianshu/miniconda3/bin/activate
 conda activate torch
 export LD_LIBRARY_PATH=/public/home/xichen/.conda/envs/py310_ppy/openssl/lib:$LD_LIBRARY_PATH
@@ -35,18 +37,26 @@ export MKL_NUM_THREADS=32
 # 3. 脚本路径与参数
 SCRIPT_PATH="/public/home/putianshu/vis_mlp/paper_eval/run_feature_engineering_ablation_journal.py"
 MODE="${MODE:-all}"
-SPEC_CSV="${SPEC_CSV:-feature_engineering_ablation_spec.csv}"
+BASE_DIR="${BASE_DIR:-/public/home/putianshu/vis_mlp}"
+SPEC_CSV="${SPEC_CSV:-${BASE_DIR}/feature_engineering_ablation_spec.csv}"
 OUT_DIR="${OUT_DIR:-paper_eval_results_pm10_pm25_journal/feature_engineering_ablation}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
+if [ ! -f "${SPEC_CSV}" ]; then
+    echo "SPEC_CSV not found, writing template: ${SPEC_CSV}"
+    python "${SCRIPT_PATH}" --write_template "${SPEC_CSV}"
+fi
+
 echo "Running Python script: ${SCRIPT_PATH}"
 echo "MODE=${MODE}"
+echo "BASE_DIR=${BASE_DIR}"
 echo "SPEC_CSV=${SPEC_CSV}"
 echo "OUT_DIR=${OUT_DIR}"
 echo "EXTRA_ARGS=${EXTRA_ARGS}"
 
 python "${SCRIPT_PATH}" \
     --mode "${MODE}" \
+    --base "${BASE_DIR}" \
     --spec_csv "${SPEC_CSV}" \
     --out_dir "${OUT_DIR}" \
     ${EXTRA_ARGS}
