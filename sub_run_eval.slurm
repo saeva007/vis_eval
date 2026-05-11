@@ -38,9 +38,23 @@ export MKL_NUM_THREADS=32
 
 # 3. 脚本路径
 SCRIPT_PATH="/public/home/putianshu/vis_mlp/paper_eval/run_paper_eval_pm10_pm25_journal.py"
+EVAL_MODE="${EVAL_MODE:-all}"
+OUT_DIR="${OUT_DIR:-paper_eval_results_pm10_pm25_journal}"
+HISTORY_PATHS="${HISTORY_PATHS:-}"
+HISTORY_LABELS="${HISTORY_LABELS:-No FE values,Full FE}"
 
 # 4. 执行数据处理
 echo "Running Python script: ${SCRIPT_PATH}"
-python "${SCRIPT_PATH}" --mode all
+echo "Eval mode: ${EVAL_MODE}"
+echo "Output dir: ${OUT_DIR}"
+
+CMD=(python "${SCRIPT_PATH}" --mode "${EVAL_MODE}" --out_dir "${OUT_DIR}")
+
+if [[ "${EVAL_MODE}" == "tables" && -n "${HISTORY_PATHS}" ]]; then
+    CMD+=(--history_paths "${HISTORY_PATHS}" --history_labels "${HISTORY_LABELS}")
+fi
+
+echo "Command: ${CMD[*]}"
+"${CMD[@]}"
 
 echo "Job finished at: $(date)"
