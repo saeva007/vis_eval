@@ -20,6 +20,11 @@ Smoke test on remote:
 
 Full run:
   python vis_eval/run_paper_eval_pm10_pm25_journal.py --mode all
+
+Post-process existing tables and remote training logs:
+  python vis_eval/run_paper_eval_pm10_pm25_journal.py --mode tables \
+    --history_paths /public/home/putianshu/vis_mlp/train/logs/112606205.out,/public/home/putianshu/logs/111696811.out \
+    --history_labels "No FE values,Full FE"
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -101,6 +107,18 @@ CLASS_NAMES = ["Fog", "Mist", "Clear"]
 CLASS_LONG = ["Fog (0-500 m)", "Mist (500-1000 m)", "Clear (>=1000 m)"]
 CLASS_CMAP = ListedColormap(CLASS_COLORS)
 CLASS_NORM = BoundaryNorm([-0.5, 0.5, 1.5, 2.5], CLASS_CMAP.N)
+LOCAL_TIME_OFFSET_HOURS = 8
+LOCAL_TIME_LABEL = "UTC+8"
+TIME_OF_DAY_LOCAL_ORDER = [
+    "Night (00-06 UTC+8)",
+    "Morning (06-12 UTC+8)",
+    "Afternoon (12-18 UTC+8)",
+    "Evening (18-24 UTC+8)",
+]
+KNOWN_CONVERGENCE_LOG_LABELS = {
+    "112606205.out": "No FE values",
+    "111696811.out": "Full FE",
+}
 
 REGION_DEFS = [
     ("Northeast", 38.5, 54.0, 118.0, 136.0),
@@ -203,7 +221,7 @@ def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         description="Run PM10+PM2.5 paper evaluation, IFS baseline matching, and journal figures."
     )
-    ap.add_argument("--mode", choices=["main", "overlap", "all"], default="all")
+    ap.add_argument("--mode", choices=["main", "overlap", "all", "tables"], default="all")
     ap.add_argument("--base", default=os.environ.get("VIS_MLP_ROOT", "/public/home/putianshu/vis_mlp"))
     ap.add_argument("--data_dir", default="ml_dataset_s2_tianji_12h_pm10_pm25_monthtail_2")
     ap.add_argument("--data_48h_dir", default="ml_dataset_fe_12h_48h_pm10_pm25_testonly_leadtime")
@@ -243,6 +261,9 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--overlap_out_dir", default="")
     ap.add_argument("--overlap_extra_args", default="", help="Extra args passed verbatim to overlap evaluator.")
     ap.add_argument("--skip_overlap_bootstrap", action="store_true")
+    ap.add_argument("--local_time_offset_hours", type=int, default=LOCAL_TIME_OFFSET_HOURS)
+    ap.add_argument("--history_paths", default="", help="Comma/semicolon-separated training history JSON or stdout .out/.log files.")
+    ap.add_argument("--history_labels", default="", help="Optional labels matching --history_paths order.")
     return ap.parse_args()
 
 
@@ -550,9 +571,20 @@ def load_main_data(data_dir: Path, limit_samples: int = 0) -> Tuple[Path, np.nda
     meta["time"] = pd.to_datetime(meta["time"], errors="coerce")
     if "hour" not in meta:
         meta["hour"] = meta["time"].dt.hour
+    meta["hour_utc"] = meta["time"].dt.hour
+    meta = add_local_time_columns(meta)
     if "month" not in meta:
         meta["month"] = meta["time"].dt.month
     return x_path, y_cls, y_raw, meta
+
+
+def add_local_time_columns(df: pd.DataFrame, offset_hours: int = LOCAL_TIME_OFFSET_HOURS) -> pd.DataFrame:
+    out = df.copy()
+    out["time"] = pd.to_datetime(out["time"], errors="coerce")
+    out["time_bjt"] = out["time"] + pd.to_timedelta(int(offset_hours), unit="h")
+    out["hour_bjt"] = out["time_bjt"].dt.hour
+    out["month_bjt"] = out["time_bjt"].dt.month
+    return out
 
 
 def normalize_station_ids(values) -> pd.Series:
@@ -643,7 +675,25 @@ def export_per_sample(
     ifs_vis: Optional[np.ndarray] = None,
     ifs_valid: Optional[np.ndarray] = None,
 ) -> pd.DataFrame:
-    cols = [c for c in ["station_id", "lat", "lon", "time", "month", "hour", "init_time", "init_hour", "lead_hour"] if c in meta]
+    cols = [
+        c
+        for c in [
+            "station_id",
+            "lat",
+            "lon",
+            "time",
+            "time_bjt",
+            "month",
+            "month_bjt",
+            "hour",
+            "hour_utc",
+            "hour_bjt",
+            "init_time",
+            "init_hour",
+            "lead_hour",
+        ]
+        if c in meta
+    ]
     df = meta[cols].copy()
     df["y_true"] = y_true
     df["vis_raw_m"] = y_raw
@@ -691,18 +741,19 @@ def write_report(path: Path, y_true: np.ndarray, pred: np.ndarray, metrics: Dict
 
 
 def add_scenario_columns(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    out["time"] = pd.to_datetime(out["time"], errors="coerce")
+    out = add_local_time_columns(df)
     if "hour" not in out:
         out["hour"] = out["time"].dt.hour
+    if "hour_utc" not in out:
+        out["hour_utc"] = out["time"].dt.hour
     if "month" not in out:
         out["month"] = out["time"].dt.month
     season_map = {12: "DJF", 1: "DJF", 2: "DJF", 3: "MAM", 4: "MAM", 5: "MAM", 6: "JJA", 7: "JJA", 8: "JJA", 9: "SON", 10: "SON", 11: "SON"}
     out["season"] = out["month"].map(season_map)
-    h = out["hour"].astype(int)
+    h = out["hour_bjt"].astype(int)
     out["time_of_day"] = np.select(
         [h.between(0, 5), h.between(6, 11), h.between(12, 17), h.between(18, 23)],
-        ["Night (00-06)", "Morning (06-12)", "Afternoon (12-18)", "Evening (18-24)"],
+        TIME_OF_DAY_LOCAL_ORDER,
         default="Unknown",
     )
     region = np.full(len(out), "Other", dtype=object)
@@ -725,7 +776,7 @@ def build_scenario_metrics(eval_df: pd.DataFrame) -> pd.DataFrame:
         ("All", np.ones(len(df), dtype=bool)),
     ]
     for col, values in (
-        ("time_of_day", ["Night (00-06)", "Morning (06-12)", "Afternoon (12-18)", "Evening (18-24)"]),
+        ("time_of_day", TIME_OF_DAY_LOCAL_ORDER),
         ("season", ["DJF", "MAM", "JJA", "SON"]),
         ("region", sorted(df["region"].dropna().unique())),
     ):
@@ -977,7 +1028,7 @@ def plot_scenario_split(
     ax.set_xticklabels(df["name"], rotation=25 if len(df) > 4 else 0, ha="right" if len(df) > 4 else "center")
     ax.set_ylim(0, 1.0)
     ax.set_ylabel("Score")
-    title = {"time_of_day": "Metrics by time of day", "season": "Metrics by season", "region": "Metrics by region"}.get(split, split)
+    title = {"time_of_day": "Metrics by time of day (UTC+8)", "season": "Metrics by season", "region": "Metrics by region"}.get(split, split)
     ax.set_title(title)
     ax.legend(ncol=min(5, len(metrics)), frameon=False, loc="upper center", bbox_to_anchor=(0.5, 1.16))
     fig.tight_layout()
@@ -987,6 +1038,390 @@ def plot_scenario_split(
         "region": "fig7_split_region",
     }[split]
     save_fig_pair(fig, out_dir, stem, manifest, sources, notes=f"PMST scenario split: {split}.", n=int(df["n"].sum()))
+
+
+def _group_metric_rows(eval_df: pd.DataFrame, group_col: str, group_order: Sequence[object]) -> pd.DataFrame:
+    rows: List[Dict[str, object]] = []
+    for value in group_order:
+        sub = eval_df[eval_df[group_col] == value]
+        if sub.empty:
+            continue
+        y = sub["y_true"].to_numpy(dtype=np.int64)
+        p = sub["pmst_pred"].to_numpy(dtype=np.int64)
+        metrics = classification_metrics(y, p)
+        fog_count = int(np.sum(y == 0))
+        mist_count = int(np.sum(y == 1))
+        low_count = fog_count + mist_count
+        row: Dict[str, object] = {
+            group_col: value,
+            "n": int(len(sub)),
+            "fog_count": fog_count,
+            "mist_count": mist_count,
+            "low_vis_count": low_count,
+            "low_vis_rate": safe_div(float(low_count), float(len(sub))),
+        }
+        row.update(metrics)
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def plot_diurnal_bjt_detail(
+    eval_df: pd.DataFrame,
+    out_dir: Path,
+    manifest: Manifest,
+    sources: Sequence[str],
+    offset_hours: int = LOCAL_TIME_OFFSET_HOURS,
+) -> Optional[Path]:
+    setup_journal_style()
+    df = add_local_time_columns(eval_df, offset_hours)
+    df = df[np.isfinite(df["hour_bjt"])].copy()
+    df["hour_bjt"] = df["hour_bjt"].astype(int)
+    table = _group_metric_rows(df, "hour_bjt", list(range(24)))
+    if table.empty:
+        print("  [WARN] No rows for diurnal UTC+8 detail figure.", flush=True)
+        return None
+    table_path = out_dir / "fig11_diurnal_bjt_metrics_counts.csv"
+    table.to_csv(table_path, index=False, float_format="%.6f")
+    print(f"[table] {table_path}", flush=True)
+
+    x = table["hour_bjt"].to_numpy(dtype=int)
+    fog_k = table["fog_count"].to_numpy(dtype=float) / 1000.0
+    mist_k = table["mist_count"].to_numpy(dtype=float) / 1000.0
+    low_rate = table["low_vis_rate"].to_numpy(dtype=float) * 100.0
+
+    fig, axes = plt.subplots(
+        2,
+        1,
+        figsize=(9.2, 6.2),
+        sharex=True,
+        gridspec_kw={"height_ratios": [1.0, 1.15], "hspace": 0.15},
+    )
+    ax = axes[0]
+    ax.bar(x, fog_k, width=0.82, color=FOG_COLOR, label="Observed Fog")
+    ax.bar(x, mist_k, bottom=fog_k, width=0.82, color=MIST_COLOR, label="Observed Mist")
+    ax.set_ylabel("Samples (x1000)")
+    ax.set_title("Diurnal low-visibility frequency and PMST skill (UTC+8)")
+    ax.grid(axis="y", alpha=0.25)
+    ax.grid(axis="x", visible=False)
+    ax2 = ax.twinx()
+    ax2.plot(x, low_rate, color="#2A9D8F", lw=1.8, marker="o", ms=3.2, label="Low-vis rate")
+    ax2.set_ylabel("Low-vis rate (%)")
+    lines, labels = ax.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax.legend(lines + lines2, labels + labels2, frameon=False, ncol=3, loc="upper left")
+    add_panel_label(ax, "a")
+
+    metric_specs = [
+        ("Fog_CSI", "Fog CSI", FOG_COLOR),
+        ("Fog_R", "Fog recall", "#6E91B5"),
+        ("Mist_CSI", "Mist CSI", MIST_COLOR),
+        ("Mist_R", "Mist recall", "#F0B84A"),
+        ("low_vis_precision", "Low-vis precision", "#4B5563"),
+        ("false_positive_rate", "Clear FPR", "#9A3412"),
+    ]
+    ax = axes[1]
+    for key, label, color in metric_specs:
+        ax.plot(x, table[key].to_numpy(dtype=float), lw=1.8, marker="o", ms=3.0, color=color, label=label)
+    ax.set_xticks(np.arange(0, 24, 1))
+    ax.set_xlim(-0.6, 23.6)
+    ax.set_ylim(0, 1.0)
+    ax.set_ylabel("Score")
+    ax.set_xlabel("Local hour (UTC+8)")
+    ax.grid(axis="y", alpha=0.25)
+    ax.grid(axis="x", alpha=0.10)
+    ax.legend(ncol=3, frameon=False, loc="upper center", bbox_to_anchor=(0.5, 1.22))
+    add_panel_label(ax, "b")
+    for left, right in ((0, 6), (18, 24)):
+        for a in axes:
+            a.axvspan(left - 0.5, right - 0.5, color="#F3F4F6", alpha=0.55, zorder=-10)
+    fig.tight_layout()
+    save_fig_pair(
+        fig,
+        out_dir,
+        "fig11_diurnal_bjt_performance_counts",
+        manifest,
+        list(sources) + [str(table_path)],
+        notes="Hourly PMST skill and observed Fog/Mist counts after converting UTC timestamps to UTC+8.",
+        n=int(table["n"].sum()),
+    )
+    return table_path
+
+
+def plot_region_detail(
+    eval_df: pd.DataFrame,
+    out_dir: Path,
+    manifest: Manifest,
+    sources: Sequence[str],
+) -> Optional[Path]:
+    setup_journal_style()
+    df = add_scenario_columns(eval_df)
+    order = [r[0] for r in REGION_DEFS] + ["Other"]
+    table = _group_metric_rows(df, "region", order)
+    if table.empty:
+        print("  [WARN] No rows for region detail figure.", flush=True)
+        return None
+    table_path = out_dir / "fig12_region_metrics_counts.csv"
+    table.to_csv(table_path, index=False, float_format="%.6f")
+    print(f"[table] {table_path}", flush=True)
+
+    y = np.arange(len(table))
+    labels = table["region"].astype(str).tolist()
+    fog_k = table["fog_count"].to_numpy(dtype=float) / 1000.0
+    mist_k = table["mist_count"].to_numpy(dtype=float) / 1000.0
+
+    fig, axes = plt.subplots(1, 2, figsize=(12.0, max(4.8, 0.50 * len(table) + 1.8)))
+    ax = axes[0]
+    ax.barh(y, fog_k, color=FOG_COLOR, label="Observed Fog")
+    ax.barh(y, mist_k, left=fog_k, color=MIST_COLOR, label="Observed Mist")
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels)
+    ax.invert_yaxis()
+    ax.set_xlabel("Low-visibility samples (x1000)")
+    ax.set_title("Observed low-visibility cases by region")
+    ax.grid(axis="x", alpha=0.25)
+    ax.grid(axis="y", visible=False)
+    ax.legend(frameon=False, loc="lower right")
+    add_panel_label(ax, "a")
+
+    metric_specs = [
+        ("Fog_CSI", "Fog CSI", FOG_COLOR),
+        ("Mist_CSI", "Mist CSI", MIST_COLOR),
+        ("low_vis_precision", "Low-vis P", "#4B5563"),
+        ("false_positive_rate", "Clear FPR", "#9A3412"),
+    ]
+    height = min(0.18, 0.80 / len(metric_specs))
+    ax = axes[1]
+    for i, (key, label, color) in enumerate(metric_specs):
+        vals = table[key].to_numpy(dtype=float)
+        ax.barh(y + (i - (len(metric_specs) - 1) / 2) * height, vals, height * 0.92, color=color, label=label)
+    ax.set_yticks(y)
+    ax.set_yticklabels([])
+    ax.invert_yaxis()
+    ax.set_xlim(0, 1.0)
+    ax.set_xlabel("Score")
+    ax.set_title("PMST skill by region")
+    ax.grid(axis="x", alpha=0.25)
+    ax.grid(axis="y", visible=False)
+    ax.legend(frameon=False, ncol=2, loc="lower right")
+    add_panel_label(ax, "b")
+
+    fig.tight_layout()
+    save_fig_pair(
+        fig,
+        out_dir,
+        "fig12_region_performance_counts",
+        manifest,
+        list(sources) + [str(table_path)],
+        notes="Regional PMST skill and observed Fog/Mist counts from per-sample test results.",
+        n=int(table["n"].sum()),
+    )
+    return table_path
+
+
+def discover_history_paths(base: Path, out_dir: Path, explicit: str = "") -> List[Path]:
+    if explicit.strip():
+        tokens = [t.strip() for chunk in explicit.split(";") for t in chunk.split(",")]
+        return [abs_under_base(base, t) for t in tokens if t]
+    roots = [out_dir, base / "checkpoints", base]
+    seen = set()
+    paths: List[Path] = []
+    for root in roots:
+        if not root.exists():
+            continue
+        for p in root.rglob("*history.json"):
+            key = str(p.resolve())
+            if key not in seen:
+                paths.append(p)
+                seen.add(key)
+    return paths
+
+
+def _history_variant_label(path: Path) -> str:
+    name = path.name
+    if name in KNOWN_CONVERGENCE_LOG_LABELS:
+        return KNOWN_CONVERGENCE_LOG_LABELS[name]
+    if "feabl_no_fe_all" in name:
+        return "No FE values"
+    if "feabl_" in name:
+        start = name.find("feabl_")
+        chunk = name[start:].split("_S2_", 1)[0]
+        return chunk.replace("feabl_", "FE ablation: ").replace("_", " ")
+    return "Full FE"
+
+
+def _split_cli_list(value: str) -> List[str]:
+    return [t.strip() for chunk in str(value or "").split(";") for t in chunk.split(",") if t.strip()]
+
+
+def _history_phase_order(path: Path) -> int:
+    name = path.name
+    if "S2_PhaseA1" in name:
+        return 0
+    if "S2_PhaseA2" in name:
+        return 1
+    if "S2_PhaseB" in name:
+        return 2
+    return 99
+
+
+def parse_stdout_loss_history(path: Path, variant: str) -> pd.DataFrame:
+    pattern = re.compile(
+        r"\[(S2_PhaseA1|S2_PhaseA2|S2_PhaseB)\]\s+Step\s+(\d+)\s*/\s*(\d+)\s+\|\s+Loss=([0-9.eE+-]+)"
+    )
+    rows: List[Dict[str, object]] = []
+    phase_offsets = {"S2_PhaseA1": 0, "S2_PhaseA2": 15000, "S2_PhaseB": 30000}
+    phase_names = {"S2_PhaseA1": "A1", "S2_PhaseA2": "A2", "S2_PhaseB": "B"}
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            for raw in f:
+                match = pattern.search(raw.replace("\r", "\n"))
+                if not match:
+                    continue
+                phase, step_s, total_s, loss_s = match.groups()
+                step = int(step_s)
+                total = int(total_s)
+                phase_offset = phase_offsets.get(phase, 0)
+                # If the phase length differs from the standard 15k/15k/30k schedule,
+                # keep the x-axis monotonic while preserving the phase-local step.
+                if phase == "S2_PhaseA2":
+                    phase_offset = max(phase_offset, total)
+                elif phase == "S2_PhaseB":
+                    phase_offset = max(phase_offset, 2 * total if total <= 15000 else 30000)
+                rows.append(
+                    {
+                        "variant": variant,
+                        "phase": phase_names.get(phase, phase),
+                        "phase_step": step,
+                        "global_step": phase_offset + step,
+                        "train_loss": float(loss_s),
+                        "val_score": np.nan,
+                        "source_history": str(path),
+                    }
+                )
+    except Exception as exc:
+        print(f"  [WARN] Cannot parse stdout log {path}: {exc}", flush=True)
+    return pd.DataFrame(rows)
+
+
+def build_convergence_table(history_paths: Sequence[Path], labels: Optional[Sequence[str]] = None) -> pd.DataFrame:
+    phase_names = {0: "A1", 1: "A2", 2: "B", 99: "unknown"}
+    records: List[Dict[str, object]] = []
+    by_variant: Dict[str, List[Path]] = {}
+    label_lookup = {
+        str(p): str(labels[i]).strip()
+        for i, p in enumerate(history_paths)
+        if labels is not None and i < len(labels) and str(labels[i]).strip()
+    }
+    stdout_tables = []
+    for p in history_paths:
+        if p.exists():
+            variant = label_lookup.get(str(p), _history_variant_label(p))
+            if p.suffix.lower() in {".out", ".log", ".txt"}:
+                stdout_tables.append(parse_stdout_loss_history(p, variant))
+            else:
+                by_variant.setdefault(variant, []).append(p)
+    for variant, paths in by_variant.items():
+        offset = 0
+        for p in sorted(paths, key=_history_phase_order):
+            try:
+                payload = json.loads(p.read_text(encoding="utf-8"))
+            except Exception as exc:
+                print(f"  [WARN] Cannot read history {p}: {exc}", flush=True)
+                continue
+            steps = payload.get("steps", [])
+            train_loss = payload.get("train_loss", [])
+            val_score = payload.get("val_score", [])
+            n = min(len(steps), len(train_loss))
+            phase = _history_phase_order(p)
+            for i in range(n):
+                step = int(steps[i])
+                records.append(
+                    {
+                        "variant": variant,
+                        "phase": phase_names.get(phase, "unknown"),
+                        "phase_step": step,
+                        "global_step": offset + step,
+                        "train_loss": float(train_loss[i]),
+                        "val_score": float(val_score[i]) if i < len(val_score) else np.nan,
+                        "source_history": str(p),
+                    }
+                )
+            if steps:
+                offset += int(max(steps))
+    tables = [pd.DataFrame(records)] if records else []
+    tables.extend([t for t in stdout_tables if t is not None and not t.empty])
+    if not tables:
+        return pd.DataFrame()
+    return pd.concat(tables, ignore_index=True).sort_values(["variant", "global_step"]).reset_index(drop=True)
+
+
+def plot_feature_convergence_from_history(
+    base: Path,
+    out_dir: Path,
+    manifest: Manifest,
+    explicit_history_paths: str = "",
+    explicit_history_labels: str = "",
+) -> Optional[Path]:
+    paths = discover_history_paths(base, out_dir, explicit_history_paths)
+    labels = _split_cli_list(explicit_history_labels)
+    status_path = out_dir / "fig13_feature_convergence_history_status.csv"
+    pd.DataFrame(
+        [
+            {
+                "history_path": str(p),
+                "exists": bool(p.exists()),
+                "variant": labels[i] if i < len(labels) and labels[i] else _history_variant_label(p),
+            }
+            for i, p in enumerate(paths)
+        ]
+        or [{"history_path": "", "exists": False, "variant": ""}]
+    ).to_csv(status_path, index=False)
+    print(f"[table] {status_path}", flush=True)
+
+    table = build_convergence_table(paths, labels=labels)
+    if table.empty:
+        print("  [WARN] No training history JSON found; convergence loss figure not generated.", flush=True)
+        manifest.add(
+            status_path.name,
+            [str(status_path)],
+            notes="No local training history JSON files were found for the FE convergence figure.",
+        )
+        return None
+
+    table_path = out_dir / "fig13_feature_convergence_history.csv"
+    table.to_csv(table_path, index=False, float_format="%.6f")
+    print(f"[table] {table_path}", flush=True)
+
+    setup_journal_style()
+    fig, axes = plt.subplots(1, 2, figsize=(10.5, 3.8), sharex=True)
+    color_map = {"Full FE": PMST_COLOR, "No FE values": IFS_DIAG_COLOR}
+    for variant, sub in table.groupby("variant", sort=False):
+        color = color_map.get(variant, None)
+        sub = sub.sort_values("global_step")
+        axes[0].plot(sub["global_step"], sub["train_loss"], lw=1.9, label=variant, color=color)
+        if sub["val_score"].notna().any():
+            axes[1].plot(sub["global_step"], sub["val_score"], lw=1.9, label=variant, color=color)
+    axes[0].set_title("Training loss")
+    axes[0].set_ylabel("Loss")
+    axes[0].set_xlabel("S2 training step")
+    axes[1].set_title("Validation target score")
+    axes[1].set_ylabel("Score")
+    axes[1].set_xlabel("S2 training step")
+    for ax_idx, ax in enumerate(axes):
+        ax.grid(alpha=0.25)
+        add_panel_label(ax, chr(ord("a") + ax_idx))
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, frameon=False, ncol=max(1, len(labels)), loc="upper center", bbox_to_anchor=(0.5, 1.12))
+    fig.tight_layout()
+    save_fig_pair(
+        fig,
+        out_dir,
+        "fig13_feature_engineering_convergence",
+        manifest,
+        sorted(set(table["source_history"].astype(str).tolist())),
+        notes="Training-history convergence plot from S2 history JSON files.",
+    )
+    return table_path
 
 
 def _has_boundary_object(shp_obj) -> bool:
@@ -1755,7 +2190,7 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
         plot_ifs_visibility_bias(y_cls, y_raw, ifs_vis, ifs_valid, out_dir, manifest, sources_main)
 
     for split, order in (
-        ("time_of_day", ["Night (00-06)", "Morning (06-12)", "Afternoon (12-18)", "Evening (18-24)"]),
+        ("time_of_day", TIME_OF_DAY_LOCAL_ORDER),
         ("season", ["DJF", "MAM", "JJA", "SON"]),
         ("region", [r[0] for r in REGION_DEFS] + ["Other"]),
     ):
@@ -1866,6 +2301,30 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
     return model, device, scaler
 
 
+def run_tables_mode(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Manifest) -> None:
+    per_sample_path = out_dir / "per_sample_eval.csv"
+    if not per_sample_path.exists():
+        raise FileNotFoundError(f"Missing posthoc table input: {per_sample_path}")
+    eval_df = pd.read_csv(per_sample_path)
+    required = {"time", "lat", "lon", "y_true", "pmst_pred"}
+    missing = sorted(required - set(eval_df.columns))
+    if missing:
+        raise ValueError(f"{per_sample_path} is missing required columns: {missing}")
+    eval_df["time"] = pd.to_datetime(eval_df["time"], errors="coerce")
+    eval_df = add_scenario_columns(eval_df)
+
+    scenario_df = build_scenario_metrics(eval_df)
+    scenario_path = out_dir / "scenario_metrics.csv"
+    scenario_df.to_csv(scenario_path, index=False)
+    print(f"[table] {scenario_path}", flush=True)
+
+    sources = [str(per_sample_path)]
+    plot_scenario_split(scenario_df, "time_of_day", TIME_OF_DAY_LOCAL_ORDER, out_dir, manifest, [str(scenario_path)])
+    plot_diurnal_bjt_detail(eval_df, out_dir, manifest, sources, offset_hours=args.local_time_offset_hours)
+    plot_region_detail(eval_df, out_dir, manifest, sources)
+    plot_feature_convergence_from_history(base, out_dir, manifest, args.history_paths, args.history_labels)
+
+
 def main() -> None:
     args = parse_args()
     setup_journal_style()
@@ -1881,6 +2340,8 @@ def main() -> None:
     print(f"out_dir  : {out_dir}", flush=True)
     print("=" * 72, flush=True)
 
+    if args.mode == "tables":
+        run_tables_mode(args, base, out_dir, manifest)
     if args.mode in ("main", "all"):
         run_main(args, base, out_dir, manifest)
     if args.mode in ("overlap", "all"):
