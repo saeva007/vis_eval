@@ -110,10 +110,10 @@ CLASS_NORM = BoundaryNorm([-0.5, 0.5, 1.5, 2.5], CLASS_CMAP.N)
 LOCAL_TIME_OFFSET_HOURS = 8
 LOCAL_TIME_LABEL = "UTC+8"
 TIME_OF_DAY_LOCAL_ORDER = [
-    "Night (00-06 UTC+8)",
-    "Morning (06-12 UTC+8)",
-    "Afternoon (12-18 UTC+8)",
-    "Evening (18-24 UTC+8)",
+    "Night (00-05 UTC+8)",
+    "Morning (06-11 UTC+8)",
+    "Afternoon (12-17 UTC+8)",
+    "Evening (18-23 UTC+8)",
 ]
 KNOWN_CONVERGENCE_LOG_LABELS = {
     "112606205.out": "No FE values",
@@ -749,7 +749,8 @@ def add_scenario_columns(df: pd.DataFrame) -> pd.DataFrame:
     if "month" not in out:
         out["month"] = out["time"].dt.month
     season_map = {12: "DJF", 1: "DJF", 2: "DJF", 3: "MAM", 4: "MAM", 5: "MAM", 6: "JJA", 7: "JJA", 8: "JJA", 9: "SON", 10: "SON", 11: "SON"}
-    out["season"] = out["month"].map(season_map)
+    season_month = out["month_bjt"] if "month_bjt" in out else out["month"]
+    out["season"] = season_month.map(season_map)
     h = out["hour_bjt"].astype(int)
     out["time_of_day"] = np.select(
         [h.between(0, 5), h.between(6, 11), h.between(12, 17), h.between(18, 23)],
@@ -2027,15 +2028,15 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
     data_dir = abs_under_base(base, args.data_dir)
     ckpt_path = abs_under_base(
         base,
-        args.ckpt_path or "checkpoints/exp_1776227576_pm10_more_temp_search_S2_PhaseB_best_score.pt",
+        args.ckpt_path or "checkpoints/exp_1776227576_pm10_more_temp_search_utc_S2_PhaseB_best_score.pt",
     )
     scaler_path = abs_under_base(
         base,
-        args.scaler_path or "checkpoints/robust_scaler_w12_dyn27_s2_48h_pm10.pkl",
+        args.scaler_path or "checkpoints/robust_scaler_exp_1776227576_pm10_more_temp_search_utc_w12_dyn27_s2_48h_pm10.pkl",
     )
     season_th_path = abs_under_base(
         base,
-        args.season_th_path or "checkpoints/exp_1776227576_pm10_more_temp_search_season_thresholds.pt",
+        args.season_th_path or "checkpoints/exp_1776227576_pm10_more_temp_search_utc_season_thresholds.pt",
     )
     ifs_nc = abs_under_base(base, args.ifs_vis_nc)
     x_path, y_cls, y_raw, meta = load_main_data(data_dir, args.limit_samples)
