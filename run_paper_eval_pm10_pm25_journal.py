@@ -51,7 +51,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import BoundaryNorm, ListedColormap, Normalize
 from matplotlib.patches import Patch
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import confusion_matrix
 
 
 # ---------------------------------------------------------------------------
@@ -107,13 +107,13 @@ CLASS_NAMES = ["Fog", "Mist", "Clear"]
 CLASS_LONG = ["Fog (0-500 m)", "Mist (500-1000 m)", "Clear (>=1000 m)"]
 CLASS_CMAP = ListedColormap(CLASS_COLORS)
 CLASS_NORM = BoundaryNorm([-0.5, 0.5, 1.5, 2.5], CLASS_CMAP.N)
-LOCAL_TIME_OFFSET_HOURS = 8
-LOCAL_TIME_LABEL = "UTC+8"
+LOCAL_TIME_OFFSET_HOURS = 0
+LOCAL_TIME_LABEL = "UTC"
 TIME_OF_DAY_LOCAL_ORDER = [
-    "Night (00-05 UTC+8)",
-    "Morning (06-11 UTC+8)",
-    "Afternoon (12-17 UTC+8)",
-    "Evening (18-23 UTC+8)",
+    f"Night (00-05 {LOCAL_TIME_LABEL})",
+    f"Morning (06-11 {LOCAL_TIME_LABEL})",
+    f"Afternoon (12-17 {LOCAL_TIME_LABEL})",
+    f"Evening (18-23 {LOCAL_TIME_LABEL})",
 ]
 DEFAULT_S2_RUN_ID = "exp_1776227576_pm10_more_temp_search_utc"
 DEFAULT_DATA_DIR = "ml_dataset_s2_tianji_12h_pm10_pm25_monthtail_2"
@@ -269,7 +269,12 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--overlap_out_dir", default="")
     ap.add_argument("--overlap_extra_args", default="", help="Extra args passed verbatim to overlap evaluator.")
     ap.add_argument("--skip_overlap_bootstrap", action="store_true")
-    ap.add_argument("--local_time_offset_hours", type=int, default=LOCAL_TIME_OFFSET_HOURS)
+    ap.add_argument(
+        "--local_time_offset_hours",
+        type=int,
+        default=LOCAL_TIME_OFFSET_HOURS,
+        help="Offset applied to UTC timestamps for diurnal plots; default 0 keeps UTC.",
+    )
     ap.add_argument("--history_paths", default="", help="Comma/semicolon-separated training history JSON or stdout .out/.log files.")
     ap.add_argument("--history_labels", default="", help="Optional labels matching --history_paths order.")
     return ap.parse_args()
@@ -483,42 +488,36 @@ def classification_metrics(y_true: np.ndarray, pred: np.ndarray, probs: Optional
         pred_count = float(cm[:, cid].sum())
         p = safe_div(tp, tp + fp)
         r = safe_div(tp, tp + fn)
-        f1 = safe_div(2.0 * p * r, p + r)
-        f2 = safe_div(5.0 * p * r, 4.0 * p + r)
         csi = safe_div(tp, tp + fp + fn)
         far = safe_div(fp, tp + fp)
         prefix = cname if cname != "Clear" else "Clear"
         d[f"{prefix}_P"] = p
         d[f"{prefix}_R"] = r
-        d[f"{prefix}_F1"] = f1
-        d[f"{prefix}_F2"] = f2
         d[f"{prefix}_CSI"] = csi
         d[f"{prefix}_FAR"] = far
         d[f"{prefix}_support"] = support
         d[f"pred_{prefix.lower()}"] = pred_count
-        if cname == "Fog":
-            d["Fog_POD"] = r
-        if cname == "Mist":
-            d["Mist_POD"] = r
     true_low = y_true <= 1
     pred_low = pred <= 1
     true_clear = y_true == 2
     low_tp = float((true_low & pred_low).sum())
-    low_fp = float((~true_low & pred_low).sum())
     low_fn = float((true_low & ~pred_low).sum())
-    low_p = safe_div(low_tp, low_tp + low_fp)
     low_r = safe_div(low_tp, low_tp + low_fn)
-    d["low_vis_precision"] = low_p
     d["low_vis_recall"] = low_r
-    d["low_vis_f2"] = safe_div(5.0 * low_p * low_r, 4.0 * low_p + low_r)
-    d["low_vis_csi"] = safe_div(low_tp, low_tp + low_fp + low_fn)
     d["false_positive_rate"] = safe_div(float((true_clear & pred_low).sum()), float(true_clear.sum()))
     d["accuracy"] = safe_div(float(np.trace(cm)), float(n))
-    d["macro_f1"] = float(np.mean([d["Fog_F1"], d["Mist_F1"], d["Clear_F1"]]))
-    d["macro_f2"] = float(np.mean([d["Fog_F2"], d["Mist_F2"], d["Clear_F2"]]))
     if probs is not None and len(probs) == len(y_true):
         try:
-            d.update(compute_rare_event_report(probs, y_true, pred=pred))
+            rare_metrics = compute_rare_event_report(probs, y_true, pred=pred)
+            drop_keys = {
+                k
+                for k in rare_metrics
+                if k.endswith("_F1")
+                or k.endswith("_F2")
+                or k.endswith("_POD")
+                or k in {"macro_f1", "weighted_f1", "low_vis_precision", "low_vis_f1", "low_vis_pod"}
+            }
+            d.update({k: v for k, v in rare_metrics.items() if k not in drop_keys})
         except Exception as exc:
             print(f"  [WARN] probability metrics skipped: {exc}", flush=True)
     return d
@@ -596,9 +595,9 @@ def load_main_data(data_dir: Path, limit_samples: int = 0) -> Tuple[Path, np.nda
 def add_local_time_columns(df: pd.DataFrame, offset_hours: int = LOCAL_TIME_OFFSET_HOURS) -> pd.DataFrame:
     out = df.copy()
     out["time"] = pd.to_datetime(out["time"], errors="coerce")
-    out["time_bjt"] = out["time"] + pd.to_timedelta(int(offset_hours), unit="h")
-    out["hour_bjt"] = out["time_bjt"].dt.hour
-    out["month_bjt"] = out["time_bjt"].dt.month
+    out["time_analysis"] = out["time"] + pd.to_timedelta(int(offset_hours), unit="h")
+    out["hour_analysis"] = out["time_analysis"].dt.hour
+    out["month_analysis"] = out["time_analysis"].dt.month
     return out
 
 
@@ -697,12 +696,12 @@ def export_per_sample(
             "lat",
             "lon",
             "time",
-            "time_bjt",
+            "time_analysis",
             "month",
-            "month_bjt",
+            "month_analysis",
             "hour",
             "hour_utc",
-            "hour_bjt",
+            "hour_analysis",
             "init_time",
             "init_hour",
             "lead_hour",
@@ -729,24 +728,36 @@ def export_per_sample(
 
 def write_report(path: Path, y_true: np.ndarray, pred: np.ndarray, metrics: Dict[str, float],
                  ifs_metrics: Optional[Dict[str, float]] = None) -> None:
+    def _write_metric_block(f, title: str, values: Dict[str, float]) -> None:
+        f.write(f"{title}\n")
+        f.write("  class, support, predicted, CSI, recall, precision, FAR\n")
+        for cname in ("Fog", "Mist", "Clear"):
+            f.write(
+                "  "
+                f"{cname}, "
+                f"{values.get(f'{cname}_support', 0.0):.0f}, "
+                f"{values.get(f'pred_{cname.lower()}', 0.0):.0f}, "
+                f"{values.get(f'{cname}_CSI', np.nan):.6f}, "
+                f"{values.get(f'{cname}_R', np.nan):.6f}, "
+                f"{values.get(f'{cname}_P', np.nan):.6f}, "
+                f"{values.get(f'{cname}_FAR', np.nan):.6f}\n"
+            )
+        f.write(f"  low_vis_recall: {values.get('low_vis_recall', np.nan):.6f}\n")
+        f.write(f"  clear_to_low_vis_false_positive_rate: {values.get('false_positive_rate', np.nan):.6f}\n")
+        f.write(f"  accuracy: {values.get('accuracy', np.nan):.6f}\n")
+        for key in ("balanced_acc", "mcc", "Brier_Fog", "Brier_Mist", "ECE"):
+            if key in values:
+                f.write(f"  {key}: {float(values[key]):.6f}\n")
+
     with open(path, "w", encoding="utf-8") as f:
         f.write("Class definitions:\n")
         f.write("  0: 0 <= visibility < 500 m\n")
         f.write("  1: 500 <= visibility < 1000 m\n")
         f.write("  2: visibility >= 1000 m\n\n")
-        f.write("PMST classification report:\n")
-        f.write(classification_report(y_true, pred, labels=[0, 1, 2], target_names=CLASS_NAMES, zero_division=0))
-        f.write("\n\nPMST rare-event metrics:\n")
-        for k in sorted(metrics):
-            v = metrics[k]
-            if isinstance(v, (int, float, np.integer, np.floating)):
-                f.write(f"  {k}: {float(v):.6f}\n")
+        _write_metric_block(f, "PMST class metrics (CSI/recall primary):", metrics)
         if ifs_metrics is not None:
-            f.write("\nIFS diagnostic visibility metrics on matched rows:\n")
-            for k in sorted(ifs_metrics):
-                v = ifs_metrics[k]
-                if isinstance(v, (int, float, np.integer, np.floating)):
-                    f.write(f"  {k}: {float(v):.6f}\n")
+            f.write("\n")
+            _write_metric_block(f, "IFS diagnostic visibility metrics on matched rows:", ifs_metrics)
     print(f"[report] {path}", flush=True)
 
 
@@ -764,9 +775,9 @@ def add_scenario_columns(df: pd.DataFrame) -> pd.DataFrame:
     if "month" not in out:
         out["month"] = out["time"].dt.month
     season_map = {12: "DJF", 1: "DJF", 2: "DJF", 3: "MAM", 4: "MAM", 5: "MAM", 6: "JJA", 7: "JJA", 8: "JJA", 9: "SON", 10: "SON", 11: "SON"}
-    season_month = out["month_bjt"] if "month_bjt" in out else out["month"]
+    season_month = out["month_analysis"] if "month_analysis" in out else out["month"]
     out["season"] = season_month.map(season_map)
-    h = out["hour_bjt"].astype(int)
+    h = out["hour_analysis"].astype(int)
     out["time_of_day"] = np.select(
         [h.between(0, 5), h.between(6, 11), h.between(12, 17), h.between(18, 23)],
         TIME_OF_DAY_LOCAL_ORDER,
@@ -894,7 +905,7 @@ def plot_confusion_pmst_vs_ifs(
     )
 
 
-def plot_prf1_pmst_vs_ifs(
+def plot_csi_recall_pmst_vs_ifs(
     pmst_metrics: Dict[str, float],
     ifs_metrics: Optional[Dict[str, float]],
     out_dir: Path,
@@ -904,27 +915,15 @@ def plot_prf1_pmst_vs_ifs(
     matched_ifs: Optional[int],
 ) -> None:
     setup_journal_style()
-    metrics = [
-        ("Fog_P", "Precision"),
-        ("Fog_R", "Recall"),
-        ("Fog_F1", "F1"),
-        ("Fog_F2", "F2"),
-        ("Mist_P", "Precision"),
-        ("Mist_R", "Recall"),
-        ("Mist_F1", "F1"),
-        ("Mist_F2", "F2"),
-        ("low_vis_precision", "Low-vis P"),
-        ("low_vis_recall", "Low-vis R"),
-        ("low_vis_f2", "Low-vis F2"),
-        ("false_positive_rate", "Clear FPR"),
+    panels = [
+        ("Fog", [("Fog_CSI", "CSI"), ("Fog_R", "Recall")]),
+        ("Mist", [("Mist_CSI", "CSI"), ("Mist_R", "Recall")]),
+        ("Low visibility", [("low_vis_recall", "Recall")]),
     ]
-    groups = ["Fog", "Mist", "Low-vis"]
-    fig, axes = plt.subplots(1, 3, figsize=(13.0, 3.6), sharey=False)
-    for ax_idx, (ax, group) in enumerate(zip(axes, groups)):
-        start = ax_idx * 4
-        sub = metrics[start:start + 4]
+    fig, axes = plt.subplots(1, 3, figsize=(10.8, 3.6), sharey=False)
+    for ax_idx, (ax, (group, sub)) in enumerate(zip(axes, panels)):
         x = np.arange(len(sub))
-        width = 0.36
+        width = 0.32
         pmst_vals = [float(pmst_metrics.get(k, np.nan)) for k, _ in sub]
         ax.bar(x - width / 2, pmst_vals, width, label="PMST", color=PMST_COLOR, edgecolor="white", linewidth=0.5)
         if ifs_metrics is not None:
@@ -946,10 +945,10 @@ def plot_prf1_pmst_vs_ifs(
     save_fig_pair(
         fig,
         out_dir,
-        "fig3_prf1_pmst_vs_ifs_diagnostic",
+        "fig3_csi_recall_pmst_vs_ifs_diagnostic",
         manifest,
         sources,
-        notes="Precision/Recall/F1/F2 and low-visibility operating metrics.",
+        notes="CSI and recall are shown as the primary rare-event metrics; low visibility uses recall only.",
         n=n,
         matched_ifs=matched_ifs,
     )
@@ -1032,7 +1031,13 @@ def plot_scenario_split(
         print(f"  [WARN] No scenario rows for split={split}", flush=True)
         return
     df = pd.DataFrame(rows)
-    metrics = [("Fog_CSI", "Fog CSI"), ("Fog_R", "Fog R"), ("Mist_CSI", "Mist CSI"), ("Mist_R", "Mist R"), ("low_vis_precision", "Low-vis P")]
+    metrics = [
+        ("Fog_CSI", "Fog CSI"),
+        ("Fog_R", "Fog recall"),
+        ("Mist_CSI", "Mist CSI"),
+        ("Mist_R", "Mist recall"),
+        ("low_vis_recall", "Low-vis recall"),
+    ]
     colors = [FOG_COLOR, "#6E91B5", MIST_COLOR, "#F0B84A", "#4B5563"]
     x = np.arange(len(df))
     width = min(0.16, 0.80 / len(metrics))
@@ -1044,7 +1049,7 @@ def plot_scenario_split(
     ax.set_xticklabels(df["name"], rotation=25 if len(df) > 4 else 0, ha="right" if len(df) > 4 else "center")
     ax.set_ylim(0, 1.0)
     ax.set_ylabel("Score")
-    title = {"time_of_day": "Metrics by time of day (UTC+8)", "season": "Metrics by season", "region": "Metrics by region"}.get(split, split)
+    title = {"time_of_day": f"Metrics by time of day ({LOCAL_TIME_LABEL})", "season": "Metrics by season", "region": "Metrics by region"}.get(split, split)
     ax.set_title(title)
     ax.legend(ncol=min(5, len(metrics)), frameon=False, loc="upper center", bbox_to_anchor=(0.5, 1.16))
     fig.tight_layout()
@@ -1081,7 +1086,7 @@ def _group_metric_rows(eval_df: pd.DataFrame, group_col: str, group_order: Seque
     return pd.DataFrame(rows)
 
 
-def plot_diurnal_bjt_detail(
+def plot_diurnal_time_detail(
     eval_df: pd.DataFrame,
     out_dir: Path,
     manifest: Manifest,
@@ -1090,17 +1095,17 @@ def plot_diurnal_bjt_detail(
 ) -> Optional[Path]:
     setup_journal_style()
     df = add_local_time_columns(eval_df, offset_hours)
-    df = df[np.isfinite(df["hour_bjt"])].copy()
-    df["hour_bjt"] = df["hour_bjt"].astype(int)
-    table = _group_metric_rows(df, "hour_bjt", list(range(24)))
+    df = df[np.isfinite(df["hour_analysis"])].copy()
+    df["hour_analysis"] = df["hour_analysis"].astype(int)
+    table = _group_metric_rows(df, "hour_analysis", list(range(24)))
     if table.empty:
-        print("  [WARN] No rows for diurnal UTC+8 detail figure.", flush=True)
+        print(f"  [WARN] No rows for diurnal {LOCAL_TIME_LABEL} detail figure.", flush=True)
         return None
-    table_path = out_dir / "fig11_diurnal_bjt_metrics_counts.csv"
+    table_path = out_dir / "fig11_diurnal_utc_metrics_counts.csv"
     table.to_csv(table_path, index=False, float_format="%.6f")
     print(f"[table] {table_path}", flush=True)
 
-    x = table["hour_bjt"].to_numpy(dtype=int)
+    x = table["hour_analysis"].to_numpy(dtype=int)
     fog_k = table["fog_count"].to_numpy(dtype=float) / 1000.0
     mist_k = table["mist_count"].to_numpy(dtype=float) / 1000.0
     low_rate = table["low_vis_rate"].to_numpy(dtype=float) * 100.0
@@ -1116,7 +1121,7 @@ def plot_diurnal_bjt_detail(
     ax.bar(x, fog_k, width=0.82, color=FOG_COLOR, label="Observed Fog")
     ax.bar(x, mist_k, bottom=fog_k, width=0.82, color=MIST_COLOR, label="Observed Mist")
     ax.set_ylabel("Samples (x1000)")
-    ax.set_title("Diurnal low-visibility frequency and PMST skill (UTC+8)")
+    ax.set_title(f"Diurnal low-visibility frequency and PMST skill ({LOCAL_TIME_LABEL})")
     ax.grid(axis="y", alpha=0.25)
     ax.grid(axis="x", visible=False)
     ax2 = ax.twinx()
@@ -1132,8 +1137,7 @@ def plot_diurnal_bjt_detail(
         ("Fog_R", "Fog recall", "#6E91B5"),
         ("Mist_CSI", "Mist CSI", MIST_COLOR),
         ("Mist_R", "Mist recall", "#F0B84A"),
-        ("low_vis_precision", "Low-vis precision", "#4B5563"),
-        ("false_positive_rate", "Clear FPR", "#9A3412"),
+        ("low_vis_recall", "Low-vis recall", "#4B5563"),
     ]
     ax = axes[1]
     for key, label, color in metric_specs:
@@ -1142,7 +1146,7 @@ def plot_diurnal_bjt_detail(
     ax.set_xlim(-0.6, 23.6)
     ax.set_ylim(0, 1.0)
     ax.set_ylabel("Score")
-    ax.set_xlabel("Local hour (UTC+8)")
+    ax.set_xlabel(f"Hour ({LOCAL_TIME_LABEL})")
     ax.grid(axis="y", alpha=0.25)
     ax.grid(axis="x", alpha=0.10)
     ax.legend(ncol=3, frameon=False, loc="upper center", bbox_to_anchor=(0.5, 1.22))
@@ -1154,10 +1158,10 @@ def plot_diurnal_bjt_detail(
     save_fig_pair(
         fig,
         out_dir,
-        "fig11_diurnal_bjt_performance_counts",
+        "fig11_diurnal_utc_performance_counts",
         manifest,
         list(sources) + [str(table_path)],
-        notes="Hourly PMST skill and observed Fog/Mist counts after converting UTC timestamps to UTC+8.",
+        notes=f"Hourly PMST skill and observed Fog/Mist counts using {LOCAL_TIME_LABEL} timestamps.",
         n=int(table["n"].sum()),
     )
     return table_path
@@ -1176,59 +1180,46 @@ def plot_region_detail(
     if table.empty:
         print("  [WARN] No rows for region detail figure.", flush=True)
         return None
-    table_path = out_dir / "fig12_region_metrics_counts.csv"
+    table_path = out_dir / "fig12_region_metrics_rates.csv"
     table.to_csv(table_path, index=False, float_format="%.6f")
     print(f"[table] {table_path}", flush=True)
 
     y = np.arange(len(table))
     labels = table["region"].astype(str).tolist()
-    fog_k = table["fog_count"].to_numpy(dtype=float) / 1000.0
-    mist_k = table["mist_count"].to_numpy(dtype=float) / 1000.0
+    n = table["n"].to_numpy(dtype=float)
+    fog_rate = 100.0 * table["fog_count"].to_numpy(dtype=float) / np.maximum(n, 1.0)
+    mist_rate = 100.0 * table["mist_count"].to_numpy(dtype=float) / np.maximum(n, 1.0)
+    low_recall = table["low_vis_recall"].to_numpy(dtype=float)
 
-    fig, axes = plt.subplots(1, 2, figsize=(12.0, max(4.8, 0.50 * len(table) + 1.8)))
-    ax = axes[0]
-    ax.barh(y, fog_k, color=FOG_COLOR, label="Observed Fog")
-    ax.barh(y, mist_k, left=fog_k, color=MIST_COLOR, label="Observed Mist")
+    fig, ax = plt.subplots(figsize=(8.8, max(4.8, 0.50 * len(table) + 1.6)))
+    ax.barh(y, fog_rate, color=FOG_COLOR, label="Observed Fog share")
+    ax.barh(y, mist_rate, left=fog_rate, color=MIST_COLOR, label="Observed Mist share")
     ax.set_yticks(y)
     ax.set_yticklabels(labels)
     ax.invert_yaxis()
-    ax.set_xlabel("Low-visibility samples (x1000)")
-    ax.set_title("Observed low-visibility cases by region")
+    ax.set_xlabel("Observed low-visibility sample share (%)")
+    ax.set_title("Regional low-visibility occurrence and PMST recall")
     ax.grid(axis="x", alpha=0.25)
     ax.grid(axis="y", visible=False)
-    ax.legend(frameon=False, loc="lower right")
-    add_panel_label(ax, "a")
 
-    metric_specs = [
-        ("Fog_CSI", "Fog CSI", FOG_COLOR),
-        ("Mist_CSI", "Mist CSI", MIST_COLOR),
-        ("low_vis_precision", "Low-vis P", "#4B5563"),
-        ("false_positive_rate", "Clear FPR", "#9A3412"),
-    ]
-    height = min(0.18, 0.80 / len(metric_specs))
-    ax = axes[1]
-    for i, (key, label, color) in enumerate(metric_specs):
-        vals = table[key].to_numpy(dtype=float)
-        ax.barh(y + (i - (len(metric_specs) - 1) / 2) * height, vals, height * 0.92, color=color, label=label)
-    ax.set_yticks(y)
-    ax.set_yticklabels([])
-    ax.invert_yaxis()
-    ax.set_xlim(0, 1.0)
-    ax.set_xlabel("Score")
-    ax.set_title("PMST skill by region")
-    ax.grid(axis="x", alpha=0.25)
-    ax.grid(axis="y", visible=False)
-    ax.legend(frameon=False, ncol=2, loc="lower right")
-    add_panel_label(ax, "b")
+    ax2 = ax.twiny()
+    ax2.plot(low_recall, y, color="#4B5563", marker="o", lw=2.0, ms=4.0, label="Low-vis recall")
+    ax2.set_xlim(0, 1.0)
+    ax2.set_xlabel("Low-vis recall")
+    ax2.grid(False)
+
+    handles, legend_labels = ax.get_legend_handles_labels()
+    handles2, legend_labels2 = ax2.get_legend_handles_labels()
+    ax.legend(handles + handles2, legend_labels + legend_labels2, frameon=False, loc="lower right")
 
     fig.tight_layout()
     save_fig_pair(
         fig,
         out_dir,
-        "fig12_region_performance_counts",
+        "fig12_region_lowvis_rate_recall",
         manifest,
         list(sources) + [str(table_path)],
-        notes="Regional PMST skill and observed Fog/Mist counts from per-sample test results.",
+        notes="Regional observed Fog/Mist sample shares are station-count-normalized by regional sample totals; the overlaid metric is low-visibility recall.",
         n=int(table["n"].sum()),
     )
     return table_path
@@ -1744,28 +1735,8 @@ def plot_overlap_fig10(overlap_out: Path, out_dir: Path, manifest: Manifest) -> 
         print(f"  [WARN] Overlap metrics missing source column: {metrics_path}", flush=True)
         return
 
-    def _fbeta_from_cols(precision_col: str, recall_col: str, beta: float = 2.0) -> pd.Series:
-        p = (
-            pd.to_numeric(df[precision_col], errors="coerce")
-            if precision_col in df
-            else pd.Series(np.nan, index=df.index)
-        )
-        r = (
-            pd.to_numeric(df[recall_col], errors="coerce")
-            if recall_col in df
-            else pd.Series(np.nan, index=df.index)
-        )
-        beta2 = beta * beta
-        den = beta2 * p + r
-        return ((1.0 + beta2) * p * r / den).where(den > 0)
-
-    if "fog_f2" not in df:
-        df["fog_f2"] = _fbeta_from_cols("fog_precision", "fog_pod", beta=2.0)
-    if "mist_f2" not in df:
-        df["mist_f2"] = _fbeta_from_cols("mist_precision", "mist_pod", beta=2.0)
-    if "low_vis_f2" not in df:
-        recall_col = "low_vis_recall" if "low_vis_recall" in df else "low_vis_pod"
-        df["low_vis_f2"] = _fbeta_from_cols("low_vis_precision", recall_col, beta=2.0)
+    if "low_vis_recall" not in df and "low_vis_pod" in df:
+        df["low_vis_recall"] = pd.to_numeric(df["low_vis_pod"], errors="coerce")
 
     def _adaptive_ylim(values: Sequence[float]) -> float:
         arr = np.asarray(values, dtype=float)
@@ -1788,9 +1759,9 @@ def plot_overlap_fig10(overlap_out: Path, out_dir: Path, manifest: Manifest) -> 
     labels = {"tianji": "Tianji-input PMST", "ifs": "IFS-input PMST", "ifs_diagnostic": "IFS diagnostic VIS"}
     colors = {"tianji": PMST_COLOR, "ifs": IFS_PMST_COLOR, "ifs_diagnostic": IFS_DIAG_COLOR}
     panels = [
-        ("Fog", [("fog_csi", "CSI"), ("fog_pod", "Recall"), ("fog_precision", "Precision"), ("fog_f2", "F2 score")]),
-        ("Mist", [("mist_csi", "CSI"), ("mist_pod", "Recall"), ("mist_precision", "Precision"), ("mist_f2", "F2 score")]),
-        ("Low visibility", [("low_vis_csi", "CSI"), ("low_vis_recall", "Recall"), ("low_vis_precision", "Precision"), ("low_vis_f2", "F2 score")]),
+        ("Fog", [("fog_csi", "CSI"), ("fog_pod", "Recall")]),
+        ("Mist", [("mist_csi", "CSI"), ("mist_pod", "Recall")]),
+        ("Low visibility", [("low_vis_recall", "Recall")]),
     ]
     row_by_src = {str(r["source"]): r for _, r in df.iterrows()}
     fig, axes = plt.subplots(1, 3, figsize=(13.0, 3.9), sharey=False)
@@ -1826,7 +1797,7 @@ def plot_overlap_fig10(overlap_out: Path, out_dir: Path, manifest: Manifest) -> 
         "fig10_overlap_forecast_source_comparison",
         manifest,
         [str(metrics_path)],
-        notes="Controlled overlap-variable experiment; F2 is derived from precision and recall for this figure.",
+        notes="Controlled overlap-variable experiment using CSI/recall; low visibility is summarized by recall only.",
     )
 
 
@@ -1844,7 +1815,7 @@ def plot_fig11_lead_init(
         ("Fog_CSI", "Fog CSI"),
         ("Fog_R", "Fog recall"),
         ("Mist_CSI", "Mist CSI"),
-        ("low_vis_precision", "Low-vis precision"),
+        ("low_vis_recall", "Low-vis recall"),
     ]
     for ax, (metric, title), letter in zip(axes.ravel(), specs, "abcd"):
         if metric in lead_pooled:
@@ -2147,23 +2118,14 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
                     "Fog_CSI",
                     "Fog_R",
                     "Fog_P",
-                    "Fog_F1",
-                    "Fog_F2",
                     "Fog_FAR",
                     "Mist_CSI",
                     "Mist_R",
                     "Mist_P",
-                    "Mist_F1",
-                    "Mist_F2",
                     "Mist_FAR",
-                    "low_vis_precision",
                     "low_vis_recall",
-                    "low_vis_csi",
-                    "low_vis_f2",
                     "false_positive_rate",
                     "accuracy",
-                    "macro_f1",
-                    "macro_f2",
                 ],
             )
             delta_df.to_csv(out_dir / "metric_deltas_pmst_minus_ifs_diagnostic.csv", index=False)
@@ -2196,7 +2158,7 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
     if ifs_nc.exists():
         sources_main.append(str(ifs_nc))
     plot_confusion_pmst_vs_ifs(y_cls, pmst_pred, ifs_pred, ifs_valid, out_dir, manifest, sources_main)
-    plot_prf1_pmst_vs_ifs(
+    plot_csi_recall_pmst_vs_ifs(
         pmst_metrics if ifs_metrics is None else classification_metrics(y_cls[ifs_valid], pmst_pred[ifs_valid], probs=probs[ifs_valid]),
         ifs_metrics,
         out_dir,
@@ -2339,7 +2301,7 @@ def run_tables_mode(args: argparse.Namespace, base: Path, out_dir: Path, manifes
 
     sources = [str(per_sample_path)]
     plot_scenario_split(scenario_df, "time_of_day", TIME_OF_DAY_LOCAL_ORDER, out_dir, manifest, [str(scenario_path)])
-    plot_diurnal_bjt_detail(eval_df, out_dir, manifest, sources, offset_hours=args.local_time_offset_hours)
+    plot_diurnal_time_detail(eval_df, out_dir, manifest, sources, offset_hours=args.local_time_offset_hours)
     plot_region_detail(eval_df, out_dir, manifest, sources)
     plot_feature_convergence_from_history(base, out_dir, manifest, args.history_paths, args.history_labels)
 

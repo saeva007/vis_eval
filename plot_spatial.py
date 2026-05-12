@@ -473,27 +473,23 @@ def _compute_case_metrics(y_true, y_pred):
     if len(y_true) == 0:
         return {
             "fog_csi": np.nan,
-            "fog_pod": np.nan,
+            "fog_recall": np.nan,
             "fog_far": np.nan,
-            "low_vis_precision": np.nan,
-            "macro_f1": np.nan,
+            "low_vis_recall": np.nan,
         }
-
-    from sklearn.metrics import f1_score
 
     fog_metrics = binary_metrics_from_preds((y_true == 0).astype(int), (y_pred == 0).astype(int))
     low_vis_pred = y_pred <= 1
     low_vis_true = y_true <= 1
-    low_vis_precision = (
-        (low_vis_true & low_vis_pred).sum() / low_vis_pred.sum()
-        if low_vis_pred.sum() > 0 else np.nan
+    low_vis_recall = (
+        (low_vis_true & low_vis_pred).sum() / low_vis_true.sum()
+        if low_vis_true.sum() > 0 else np.nan
     )
     return {
         "fog_csi": fog_metrics["csi"],
-        "fog_pod": fog_metrics["pod"],
+        "fog_recall": fog_metrics["pod"],
         "fog_far": fog_metrics["far"],
-        "low_vis_precision": low_vis_precision,
-        "macro_f1": f1_score(y_true, y_pred, average="macro", zero_division=0),
+        "low_vis_recall": low_vis_recall,
     }
 
 
@@ -530,15 +526,13 @@ def compute_event_hourly_metrics(
         if valid_mask.sum() == 0:
             row.update({
                 "pmst_fog_csi": np.nan,
-                "pmst_fog_pod": np.nan,
+                "pmst_fog_recall": np.nan,
                 "pmst_fog_far": np.nan,
-                "pmst_low_vis_precision": np.nan,
-                "pmst_macro_f1": np.nan,
+                "pmst_low_vis_recall": np.nan,
                 "ifs_fog_csi": np.nan,
-                "ifs_fog_pod": np.nan,
+                "ifs_fog_recall": np.nan,
                 "ifs_fog_far": np.nan,
-                "ifs_low_vis_precision": np.nan,
-                "ifs_macro_f1": np.nan,
+                "ifs_low_vis_recall": np.nan,
             })
         else:
             y_slice = np.asarray(y_true)[valid_mask]
@@ -950,10 +944,9 @@ def plot_event_metric_comparison(hourly_df, event_row, output_path):
 
     metric_specs = [
         ("fog_csi", "Fog CSI"),
-        ("fog_pod", "Fog POD"),
+        ("fog_recall", "Fog recall"),
         ("fog_far", "Fog FAR (lower better)"),
-        ("low_vis_precision", "Low-Vis Precision"),
-        ("macro_f1", "Macro-F1"),
+        ("low_vis_recall", "Low-vis recall"),
     ]
     for ax, (metric, title) in zip(axes[1:], metric_specs):
         ax.plot(x, hourly_df[f"pmst_{metric}"], color=pmst_color, marker="o", lw=2.0, label="PMST")
@@ -961,8 +954,12 @@ def plot_event_metric_comparison(hourly_df, event_row, output_path):
         ax.set_title(title)
         ax.set_ylim(0, 1.05)
         ax.grid(alpha=0.3)
+    for ax in axes[1 + len(metric_specs):]:
+        ax.axis("off")
 
     for idx, ax in enumerate(axes):
+        if not ax.axison:
+            continue
         add_panel_label(ax, chr(ord("a") + idx), x=-0.12, y=1.02)
         ax.axvline(0, color="#888888", lw=1.0, ls="--", alpha=0.8)
         ax.set_xticks(x)
@@ -1004,20 +1001,16 @@ def summarize_event_metrics(hourly_df, event_row):
         "duration_h": int(event_row["duration_h"]),
         "pmst_fog_csi_mean": _safe_mean("pmst_fog_csi"),
         "ifs_fog_csi_mean": _safe_mean("ifs_fog_csi"),
-        "pmst_fog_pod_mean": _safe_mean("pmst_fog_pod"),
-        "ifs_fog_pod_mean": _safe_mean("ifs_fog_pod"),
-        "pmst_low_vis_precision_mean": _safe_mean("pmst_low_vis_precision"),
-        "ifs_low_vis_precision_mean": _safe_mean("ifs_low_vis_precision"),
-        "pmst_macro_f1_mean": _safe_mean("pmst_macro_f1"),
-        "ifs_macro_f1_mean": _safe_mean("ifs_macro_f1"),
+        "pmst_fog_recall_mean": _safe_mean("pmst_fog_recall"),
+        "ifs_fog_recall_mean": _safe_mean("ifs_fog_recall"),
+        "pmst_low_vis_recall_mean": _safe_mean("pmst_low_vis_recall"),
+        "ifs_low_vis_recall_mean": _safe_mean("ifs_low_vis_recall"),
         "pmst_fog_csi_peak": _safe_peak("pmst_fog_csi"),
         "ifs_fog_csi_peak": _safe_peak("ifs_fog_csi"),
-        "pmst_fog_pod_peak": _safe_peak("pmst_fog_pod"),
-        "ifs_fog_pod_peak": _safe_peak("ifs_fog_pod"),
-        "pmst_low_vis_precision_peak": _safe_peak("pmst_low_vis_precision"),
-        "ifs_low_vis_precision_peak": _safe_peak("ifs_low_vis_precision"),
-        "pmst_macro_f1_peak": _safe_peak("pmst_macro_f1"),
-        "ifs_macro_f1_peak": _safe_peak("ifs_macro_f1"),
+        "pmst_fog_recall_peak": _safe_peak("pmst_fog_recall"),
+        "ifs_fog_recall_peak": _safe_peak("ifs_fog_recall"),
+        "pmst_low_vis_recall_peak": _safe_peak("pmst_low_vis_recall"),
+        "ifs_low_vis_recall_peak": _safe_peak("ifs_low_vis_recall"),
     }
 
 
@@ -1041,9 +1034,9 @@ def plot_event_summary_comparison(summary_df, output_path):
     axes = axes.flatten()
     panels = [
         ("fog_csi_mean", "Event-Mean Fog CSI"),
-        ("fog_pod_mean", "Event-Mean Fog POD"),
-        ("low_vis_precision_mean", "Event-Mean Low-Vis Precision"),
-        ("macro_f1_mean", "Event-Mean Macro-F1"),
+        ("fog_recall_mean", "Event-Mean Fog recall"),
+        ("low_vis_recall_mean", "Event-Mean Low-vis recall"),
+        ("low_vis_recall_peak", "Peak-hour Low-vis recall"),
     ]
 
     for idx, (ax, (suffix, title)) in enumerate(zip(axes, panels)):
