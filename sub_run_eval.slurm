@@ -39,21 +39,23 @@ export MKL_NUM_THREADS=32
 # 3. 脚本路径
 SCRIPT_PATH="/public/home/putianshu/vis_mlp/paper_eval/run_paper_eval_pm10_pm25_journal.py"
 EVAL_MODE="${EVAL_MODE:-all}"
-OUT_DIR="${OUT_DIR:-paper_eval_results_pm10_pm25_journal}"
+S2_RUN_ID="${S2_RUN_ID:-exp_1776227576_pm10_more_temp_search_utc}"
+OUT_DIR="${OUT_DIR:-paper_eval_results_pm10_pm25_journal_utc}"
 HISTORY_PATHS="${HISTORY_PATHS:-}"
 HISTORY_LABELS="${HISTORY_LABELS:-No FE values,Full FE}"
-DATA_DIR="${DATA_DIR:-}"
-DATA_48H_DIR="${DATA_48H_DIR:-}"
-CKPT_PATH="${CKPT_PATH:-}"
-SCALER_PATH="${SCALER_PATH:-}"
-SEASON_TH_PATH="${SEASON_TH_PATH:-}"
-MODEL_PY="${MODEL_PY:-}"
-IFS_VIS_NC="${IFS_VIS_NC:-}"
-LOCAL_TIME_OFFSET_HOURS="${LOCAL_TIME_OFFSET_HOURS:-}"
+DATA_DIR="${DATA_DIR:-ml_dataset_s2_tianji_12h_pm10_pm25_monthtail_2}"
+DATA_48H_DIR="${DATA_48H_DIR:-ml_dataset_fe_12h_48h_pm10_pm25_testonly_leadtime}"
+CKPT_PATH="${CKPT_PATH:-checkpoints/${S2_RUN_ID}_S2_PhaseB_best_score.pt}"
+SCALER_PATH="${SCALER_PATH:-checkpoints/robust_scaler_${S2_RUN_ID}_w12_dyn27_s2_48h_pm10.pkl}"
+SEASON_TH_PATH="${SEASON_TH_PATH:-checkpoints/${S2_RUN_ID}_season_thresholds.pt}"
+MODEL_PY="${MODEL_PY:-PMST_net_test_11_s2_pm10.py}"
+IFS_VIS_NC="${IFS_VIS_NC:-VIS_IDW_KDTree_20250101_20251231.nc}"
+LOCAL_TIME_OFFSET_HOURS="${LOCAL_TIME_OFFSET_HOURS:-8}"
 
 # 4. 执行数据处理
 echo "Running Python script: ${SCRIPT_PATH}"
 echo "Eval mode: ${EVAL_MODE}"
+echo "S2 run id: ${S2_RUN_ID}"
 echo "Output dir: ${OUT_DIR}"
 
 CMD=(python "${SCRIPT_PATH}" --mode "${EVAL_MODE}" --out_dir "${OUT_DIR}")

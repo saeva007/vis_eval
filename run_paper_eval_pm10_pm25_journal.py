@@ -115,6 +115,14 @@ TIME_OF_DAY_LOCAL_ORDER = [
     "Afternoon (12-17 UTC+8)",
     "Evening (18-23 UTC+8)",
 ]
+DEFAULT_S2_RUN_ID = "exp_1776227576_pm10_more_temp_search_utc"
+DEFAULT_DATA_DIR = "ml_dataset_s2_tianji_12h_pm10_pm25_monthtail_2"
+DEFAULT_DATA_48H_DIR = "ml_dataset_fe_12h_48h_pm10_pm25_testonly_leadtime"
+DEFAULT_MODEL_PY = "PMST_net_test_11_s2_pm10.py"
+DEFAULT_CKPT_PATH = f"checkpoints/{DEFAULT_S2_RUN_ID}_S2_PhaseB_best_score.pt"
+DEFAULT_SCALER_PATH = f"checkpoints/robust_scaler_{DEFAULT_S2_RUN_ID}_w12_dyn27_s2_48h_pm10.pkl"
+DEFAULT_SEASON_TH_PATH = f"checkpoints/{DEFAULT_S2_RUN_ID}_season_thresholds.pt"
+DEFAULT_OUT_DIR = "paper_eval_results_pm10_pm25_journal_utc"
 KNOWN_CONVERGENCE_LOG_LABELS = {
     "112606205.out": "No FE values",
     "111696811.out": "Full FE",
@@ -223,16 +231,16 @@ def parse_args() -> argparse.Namespace:
     )
     ap.add_argument("--mode", choices=["main", "overlap", "all", "tables"], default="all")
     ap.add_argument("--base", default=os.environ.get("VIS_MLP_ROOT", "/public/home/putianshu/vis_mlp"))
-    ap.add_argument("--data_dir", default="ml_dataset_s2_tianji_12h_pm10_pm25_monthtail_2")
-    ap.add_argument("--data_48h_dir", default="ml_dataset_fe_12h_48h_pm10_pm25_testonly_leadtime")
-    ap.add_argument("--ckpt_path", default="")
-    ap.add_argument("--scaler_path", default="")
-    ap.add_argument("--season_th_path", default="")
-    ap.add_argument("--model_py", default="")
+    ap.add_argument("--data_dir", default=DEFAULT_DATA_DIR)
+    ap.add_argument("--data_48h_dir", default=DEFAULT_DATA_48H_DIR)
+    ap.add_argument("--ckpt_path", default=DEFAULT_CKPT_PATH)
+    ap.add_argument("--scaler_path", default=DEFAULT_SCALER_PATH)
+    ap.add_argument("--season_th_path", default=DEFAULT_SEASON_TH_PATH)
+    ap.add_argument("--model_py", default=DEFAULT_MODEL_PY)
     ap.add_argument("--ifs_vis_nc", default="VIS_IDW_KDTree_20250101_20251231.nc")
     ap.add_argument("--ifs_48h_nc", default="IFS_VIS_0_48h_stations_2025_00_12.nc")
     ap.add_argument("--ifs_vis_var", default="VIS")
-    ap.add_argument("--out_dir", default="paper_eval_results_pm10_pm25_journal")
+    ap.add_argument("--out_dir", default=DEFAULT_OUT_DIR)
     ap.add_argument("--shp_path", default="/public/home/putianshu/中华人民共和国/中华人民共和国.shp")
     ap.add_argument("--window_size", type=int, default=12)
     ap.add_argument("--dyn_vars_count", type=int, default=0, help="0 means infer from X_test.npy")
@@ -289,6 +297,13 @@ def resolve_model_py(base: Path, explicit: str) -> Path:
         if p.is_file():
             return p
     raise FileNotFoundError("Cannot find PMST_net_test_11_s2_pm10.py; pass --model_py.")
+
+
+def require_existing_path(path: Path, label: str, expect_dir: bool = False) -> None:
+    ok = path.is_dir() if expect_dir else path.is_file()
+    if not ok:
+        kind = "directory" if expect_dir else "file"
+        raise FileNotFoundError(f"{label} {kind} not found: {path}")
 
 
 def infer_layout_from_x(x_path: Path, window_size: int) -> Tuple[int, int]:
@@ -2026,26 +2041,29 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
     import joblib
 
     data_dir = abs_under_base(base, args.data_dir)
-    ckpt_path = abs_under_base(
-        base,
-        args.ckpt_path or "checkpoints/exp_1776227576_pm10_more_temp_search_utc_S2_PhaseB_best_score.pt",
-    )
-    scaler_path = abs_under_base(
-        base,
-        args.scaler_path or "checkpoints/robust_scaler_exp_1776227576_pm10_more_temp_search_utc_w12_dyn27_s2_48h_pm10.pkl",
-    )
-    season_th_path = abs_under_base(
-        base,
-        args.season_th_path or "checkpoints/exp_1776227576_pm10_more_temp_search_utc_season_thresholds.pt",
-    )
+    ckpt_path = abs_under_base(base, args.ckpt_path)
+    scaler_path = abs_under_base(base, args.scaler_path)
+    season_th_path = abs_under_base(base, args.season_th_path)
     ifs_nc = abs_under_base(base, args.ifs_vis_nc)
+    model_py = resolve_model_py(base, args.model_py)
+    print(f"[profile] S2 run id: {DEFAULT_S2_RUN_ID}", flush=True)
+    print(f"[paths] data_dir       : {data_dir}", flush=True)
+    print(f"[paths] checkpoint     : {ckpt_path}", flush=True)
+    print(f"[paths] scaler         : {scaler_path}", flush=True)
+    print(f"[paths] season_th      : {season_th_path}", flush=True)
+    print(f"[paths] model_py       : {model_py}", flush=True)
+    print(f"[paths] output_dir     : {out_dir}", flush=True)
+    require_existing_path(data_dir, "data_dir", expect_dir=True)
+    require_existing_path(ckpt_path, "checkpoint")
+    require_existing_path(scaler_path, "scaler")
+    require_existing_path(model_py, "model_py")
     x_path, y_cls, y_raw, meta = load_main_data(data_dir, args.limit_samples)
     dyn_inferred, fe_inferred = infer_layout_from_x(x_path, args.window_size)
     dyn = args.dyn_vars_count or dyn_inferred
     fe = args.extra_feat_dim or fe_inferred
     print(f"[layout] dyn_vars_count={dyn}, extra_feat_dim={fe}", flush=True)
 
-    model_cls = import_model_class(resolve_model_py(base, args.model_py))
+    model_cls = import_model_class(model_py)
     device = resolve_device(args.device)
     scaler = joblib.load(scaler_path)
     model = model_cls(
