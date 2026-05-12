@@ -501,8 +501,10 @@ def classification_metrics(y_true: np.ndarray, pred: np.ndarray, probs: Optional
     pred_low = pred <= 1
     true_clear = y_true == 2
     low_tp = float((true_low & pred_low).sum())
+    low_fp = float((~true_low & pred_low).sum())
     low_fn = float((true_low & ~pred_low).sum())
     low_r = safe_div(low_tp, low_tp + low_fn)
+    d["low_vis_csi"] = safe_div(low_tp, low_tp + low_fp + low_fn)
     d["low_vis_recall"] = low_r
     d["false_positive_rate"] = safe_div(float((true_clear & pred_low).sum()), float(true_clear.sum()))
     d["accuracy"] = safe_div(float(np.trace(cm)), float(n))
@@ -742,6 +744,7 @@ def write_report(path: Path, y_true: np.ndarray, pred: np.ndarray, metrics: Dict
                 f"{values.get(f'{cname}_P', np.nan):.6f}, "
                 f"{values.get(f'{cname}_FAR', np.nan):.6f}\n"
             )
+        f.write(f"  low_vis_csi: {values.get('low_vis_csi', np.nan):.6f}\n")
         f.write(f"  low_vis_recall: {values.get('low_vis_recall', np.nan):.6f}\n")
         f.write(f"  clear_to_low_vis_false_positive_rate: {values.get('false_positive_rate', np.nan):.6f}\n")
         f.write(f"  accuracy: {values.get('accuracy', np.nan):.6f}\n")
@@ -918,7 +921,7 @@ def plot_csi_recall_pmst_vs_ifs(
     panels = [
         ("Fog", [("Fog_CSI", "CSI"), ("Fog_R", "Recall")]),
         ("Mist", [("Mist_CSI", "CSI"), ("Mist_R", "Recall")]),
-        ("Low visibility", [("low_vis_recall", "Recall")]),
+        ("Low visibility", [("low_vis_csi", "CSI"), ("low_vis_recall", "Recall")]),
     ]
     fig, axes = plt.subplots(1, 3, figsize=(10.8, 3.6), sharey=False)
     for ax_idx, (ax, (group, sub)) in enumerate(zip(axes, panels)):
@@ -945,10 +948,10 @@ def plot_csi_recall_pmst_vs_ifs(
     save_fig_pair(
         fig,
         out_dir,
-        "fig3_prf1_pmst_vs_ifs_diagnostic",
+        "fig3_csi_recall_pmst_vs_ifs_diagnostic",
         manifest,
         sources,
-        notes="CSI and recall are shown as the primary rare-event metrics; low visibility uses recall only.",
+        notes="CSI and recall are shown as the primary rare-event metrics for Fog, Mist, and combined low visibility.",
         n=n,
         matched_ifs=matched_ifs,
     )
@@ -1186,18 +1189,15 @@ def plot_region_detail(
 
     y = np.arange(len(table))
     labels = table["region"].astype(str).tolist()
-    n = table["n"].to_numpy(dtype=float)
-    fog_rate = 100.0 * table["fog_count"].to_numpy(dtype=float) / np.maximum(n, 1.0)
-    mist_rate = 100.0 * table["mist_count"].to_numpy(dtype=float) / np.maximum(n, 1.0)
+    low_rate = table["low_vis_rate"].to_numpy(dtype=float) * 100.0
     low_recall = table["low_vis_recall"].to_numpy(dtype=float)
 
     fig, ax = plt.subplots(figsize=(8.8, max(4.8, 0.50 * len(table) + 1.6)))
-    ax.barh(y, fog_rate, color=FOG_COLOR, label="Observed Fog share")
-    ax.barh(y, mist_rate, left=fog_rate, color=MIST_COLOR, label="Observed Mist share")
+    ax.barh(y, low_rate, color=FOG_COLOR, alpha=0.88, label="Low-vis time share")
     ax.set_yticks(y)
     ax.set_yticklabels(labels)
     ax.invert_yaxis()
-    ax.set_xlabel("Observed low-visibility sample share (%)")
+    ax.set_xlabel("Observed low-visibility time share (%)")
     ax.set_title("Regional low-visibility occurrence and PMST recall")
     ax.grid(axis="x", alpha=0.25)
     ax.grid(axis="y", visible=False)
@@ -1219,7 +1219,7 @@ def plot_region_detail(
         "fig12_region_performance_counts",
         manifest,
         list(sources) + [str(table_path)],
-        notes="Regional observed Fog/Mist sample shares are station-count-normalized by regional sample totals; the overlaid metric is low-visibility recall.",
+        notes="Regional low-visibility time share is station-count-normalized by regional sample totals; the overlaid metric is low-visibility recall.",
         n=int(table["n"].sum()),
     )
     return table_path
@@ -2123,6 +2123,7 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
                     "Mist_R",
                     "Mist_P",
                     "Mist_FAR",
+                    "low_vis_csi",
                     "low_vis_recall",
                     "false_positive_rate",
                     "accuracy",
@@ -2176,6 +2177,7 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
         ("region", [r[0] for r in REGION_DEFS] + ["Other"]),
     ):
         plot_scenario_split(scenario_df, split, order, out_dir, manifest, [str(out_dir / "scenario_metrics.csv")])
+    plot_region_detail(eval_df, out_dir, manifest, [str(out_dir / "per_sample_eval.csv")])
 
     shp_gdf = read_shapefile(args.shp_path)
     plot_station_metric_map(
