@@ -107,8 +107,8 @@ CLASS_NAMES = ["Fog", "Mist", "Clear"]
 CLASS_LONG = ["Fog (0-500 m)", "Mist (500-1000 m)", "Clear (>=1000 m)"]
 CLASS_CMAP = ListedColormap(CLASS_COLORS)
 CLASS_NORM = BoundaryNorm([-0.5, 0.5, 1.5, 2.5], CLASS_CMAP.N)
-LOCAL_TIME_OFFSET_HOURS = 0
-LOCAL_TIME_LABEL = "UTC"
+LOCAL_TIME_OFFSET_HOURS = 8
+LOCAL_TIME_LABEL = "UTC+8"
 TIME_OF_DAY_LOCAL_ORDER = [
     f"Night (00-05 {LOCAL_TIME_LABEL})",
     f"Morning (06-11 {LOCAL_TIME_LABEL})",
@@ -273,7 +273,7 @@ def parse_args() -> argparse.Namespace:
         "--local_time_offset_hours",
         type=int,
         default=LOCAL_TIME_OFFSET_HOURS,
-        help="Offset applied to UTC timestamps for diurnal plots; default 0 keeps UTC.",
+        help="Offset applied to UTC timestamps for diurnal plots; default 8 converts UTC to UTC+8.",
     )
     ap.add_argument("--history_paths", default="", help="Comma/semicolon-separated training history JSON or stdout .out/.log files.")
     ap.add_argument("--history_labels", default="", help="Optional labels matching --history_paths order.")
@@ -945,7 +945,7 @@ def plot_csi_recall_pmst_vs_ifs(
     save_fig_pair(
         fig,
         out_dir,
-        "fig3_csi_recall_pmst_vs_ifs_diagnostic",
+        "fig3_prf1_pmst_vs_ifs_diagnostic",
         manifest,
         sources,
         notes="CSI and recall are shown as the primary rare-event metrics; low visibility uses recall only.",
@@ -1101,7 +1101,7 @@ def plot_diurnal_time_detail(
     if table.empty:
         print(f"  [WARN] No rows for diurnal {LOCAL_TIME_LABEL} detail figure.", flush=True)
         return None
-    table_path = out_dir / "fig11_diurnal_utc_metrics_counts.csv"
+    table_path = out_dir / "fig11_diurnal_bjt_metrics_counts.csv"
     table.to_csv(table_path, index=False, float_format="%.6f")
     print(f"[table] {table_path}", flush=True)
 
@@ -1158,10 +1158,10 @@ def plot_diurnal_time_detail(
     save_fig_pair(
         fig,
         out_dir,
-        "fig11_diurnal_utc_performance_counts",
+        "fig11_diurnal_bjt_performance_counts",
         manifest,
         list(sources) + [str(table_path)],
-        notes=f"Hourly PMST skill and observed Fog/Mist counts using {LOCAL_TIME_LABEL} timestamps.",
+        notes="Hourly PMST skill and observed Fog/Mist counts after converting UTC timestamps to UTC+8.",
         n=int(table["n"].sum()),
     )
     return table_path
@@ -1216,7 +1216,7 @@ def plot_region_detail(
     save_fig_pair(
         fig,
         out_dir,
-        "fig12_region_lowvis_rate_recall",
+        "fig12_region_performance_counts",
         manifest,
         list(sources) + [str(table_path)],
         notes="Regional observed Fog/Mist sample shares are station-count-normalized by regional sample totals; the overlaid metric is low-visibility recall.",
