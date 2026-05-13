@@ -52,6 +52,10 @@ for _p in (str(LOCAL_ROOT), str(VIS_EVAL_DIR)):
 
 from run_paper_eval_pm10_pm25_journal import (  # noqa: E402
     CLEAR_COLOR,
+    DEFAULT_CKPT_PATH,
+    DEFAULT_SCALER_PATH,
+    DEFAULT_SEASON_TH_PATH,
+    DEFAULT_S2_RUN_ID,
     FOG_COLOR,
     IFS_DIAG_COLOR,
     MIST_COLOR,
@@ -234,8 +238,8 @@ def write_template(path: Path) -> None:
             "variant": "full",
             "label": "Full FE",
             "ablation_mode": "full",
-            "checkpoint": "checkpoints/exp_1776227576_pm10_more_temp_search_S2_PhaseB_best_score.pt",
-            "season_th_path": "checkpoints/exp_1776227576_pm10_more_temp_search_season_thresholds.pt",
+            "checkpoint": DEFAULT_CKPT_PATH,
+            "season_th_path": DEFAULT_SEASON_TH_PATH,
             "fog_th": 0.10,
             "mist_th": 0.42,
             "threshold_rule": "mutual",
@@ -246,8 +250,8 @@ def write_template(path: Path) -> None:
             "variant": "no_fe_all",
             "label": "No FE values",
             "ablation_mode": "no_fe_all",
-            "checkpoint": "checkpoints/exp_1776227576_pm10_more_temp_search_feabl_no_fe_all_S2_PhaseB_best_score.pt",
-            "season_th_path": "checkpoints/exp_1776227576_pm10_more_temp_search_feabl_no_fe_all_season_thresholds.pt",
+            "checkpoint": f"checkpoints/{DEFAULT_S2_RUN_ID}_feabl_no_fe_all_S2_PhaseB_best_score.pt",
+            "season_th_path": f"checkpoints/{DEFAULT_S2_RUN_ID}_feabl_no_fe_all_season_thresholds.pt",
             "fog_th": 0.10,
             "mist_th": 0.42,
             "threshold_rule": "mutual",
@@ -271,6 +275,26 @@ def resolve_optional_path(base: Path, value) -> Optional[Path]:
     if value is None or pd.isna(value) or str(value).strip() == "":
         return None
     return abs_under_base(base, str(value).strip())
+
+
+def checkpoint_temporal_input_width(ckpt_path: Path) -> Optional[int]:
+    import torch
+
+    state = torch.load(ckpt_path, map_location="cpu")
+    if isinstance(state, dict):
+        for key in ("model_state_dict", "state_dict", "model"):
+            if key in state and isinstance(state[key], dict):
+                state = state[key]
+                break
+    if not isinstance(state, dict):
+        return None
+    for key, value in state.items():
+        clean_key = str(key)[7:] if str(key).startswith("module.") else str(key)
+        if clean_key == "temporal_input_proj.weight":
+            shape = getattr(value, "shape", None)
+            if shape is not None and len(shape) == 2:
+                return int(shape[1])
+    return None
 
 
 def load_temperature(base: Path, row: pd.Series, use_calibration: bool) -> Optional[float]:
@@ -363,7 +387,7 @@ def evaluate_specs(args: argparse.Namespace, base: Path, out_dir: Path, manifest
 
     scaler_path = abs_under_base(
         base,
-        args.scaler_path or f"checkpoints/robust_scaler_w{args.window_size}_dyn{dyn}_s2_48h_pm10.pkl",
+        args.scaler_path or DEFAULT_SCALER_PATH,
     )
     scaler = joblib.load(scaler_path)
     model_cls = import_model_class(resolve_model_py(base, args.model_py))
@@ -399,6 +423,20 @@ def evaluate_specs(args: argparse.Namespace, base: Path, out_dir: Path, manifest
             dropout=args.dropout,
             extra_feat_dim=fe,
         ).to(device)
+        ckpt_temporal_width = checkpoint_temporal_input_width(ckpt)
+        model_temporal_width = int(getattr(model.temporal_input_proj, "in_features", 0))
+        if ckpt_temporal_width is not None and model_temporal_width and ckpt_temporal_width != model_temporal_width:
+            raise RuntimeError(
+                "Checkpoint/model temporal-input mismatch for "
+                f"variant={variant}: checkpoint has temporal_input_proj.weight "
+                f"input width {ckpt_temporal_width}, but the current model built "
+                f"from data dyn={dyn} expects {model_temporal_width}. This usually "
+                "means a legacy PM10-only or pre-PM2.5 checkpoint is being evaluated "
+                "with the current PM10+PM2.5 model/data. Use checkpoints trained "
+                f"with the current run id ({DEFAULT_S2_RUN_ID}), regenerate the spec "
+                "with --write_template, or pass the matching legacy --model_py, "
+                "--data_dir, --dyn_vars_count, and --scaler_path together."
+            )
         load_checkpoint_into_model(model, ckpt, device)
         if device.type == "cuda" and torch.cuda.device_count() > 1:
             model = torch.nn.DataParallel(model)
