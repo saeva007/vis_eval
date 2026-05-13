@@ -34,9 +34,9 @@ SCRIPT_PATH="/public/home/putianshu/vis_mlp/paper_eval/analyze_feature_importanc
 
 OUT_DIR="${OUT_DIR:-paper_eval_results_pm10_pm25_journal_utc/feature_importance}"
 DATA_DIR="${DATA_DIR:-ml_dataset_s2_tianji_12h_pm10_pm25_monthtail_2}"
-CKPT_PATH="${CKPT_PATH:-checkpoints/exp_1776227576_pm10_more_temp_search_utc_S2_PhaseB_best_score.pt}"
-SCALER_PATH="${SCALER_PATH:-checkpoints/robust_scaler_exp_1776227576_pm10_more_temp_search_utc_w12_dyn27_s2_48h_pm10.pkl}"
-SEASON_TH_PATH="${SEASON_TH_PATH:-checkpoints/exp_1776227576_pm10_more_temp_search_utc_season_thresholds.pt}"
+CKPT_PATH="${CKPT_PATH:-checkpoints/exp_1778563813_pm10_more_temp_search_utc_S2_PhaseB_best_score.pt}"
+SCALER_PATH="${SCALER_PATH:-checkpoints/robust_scaler_exp_1778563813_pm10_more_temp_search_utc_w12_dyn27_s2_48h_pm10.pkl}"
+SEASON_TH_PATH="${SEASON_TH_PATH:-checkpoints/exp_1778563813_pm10_more_temp_search_utc_season_thresholds.pt}"
 MODEL_PY="${MODEL_PY:-}"
 DEVICE="${DEVICE:-auto}"
 REPEATS="${REPEATS:-3}"

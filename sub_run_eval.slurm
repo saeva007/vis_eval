@@ -39,7 +39,7 @@ export MKL_NUM_THREADS=32
 # 3. 脚本路径
 SCRIPT_PATH="/public/home/putianshu/vis_mlp/paper_eval/run_paper_eval_pm10_pm25_journal.py"
 EVAL_MODE="${EVAL_MODE:-all}"
-S2_RUN_ID="${S2_RUN_ID:-exp_1776227576_pm10_more_temp_search_utc}"
+S2_RUN_ID="${S2_RUN_ID:-exp_1778563813_pm10_more_temp_search_utc}"
 OUT_DIR="${OUT_DIR:-paper_eval_results_pm10_pm25_journal_utc}"
 HISTORY_PATHS="${HISTORY_PATHS:-}"
 HISTORY_LABELS="${HISTORY_LABELS:-No FE values,Full FE}"

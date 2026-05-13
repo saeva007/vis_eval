@@ -115,7 +115,7 @@ TIME_OF_DAY_LOCAL_ORDER = [
     f"Afternoon (12-17 {LOCAL_TIME_LABEL})",
     f"Evening (18-23 {LOCAL_TIME_LABEL})",
 ]
-DEFAULT_S2_RUN_ID = "exp_1776227576_pm10_more_temp_search_utc"
+DEFAULT_S2_RUN_ID = "exp_1778563813_pm10_more_temp_search_utc"
 DEFAULT_DATA_DIR = "ml_dataset_s2_tianji_12h_pm10_pm25_monthtail_2"
 DEFAULT_DATA_48H_DIR = "ml_dataset_fe_12h_48h_pm10_pm25_testonly_leadtime"
 DEFAULT_MODEL_PY = "PMST_net_test_11_s2_pm10.py"

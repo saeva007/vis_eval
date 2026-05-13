@@ -33,9 +33,9 @@ for _p in (str(LOCAL_ROOT), str(VIS_EVAL_DIR)):
 from feature_catalog_pm10_pm25 import catalog_rows, permutation_groups, write_catalog
 
 
-DEFAULT_CKPT = "checkpoints/exp_1776227576_pm10_more_temp_search_utc_S2_PhaseB_best_score.pt"
-DEFAULT_SCALER = "checkpoints/robust_scaler_exp_1776227576_pm10_more_temp_search_utc_w12_dyn27_s2_48h_pm10.pkl"
-DEFAULT_SEASON_TH = "checkpoints/exp_1776227576_pm10_more_temp_search_utc_season_thresholds.pt"
+DEFAULT_CKPT = "checkpoints/exp_1778563813_pm10_more_temp_search_utc_S2_PhaseB_best_score.pt"
+DEFAULT_SCALER = "checkpoints/robust_scaler_exp_1778563813_pm10_more_temp_search_utc_w12_dyn27_s2_48h_pm10.pkl"
+DEFAULT_SEASON_TH = "checkpoints/exp_1778563813_pm10_more_temp_search_utc_season_thresholds.pt"
 LOWER_IS_BETTER = {"false_positive_rate", "Fog_FAR", "Mist_FAR", "Clear_FAR", "ECE", "Brier_Fog", "Brier_Mist"}
 METRIC_KEYS = [
     "low_vis_f2",
