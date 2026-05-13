@@ -240,6 +240,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--ifs_vis_nc", default="VIS_IDW_KDTree_20250101_20251231.nc")
     ap.add_argument("--ifs_48h_nc", default="IFS_VIS_0_48h_stations_2025_00_12.nc")
     ap.add_argument("--ifs_vis_var", default="VIS")
+    ap.add_argument("--ifs_48h_var", default="VIS_ifs")
     ap.add_argument("--out_dir", default=DEFAULT_OUT_DIR)
     ap.add_argument("--shp_path", default="/public/home/putianshu/中华人民共和国/中华人民共和国.shp")
     ap.add_argument("--window_size", type=int, default=12)
@@ -1225,6 +1226,68 @@ def plot_region_detail(
     return table_path
 
 
+def plot_time_of_day_detail(
+    eval_df: pd.DataFrame,
+    out_dir: Path,
+    manifest: Manifest,
+    sources: Sequence[str],
+    offset_hours: int = LOCAL_TIME_OFFSET_HOURS,
+) -> Optional[Path]:
+    setup_journal_style()
+    df = add_local_time_columns(eval_df, offset_hours)
+    df = df[np.isfinite(df["hour_analysis"])].copy()
+    h = df["hour_analysis"].astype(int)
+    df["time_of_day"] = np.select(
+        [h.between(0, 5), h.between(6, 11), h.between(12, 17), h.between(18, 23)],
+        TIME_OF_DAY_LOCAL_ORDER,
+        default="Unknown",
+    )
+    table = _group_metric_rows(df, "time_of_day", TIME_OF_DAY_LOCAL_ORDER)
+    if table.empty:
+        print("  [WARN] No rows for time-of-day detail figure.", flush=True)
+        return None
+    table_path = out_dir / "fig12_time_of_day_metrics_rates.csv"
+    table.to_csv(table_path, index=False, float_format="%.6f")
+    print(f"[table] {table_path}", flush=True)
+
+    y = np.arange(len(table))
+    labels = table["time_of_day"].astype(str).tolist()
+    low_rate = table["low_vis_rate"].to_numpy(dtype=float) * 100.0
+    low_recall = table["low_vis_recall"].to_numpy(dtype=float)
+
+    fig, ax = plt.subplots(figsize=(8.8, max(3.8, 0.60 * len(table) + 1.6)))
+    ax.barh(y, low_rate, color=FOG_COLOR, alpha=0.88, label="Low-vis time share")
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels)
+    ax.invert_yaxis()
+    ax.set_xlabel("Observed low-visibility time share (%)")
+    ax.set_title(f"Time-of-day low-visibility occurrence and PMST recall ({LOCAL_TIME_LABEL})")
+    ax.grid(axis="x", alpha=0.25)
+    ax.grid(axis="y", visible=False)
+
+    ax2 = ax.twiny()
+    ax2.plot(low_recall, y, color="#4B5563", marker="o", lw=2.0, ms=4.0, label="Low-vis recall")
+    ax2.set_xlim(0, 1.0)
+    ax2.set_xlabel("Low-vis recall")
+    ax2.grid(False)
+
+    handles, legend_labels = ax.get_legend_handles_labels()
+    handles2, legend_labels2 = ax2.get_legend_handles_labels()
+    ax.legend(handles + handles2, legend_labels + legend_labels2, frameon=False, loc="lower right")
+
+    fig.tight_layout()
+    save_fig_pair(
+        fig,
+        out_dir,
+        "fig12_time_of_day_performance_counts",
+        manifest,
+        list(sources) + [str(table_path)],
+        notes="Time-of-day low-visibility time share uses UTC timestamps converted to UTC+8; the overlaid metric is low-visibility recall.",
+        n=int(table["n"].sum()),
+    )
+    return table_path
+
+
 def discover_history_paths(base: Path, out_dir: Path, explicit: str = "") -> List[Path]:
     if explicit.strip():
         tokens = [t.strip() for chunk in explicit.split(";") for t in chunk.split(",")]
@@ -1761,7 +1824,7 @@ def plot_overlap_fig10(overlap_out: Path, out_dir: Path, manifest: Manifest) -> 
     panels = [
         ("Fog", [("fog_csi", "CSI"), ("fog_pod", "Recall")]),
         ("Mist", [("mist_csi", "CSI"), ("mist_pod", "Recall")]),
-        ("Low visibility", [("low_vis_recall", "Recall")]),
+        ("Low visibility", [("low_vis_csi", "CSI"), ("low_vis_recall", "Recall")]),
     ]
     row_by_src = {str(r["source"]): r for _, r in df.iterrows()}
     fig, axes = plt.subplots(1, 3, figsize=(13.0, 3.9), sharey=False)
@@ -1797,7 +1860,7 @@ def plot_overlap_fig10(overlap_out: Path, out_dir: Path, manifest: Manifest) -> 
         "fig10_overlap_forecast_source_comparison",
         manifest,
         [str(metrics_path)],
-        notes="Controlled overlap-variable experiment using CSI/recall; low visibility is summarized by recall only.",
+        notes="Controlled overlap-variable experiment using CSI/recall, including combined low-visibility CSI and recall.",
     )
 
 
@@ -1863,24 +1926,234 @@ def parse_init_hour(meta: pd.DataFrame) -> pd.Series:
 def lead_metrics_table(
     y: np.ndarray,
     pred: np.ndarray,
-    probs: np.ndarray,
+    probs: Optional[np.ndarray],
     lead: np.ndarray,
     mask: Optional[np.ndarray] = None,
     min_n: int = 50,
 ) -> pd.DataFrame:
     if mask is None:
         mask = np.ones(len(y), dtype=bool)
+    mask = np.asarray(mask, dtype=bool)
     rows = []
-    lead_i = np.rint(lead).astype(np.int32)
+    lead_arr = np.asarray(lead, dtype=float)
+    finite_lead = np.isfinite(lead_arr)
+    mask = mask & finite_lead
+    lead_i = np.full(len(lead_arr), -9999, dtype=np.int32)
+    lead_i[finite_lead] = np.rint(lead_arr[finite_lead]).astype(np.int32)
     for h in sorted(np.unique(lead_i[mask])):
         m = mask & (lead_i == h)
         if int(m.sum()) < min_n:
             continue
-        met = classification_metrics(y[m], pred[m], probs=probs[m])
+        met = classification_metrics(y[m], pred[m], probs=probs[m] if probs is not None else None)
         row = {"lead_hour": int(h)}
         row.update(met)
         rows.append(row)
     return pd.DataFrame(rows).sort_values("lead_hour").reset_index(drop=True) if rows else pd.DataFrame()
+
+
+def recover_ifs_48h_valid_time_grid(ds, n_rec: int, n_lead: int, lead_vals: np.ndarray) -> np.ndarray:
+    lead_vals = np.asarray(lead_vals).reshape(-1).astype(np.int32)
+    if lead_vals.shape[0] != n_lead:
+        raise ValueError(f"lead_hour len={lead_vals.shape[0]} != n_lead={n_lead}")
+
+    for coord_name in ("valid_time", "time"):
+        if coord_name not in ds.coords:
+            continue
+        raw = np.asarray(ds[coord_name].values)
+        if raw.ndim == 2:
+            if raw.shape == (n_rec, n_lead):
+                return pd.to_datetime(raw.reshape(-1)).values.astype("datetime64[ns]").reshape(n_rec, n_lead)
+            if raw.shape == (n_lead, n_rec):
+                return pd.to_datetime(raw.T.reshape(-1)).values.astype("datetime64[ns]").reshape(n_rec, n_lead)
+            raise ValueError(f"{coord_name} shape={raw.shape}, expected {(n_rec, n_lead)}")
+        flat = raw.reshape(-1)
+        if flat.shape[0] == n_rec * n_lead:
+            return pd.to_datetime(flat).values.astype("datetime64[ns]").reshape(n_rec, n_lead)
+        if flat.shape[0] == n_rec:
+            base = pd.to_datetime(flat).values.astype("datetime64[ns]")
+            return base[:, None] + lead_vals.astype("timedelta64[h]")[None, :]
+
+    if "forecast_reference_time" in ds.coords:
+        base_raw = np.asarray(ds["forecast_reference_time"].values).reshape(-1)
+        if base_raw.shape[0] != n_rec:
+            raise ValueError(f"forecast_reference_time len={base_raw.shape[0]} != n_rec={n_rec}")
+        base = pd.to_datetime(base_raw).values.astype("datetime64[ns]")
+        return base[:, None] + lead_vals.astype("timedelta64[h]")[None, :]
+
+    raise ValueError(
+        "Cannot recover IFS 48h valid-time grid; need valid_time, time, or forecast_reference_time coordinates."
+    )
+
+
+def load_ifs_48h_diagnostic(
+    meta: pd.DataFrame,
+    ifs_nc_path: Path,
+    vis_var: str = "VIS_ifs",
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, float]]:
+    if not ifs_nc_path.exists():
+        raise FileNotFoundError(f"IFS 48h NetCDF not found: {ifs_nc_path}")
+    try:
+        import xarray as xr
+    except ImportError as exc:
+        raise ImportError("xarray is required to match IFS 48h visibility.") from exc
+
+    ds = xr.open_dataset(ifs_nc_path)
+    try:
+        if vis_var not in ds:
+            raise KeyError(f"Variable {vis_var!r} not found in {ifs_nc_path}; vars={list(ds.data_vars)}")
+        da = ds[vis_var].squeeze()
+        if da.ndim != 3:
+            raise ValueError(f"{vis_var} must be 3D after squeeze, got dims={da.dims}, shape={da.shape}")
+
+        station_coord = "station" if "station" in ds.coords else "station_id" if "station_id" in ds.coords else ""
+        if not station_coord:
+            raise KeyError(f"IFS 48h NetCDF must have station or station_id coordinate: {ifs_nc_path}")
+        station_dim = station_coord if station_coord in da.dims else next((d for d in da.dims if "station" in d.lower()), None)
+        lead_dim = "lead_hour" if "lead_hour" in da.dims else next((d for d in da.dims if "lead" in d.lower()), None)
+        if station_dim is None or lead_dim is None:
+            raise ValueError(f"Cannot identify station/lead dims for {vis_var}: dims={da.dims}")
+        record_dims = [d for d in da.dims if d not in {station_dim, lead_dim}]
+        if len(record_dims) != 1:
+            raise ValueError(f"Cannot identify single record dim for {vis_var}: dims={da.dims}")
+        da = da.transpose(record_dims[0], lead_dim, station_dim)
+        vis_arr = np.asarray(da.values)
+        n_rec, n_lead, n_st = vis_arr.shape
+
+        if "lead_hour" not in ds.coords:
+            raise KeyError(f"IFS 48h NetCDF must have lead_hour coordinate: {ifs_nc_path}")
+        lead_vals_raw = np.asarray(ds["lead_hour"].values)
+        lead_vals = np.rint(lead_vals_raw.reshape(-1).astype(float)).astype(np.int32)
+        if lead_vals.shape[0] != n_lead:
+            raise ValueError(f"lead_hour len={lead_vals.shape[0]} != n_lead={n_lead}, raw shape={lead_vals_raw.shape}")
+
+        stations = normalize_station_ids(ds[station_coord].values)
+        if len(stations) != n_st:
+            raise ValueError(f"{station_coord} len={len(stations)} != station dimension={n_st}")
+        valid_time_grid = recover_ifs_48h_valid_time_grid(ds, n_rec, n_lead, lead_vals)
+        if valid_time_grid.shape != (n_rec, n_lead):
+            raise ValueError(f"valid_time_grid shape={valid_time_grid.shape}, expected {(n_rec, n_lead)}")
+
+        pair_time_ns = valid_time_grid.reshape(-1).astype("datetime64[ns]").astype(np.int64)
+        pair_lead = np.tile(lead_vals, n_rec).astype(np.int32)
+        pair_index = pd.MultiIndex.from_arrays([pair_time_ns, pair_lead])
+        pair_values = np.arange(pair_index.size, dtype=np.int64)
+        if not pair_index.is_unique:
+            keep = ~pair_index.duplicated(keep="first")
+            pair_index = pair_index[keep]
+            pair_values = pair_values[keep]
+        meta_time = pd.to_datetime(meta["time"], errors="coerce").values.astype("datetime64[ns]").astype(np.int64)
+        meta_lead = pd.to_numeric(meta["lead_hour"], errors="coerce").to_numpy(dtype=float)
+        finite_lead = np.isfinite(meta_lead)
+        meta_lead_i = np.full(len(meta), -9999, dtype=np.int32)
+        meta_lead_i[finite_lead] = np.rint(meta_lead[finite_lead]).astype(np.int32)
+        meta_index = pd.MultiIndex.from_arrays([meta_time, meta_lead_i])
+        pair_pos = pd.Series(pair_values, index=pair_index).reindex(meta_index).to_numpy()
+
+        station_lookup = pd.Series(np.arange(len(stations), dtype=np.int64), index=stations)
+        meta_station = normalize_station_ids(meta["station_id"].values)
+        station_pos = meta_station.map(station_lookup).to_numpy()
+
+        raw = np.full(len(meta), np.nan, dtype=np.float64)
+        pred = np.full(len(meta), -1, dtype=np.int64)
+        valid = np.zeros(len(meta), dtype=bool)
+        key_valid = pd.notna(pair_pos) & pd.notna(station_pos)
+        if np.any(key_valid):
+            pos = np.flatnonzero(key_valid)
+            flat_pair = pair_pos[pos].astype(np.int64)
+            rec_idx = flat_pair // n_lead
+            lead_idx = flat_pair % n_lead
+            st_idx = station_pos[pos].astype(np.int64)
+            matched = np.asarray(vis_arr[rec_idx, lead_idx, st_idx], dtype=np.float64)
+            finite = np.isfinite(matched)
+            pos_f = pos[finite]
+            raw[pos_f] = matched[finite]
+            pred[pos_f] = classify_visibility_values(matched[finite])
+            valid[pos_f] = True
+
+        diag = {
+            "n_model_rows": float(len(meta)),
+            "n_ifs_records": float(n_rec),
+            "n_ifs_leads": float(n_lead),
+            "n_ifs_stations": float(n_st),
+            "n_exact_key_matches": float(np.sum(key_valid)),
+            "n_finite_matches": float(np.sum(valid)),
+            "exact_match_ratio": safe_div(float(np.sum(key_valid)), float(len(meta))),
+            "finite_match_ratio": safe_div(float(np.sum(valid)), float(len(meta))),
+        }
+        print(
+            f"[48h IFS] matched finite rows: {int(valid.sum())}/{len(meta)} from {ifs_nc_path}",
+            flush=True,
+        )
+        return pred, raw, valid, diag
+    finally:
+        ds.close()
+
+
+def plot_fig11_48h_model_vs_ifs(
+    cmp_df: pd.DataFrame,
+    out_dir: Path,
+    manifest: Manifest,
+    sources: Sequence[str],
+) -> None:
+    if cmp_df.empty:
+        print("  [WARN] Empty 48h model-vs-IFS lead table; skip figure.", flush=True)
+        return
+    setup_journal_style()
+    specs = [
+        ("Fog_CSI", "Fog CSI"),
+        ("Mist_CSI", "Mist CSI"),
+        ("low_vis_csi", "Low-vis CSI"),
+        ("low_vis_recall", "Low-vis recall"),
+    ]
+
+    def _adaptive_ylim(values: Sequence[float]) -> float:
+        arr = np.asarray(values, dtype=float)
+        arr = arr[np.isfinite(arr)]
+        if arr.size == 0:
+            return 1.0
+        vmax = float(np.nanmax(arr))
+        if vmax <= 0:
+            return 0.10
+        padded = vmax * 1.18
+        if padded >= 0.92:
+            return 1.0
+        step = 0.02 if padded <= 0.20 else 0.05 if padded <= 0.50 else 0.10
+        return min(1.0, max(step * 3, math.ceil(padded / step) * step))
+
+    fig, axes = plt.subplots(2, 2, figsize=(11.0, 7.0), sharex=True)
+    for ax, (metric, title), letter in zip(axes.ravel(), specs, "abcd"):
+        model_col = f"{metric}_model"
+        ifs_col = f"{metric}_ifs"
+        panel_values: List[float] = []
+        if model_col in cmp_df:
+            y_model = cmp_df[model_col].to_numpy(dtype=float)
+            panel_values.extend(y_model.tolist())
+            ax.plot(cmp_df["lead_hour"], y_model, color=PMST_COLOR, lw=2.2, label="PMST")
+        if ifs_col in cmp_df:
+            y_ifs = cmp_df[ifs_col].to_numpy(dtype=float)
+            panel_values.extend(y_ifs.tolist())
+            ax.plot(cmp_df["lead_hour"], y_ifs, color=IFS_DIAG_COLOR, lw=1.9, ls="--", marker="o", ms=2.5, label="IFS diagnostic")
+        ax.set_title(title)
+        ax.set_xlabel("Lead time (h)")
+        ax.set_ylabel("Score")
+        ax.set_ylim(0, _adaptive_ylim(panel_values))
+        ax.grid(axis="y", alpha=0.25)
+        ax.grid(axis="x", alpha=0.10)
+        add_panel_label(ax, letter)
+    handles, labels = axes.ravel()[0].get_legend_handles_labels()
+    if handles:
+        fig.legend(handles, labels, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.03))
+    fig.tight_layout()
+    n_val = int(cmp_df["n_ifs"].sum()) if "n_ifs" in cmp_df else None
+    save_fig_pair(
+        fig,
+        out_dir,
+        "fig11_48h_model_vs_ifs_by_lead",
+        manifest,
+        sources,
+        notes="48h lead diagnostics on exact UTC valid-time, station, and lead-hour matches between PMST samples and IFS 0-48h visibility.",
+        n=n_val,
+    )
 
 
 def run_48h_optional(
@@ -1955,6 +2228,57 @@ def run_48h_optional(
             manifest,
             [str(x_path), str(data_48h / "meta_test.csv")],
         )
+        ifs_48h_nc = abs_under_base(base, args.ifs_48h_nc)
+        if ifs_48h_nc.exists():
+            try:
+                ifs_pred, _, ifs_valid, ifs_diag = load_ifs_48h_diagnostic(meta, ifs_48h_nc, args.ifs_48h_var)
+                diag_path = out_dir / "lead_eval_alignment_diagnostics_48h_ifs.csv"
+                pd.DataFrame([ifs_diag]).to_csv(diag_path, index=False, float_format="%.6f")
+                print(f"[table] {diag_path}", flush=True)
+                matched_mask = np.asarray(ifs_valid, dtype=bool)
+                if int(matched_mask.sum()) >= 50:
+                    model_matched = lead_metrics_table(y_cls, pred, probs, lead, mask=matched_mask)
+                    ifs_lead = lead_metrics_table(y_cls, ifs_pred, None, lead, mask=matched_mask)
+                    model_matched_path = out_dir / "model_metrics_by_lead_hour_48h_ifs_matched.csv"
+                    ifs_lead_path = out_dir / "ifs_metrics_by_lead_hour_48h.csv"
+                    cmp_path = out_dir / "model_vs_ifs_metrics_by_lead_hour_48h.csv"
+                    model_matched.to_csv(model_matched_path, index=False, float_format="%.6f")
+                    ifs_lead.to_csv(ifs_lead_path, index=False, float_format="%.6f")
+                    cmp_df = model_matched.merge(
+                        ifs_lead,
+                        on="lead_hour",
+                        how="inner",
+                        suffixes=("_model", "_ifs"),
+                    ).sort_values("lead_hour").reset_index(drop=True)
+                    for metric in (
+                        "Fog_CSI",
+                        "Fog_R",
+                        "Mist_CSI",
+                        "Mist_R",
+                        "low_vis_csi",
+                        "low_vis_recall",
+                        "false_positive_rate",
+                    ):
+                        model_col = f"{metric}_model"
+                        ifs_col = f"{metric}_ifs"
+                        if model_col in cmp_df and ifs_col in cmp_df:
+                            cmp_df[f"{metric}_diff_model_minus_ifs"] = cmp_df[model_col] - cmp_df[ifs_col]
+                    cmp_df.to_csv(cmp_path, index=False, float_format="%.6f")
+                    print(f"[table] {model_matched_path}", flush=True)
+                    print(f"[table] {ifs_lead_path}", flush=True)
+                    print(f"[table] {cmp_path}", flush=True)
+                    plot_fig11_48h_model_vs_ifs(
+                        cmp_df,
+                        out_dir,
+                        manifest,
+                        [str(x_path), str(data_48h / "meta_test.csv"), str(ifs_48h_nc), str(cmp_path)],
+                    )
+                else:
+                    print("[48h IFS] fewer than 50 matched rows; skip model-vs-IFS lead figure.", flush=True)
+            except Exception as exc:
+                print(f"[48h IFS] skipped after error: {exc}", flush=True)
+        else:
+            print(f"[48h IFS] NetCDF not found: {ifs_48h_nc}; skip model-vs-IFS lead figure.", flush=True)
     except Exception as exc:
         print(f"[48h] skipped after error: {exc}", flush=True)
 
@@ -2177,6 +2501,7 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
         ("region", [r[0] for r in REGION_DEFS] + ["Other"]),
     ):
         plot_scenario_split(scenario_df, split, order, out_dir, manifest, [str(out_dir / "scenario_metrics.csv")])
+    plot_time_of_day_detail(eval_df, out_dir, manifest, [str(out_dir / "per_sample_eval.csv")], offset_hours=args.local_time_offset_hours)
     plot_region_detail(eval_df, out_dir, manifest, [str(out_dir / "per_sample_eval.csv")])
 
     shp_gdf = read_shapefile(args.shp_path)
@@ -2304,6 +2629,7 @@ def run_tables_mode(args: argparse.Namespace, base: Path, out_dir: Path, manifes
     sources = [str(per_sample_path)]
     plot_scenario_split(scenario_df, "time_of_day", TIME_OF_DAY_LOCAL_ORDER, out_dir, manifest, [str(scenario_path)])
     plot_diurnal_time_detail(eval_df, out_dir, manifest, sources, offset_hours=args.local_time_offset_hours)
+    plot_time_of_day_detail(eval_df, out_dir, manifest, sources, offset_hours=args.local_time_offset_hours)
     plot_region_detail(eval_df, out_dir, manifest, sources)
     plot_feature_convergence_from_history(base, out_dir, manifest, args.history_paths, args.history_labels)
 
