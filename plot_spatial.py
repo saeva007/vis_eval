@@ -457,11 +457,16 @@ def detect_widespread_fog_events(
 
         window_df = out["peak_time"].apply(_window_available)
         out = pd.concat([out, window_df], axis=1)
-        complete = out[out["window_complete"]].copy()
-        if len(complete) >= int(top_k):
-            out = complete
-        elif not complete.empty:
-            out = pd.concat([complete, out[~out.index.isin(complete.index)]], axis=0)
+        n_before_window_filter = len(out)
+        out = out[out["window_complete"]].copy()
+        n_dropped = n_before_window_filter - len(out)
+        if n_dropped:
+            print(
+                "  [Event] Dropped "
+                f"{n_dropped} candidate events because their +/-{wh} h windows "
+                "extend outside the test set.",
+                flush=True,
+            )
 
     out = out.head(top_k).reset_index(drop=True)
     if not out.empty:

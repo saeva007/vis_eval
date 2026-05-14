@@ -2565,6 +2565,7 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
     run_48h_optional(args, base, out_dir, model, device, scaler, manifest)
 
     event_df = pd.DataFrame()
+    event_eval_completed = False
     if run_widespread_event_evaluation is not None:
         try:
             event_df = run_widespread_event_evaluation(
@@ -2583,13 +2584,16 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
                 min_lat_span=args.event_min_lat_span,
                 gap_hours=args.event_gap_hours,
             )
+            event_eval_completed = True
         except Exception as exc:
             print(f"[events] run_widespread_event_evaluation failed: {exc}", flush=True)
     event_path = out_dir / "event_case_summary.csv"
-    if event_path.exists():
+    if event_eval_completed and event_path.exists():
         event_df = pd.read_csv(event_path, parse_dates=["peak_time", "start_time", "end_time"])
     elif event_df is not None and not event_df.empty:
         event_df.to_csv(event_path, index=False)
+    elif (not event_eval_completed) and event_path.exists():
+        print(f"[events] ignoring stale event summary after failed/skipped event evaluation: {event_path}", flush=True)
     if "ifs_diagnostic_pred" not in eval_df and ifs_pred is not None:
         eval_df["ifs_diagnostic_pred"] = ifs_pred
         eval_df["ifs_diagnostic_valid"] = ifs_valid
