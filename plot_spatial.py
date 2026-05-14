@@ -362,6 +362,15 @@ def detect_widespread_fog_events(
         ])
 
     fog_df = derive_scenario_columns(fog_df)
+    event_columns = [
+        "event_rank", "peak_time", "start_time", "end_time", "duration_h",
+        "peak_fog_count", "total_fog_station_hours", "peak_region_count",
+        "peak_lon_span", "peak_lat_span", "event_score", "selection_tier",
+        "selection_tier_rank", "selection_min_fog_stations", "selection_min_regions",
+        "selection_min_lon_span", "selection_min_lat_span", "window_start",
+        "window_end", "window_complete", "window_available_hours",
+        "window_required_hours",
+    ]
 
     def _region_count(series):
         vals = pd.Series(series)
@@ -380,64 +389,12 @@ def detect_widespread_fog_events(
         .sort_values("time")
     )
 
-    active = hourly[
-        (hourly["n_fog"] >= min_fog_stations) &
-        (hourly["n_regions"] >= min_regions) &
-        (hourly["lon_span"] >= min_lon_span) &
-        (hourly["lat_span"] >= min_lat_span)
-    ].copy()
-    if active.empty:
-        return pd.DataFrame(columns=[
-            "event_rank", "peak_time", "start_time", "end_time", "duration_h",
-            "peak_fog_count", "total_fog_station_hours", "peak_region_count",
-            "peak_lon_span", "peak_lat_span", "event_score",
-        ])
+    def _empty_events():
+        return pd.DataFrame(columns=event_columns)
 
-    events = []
-    current_rows = [active.iloc[0]]
-    for _, row in active.iloc[1:].iterrows():
-        prev_time = pd.Timestamp(current_rows[-1]["time"])
-        this_time = pd.Timestamp(row["time"])
-        if (this_time - prev_time) <= pd.Timedelta(hours=gap_hours):
-            current_rows.append(row)
-        else:
-            events.append(pd.DataFrame(current_rows))
-            current_rows = [row]
-    events.append(pd.DataFrame(current_rows))
-
-    event_rows = []
-    for ev in events:
-        ev = ev.sort_values(["n_fog", "n_regions", "lon_span", "lat_span"], ascending=False)
-        peak = ev.iloc[0]
-        start_time = pd.Timestamp(ev["time"].min())
-        end_time = pd.Timestamp(ev["time"].max())
-        duration_h = int((end_time - start_time) / pd.Timedelta(hours=1)) + 1
-        total_fog_station_hours = int(ev["n_fog"].sum())
-        score = (
-            total_fog_station_hours +
-            2.0 * float(peak["n_fog"]) +
-            40.0 * float(peak["n_regions"]) +
-            2.0 * float(peak["lon_span"]) +
-            2.0 * float(peak["lat_span"])
-        )
-        event_rows.append({
-            "peak_time": pd.Timestamp(peak["time"]),
-            "start_time": start_time,
-            "end_time": end_time,
-            "duration_h": duration_h,
-            "peak_fog_count": int(peak["n_fog"]),
-            "total_fog_station_hours": total_fog_station_hours,
-            "peak_region_count": int(peak["n_regions"]),
-            "peak_lon_span": float(peak["lon_span"]),
-            "peak_lat_span": float(peak["lat_span"]),
-            "event_score": float(score),
-        })
-
-    out = pd.DataFrame(event_rows).sort_values(
-        ["event_score", "peak_fog_count", "peak_region_count"],
-        ascending=False,
-    ).reset_index(drop=True)
-    if window_hours is not None and not out.empty:
+    def _window_info(events_df):
+        if window_hours is None or events_df.empty:
+            return events_df
         wh = int(window_hours)
         available_times = set(pd.to_datetime(df["time"]).dropna().astype("int64").tolist())
 
@@ -455,22 +412,161 @@ def detect_widespread_fog_events(
                 }
             )
 
-        window_df = out["peak_time"].apply(_window_available)
-        out = pd.concat([out, window_df], axis=1)
-        n_before_window_filter = len(out)
-        out = out[out["window_complete"]].copy()
-        n_dropped = n_before_window_filter - len(out)
-        if n_dropped:
-            print(
-                "  [Event] Dropped "
-                f"{n_dropped} candidate events because their +/-{wh} h windows "
-                "extend outside the test set.",
-                flush=True,
-            )
+        window_df = events_df["peak_time"].apply(_window_available)
+        return pd.concat([events_df.reset_index(drop=True), window_df.reset_index(drop=True)], axis=1)
 
-    out = out.head(top_k).reset_index(drop=True)
-    if not out.empty:
-        out.insert(0, "event_rank", np.arange(1, len(out) + 1))
+    def _build_candidates(tier_name, tier_rank, fog_min, regions_min, lon_min, lat_min):
+        active = hourly[
+            (hourly["n_fog"] >= fog_min) &
+            (hourly["n_regions"] >= regions_min) &
+            (hourly["lon_span"] >= lon_min) &
+            (hourly["lat_span"] >= lat_min)
+        ].copy()
+        if active.empty:
+            return _empty_events()
+
+        events = []
+        current_rows = [active.iloc[0]]
+        for _, row in active.iloc[1:].iterrows():
+            prev_time = pd.Timestamp(current_rows[-1]["time"])
+            this_time = pd.Timestamp(row["time"])
+            if (this_time - prev_time) <= pd.Timedelta(hours=gap_hours):
+                current_rows.append(row)
+            else:
+                events.append(pd.DataFrame(current_rows))
+                current_rows = [row]
+        events.append(pd.DataFrame(current_rows))
+
+        event_rows = []
+        for ev in events:
+            ev = ev.sort_values(["n_fog", "n_regions", "lon_span", "lat_span"], ascending=False)
+            peak = ev.iloc[0]
+            start_time = pd.Timestamp(ev["time"].min())
+            end_time = pd.Timestamp(ev["time"].max())
+            duration_h = int((end_time - start_time) / pd.Timedelta(hours=1)) + 1
+            total_fog_station_hours = int(ev["n_fog"].sum())
+            score = (
+                total_fog_station_hours +
+                2.0 * float(peak["n_fog"]) +
+                40.0 * float(peak["n_regions"]) +
+                2.0 * float(peak["lon_span"]) +
+                2.0 * float(peak["lat_span"])
+            )
+            event_rows.append({
+                "peak_time": pd.Timestamp(peak["time"]),
+                "start_time": start_time,
+                "end_time": end_time,
+                "duration_h": duration_h,
+                "peak_fog_count": int(peak["n_fog"]),
+                "total_fog_station_hours": total_fog_station_hours,
+                "peak_region_count": int(peak["n_regions"]),
+                "peak_lon_span": float(peak["lon_span"]),
+                "peak_lat_span": float(peak["lat_span"]),
+                "event_score": float(score),
+                "selection_tier": tier_name,
+                "selection_tier_rank": int(tier_rank),
+                "selection_min_fog_stations": int(fog_min),
+                "selection_min_regions": int(regions_min),
+                "selection_min_lon_span": float(lon_min),
+                "selection_min_lat_span": float(lat_min),
+            })
+
+        candidates = pd.DataFrame(event_rows)
+        if candidates.empty:
+            return _empty_events()
+        candidates = _window_info(candidates)
+        return candidates.sort_values(
+            ["selection_tier_rank", "event_score", "peak_fog_count", "peak_region_count"],
+            ascending=[True, False, False, False],
+        ).reset_index(drop=True)
+
+    tiers = [
+        (
+            "strict",
+            0,
+            int(min_fog_stations),
+            int(min_regions),
+            float(min_lon_span),
+            float(min_lat_span),
+        ),
+        (
+            "relaxed_spatial",
+            1,
+            max(1, int(np.ceil(min_fog_stations * 0.85))),
+            max(1, int(min_regions) - 1),
+            max(0.0, float(min_lon_span) * 0.75),
+            max(0.0, float(min_lat_span) * 0.75),
+        ),
+        (
+            "relaxed_count",
+            2,
+            max(1, int(np.ceil(min_fog_stations * 0.70))),
+            max(1, int(min_regions) - 1),
+            max(0.0, float(min_lon_span) * 0.60),
+            max(0.0, float(min_lat_span) * 0.60),
+        ),
+        (
+            "backup_peak",
+            3,
+            max(1, int(np.ceil(min_fog_stations * 0.50))),
+            1,
+            0.0,
+            0.0,
+        ),
+    ]
+    all_candidates = pd.concat(
+        [_build_candidates(*tier) for tier in tiers],
+        axis=0,
+        ignore_index=True,
+    )
+    if all_candidates.empty:
+        return _empty_events()
+
+    def _distinct_from_selected(row, selected_rows):
+        row_start = pd.Timestamp(row["start_time"])
+        row_end = pd.Timestamp(row["end_time"])
+        margin = pd.Timedelta(hours=gap_hours)
+        for existing in selected_rows:
+            ex_start = pd.Timestamp(existing["start_time"])
+            ex_end = pd.Timestamp(existing["end_time"])
+            if row_start <= ex_end + margin and row_end >= ex_start - margin:
+                return False
+        return True
+
+    selected_rows = []
+    for require_complete in (True, False):
+        for _, row in all_candidates.iterrows():
+            if len(selected_rows) >= top_k:
+                break
+            if require_complete and window_hours is not None and not bool(row.get("window_complete", True)):
+                continue
+            if _distinct_from_selected(row, selected_rows):
+                selected_rows.append(row.to_dict())
+        if len(selected_rows) >= top_k:
+            break
+
+    if not selected_rows:
+        return _empty_events()
+
+    out = pd.DataFrame(selected_rows).sort_values(
+        ["selection_tier_rank", "event_score", "peak_fog_count", "peak_region_count"],
+        ascending=[True, False, False, False],
+    ).head(top_k).reset_index(drop=True)
+    if "event_rank" in out.columns:
+        out = out.drop(columns=["event_rank"])
+    out.insert(0, "event_rank", np.arange(1, len(out) + 1))
+    if len(out) < top_k:
+        print(
+            f"  [Event] Selected {len(out)}/{top_k} distinct events even after relaxed tiers; "
+            "check event thresholds or test-set coverage.",
+            flush=True,
+        )
+    elif (out["selection_tier"] != "strict").any():
+        tiers_used = ", ".join(out["selection_tier"].astype(str).unique())
+        print(
+            f"  [Event] Filled {top_k} event slots using tiered selection: {tiers_used}.",
+            flush=True,
+        )
     return out
 
 
