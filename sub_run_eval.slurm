@@ -4,6 +4,7 @@
 #SBATCH -N 1                    # 数据处理只需单节点
 #SBATCH --ntasks-per-node=1     # 单个任务
 #SBATCH --cpus-per-task=32      # 充分利用 32 个 CPU 核心
+#SBATCH --gres=dcu:4            # 队列按整节点 4 DCU 申请
 #SBATCH --mem=0                 # 0 表示申请节点上的所有可用内存（防止数据量大时 OOM）
 #SBATCH -t 48:00:00             # 数据处理时间限制
 #SBATCH -o logs/process_%j.out
