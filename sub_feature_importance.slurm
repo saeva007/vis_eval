@@ -31,43 +31,27 @@ export OPENBLAS_NUM_THREADS="${SLURM_CPUS_PER_TASK:-16}"
 export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-16}"
 
 SCRIPT_PATH="/public/home/putianshu/vis_mlp/paper_eval/analyze_feature_importance_pm10_pm25.py"
+CONFIG_JSON="${CONFIG_JSON:-/public/home/putianshu/vis_mlp/paper_eval/paper_eval_config.json}"
 
-OUT_DIR="${OUT_DIR:-paper_eval_results_pm10_pm25_journal_utc/feature_importance}"
-DATA_DIR="${DATA_DIR:-ml_dataset_s2_tianji_12h_pm10_pm25_monthtail_2}"
-CKPT_PATH="${CKPT_PATH:-checkpoints/exp_1778563813_pm10_more_temp_search_utc_S2_PhaseB_best_score.pt}"
-SCALER_PATH="${SCALER_PATH:-checkpoints/robust_scaler_exp_1778563813_pm10_more_temp_search_utc_w12_dyn27_s2_48h_pm10.pkl}"
-SEASON_TH_PATH="${SEASON_TH_PATH:-checkpoints/exp_1778563813_pm10_more_temp_search_utc_season_thresholds.pt}"
-MODEL_PY="${MODEL_PY:-}"
+OUT_DIR="${OUT_DIR:-}"
 DEVICE="${DEVICE:-auto}"
-REPEATS="${REPEATS:-3}"
-MAX_FOG="${MAX_FOG:-8000}"
-MAX_MIST="${MAX_MIST:-8000}"
-MAX_CLEAR="${MAX_CLEAR:-20000}"
-SORT_METRIC="${SORT_METRIC:-low_vis_f2}"
-LIMIT_SAMPLES="${LIMIT_SAMPLES:-0}"
-FOG_TH="${FOG_TH:-0.34}"
-MIST_TH="${MIST_TH:-0.56}"
+LIMIT_SAMPLES="${LIMIT_SAMPLES:-}"
+EXTRA_ARGS="${EXTRA_ARGS:-}"
+
+echo "Config JSON: ${CONFIG_JSON}"
+echo "Output dir override: ${OUT_DIR:-<from config>}"
 
 CMD=(
   python "${SCRIPT_PATH}"
-  --out_dir "${OUT_DIR}"
-  --data_dir "${DATA_DIR}"
-  --ckpt_path "${CKPT_PATH}"
-  --scaler_path "${SCALER_PATH}"
-  --season_th_path "${SEASON_TH_PATH}"
-  --fog_th "${FOG_TH}"
-  --mist_th "${MIST_TH}"
+  --config_json "${CONFIG_JSON}"
   --device "${DEVICE}"
-  --repeats "${REPEATS}"
-  --max_fog "${MAX_FOG}"
-  --max_mist "${MAX_MIST}"
-  --max_clear "${MAX_CLEAR}"
-  --sort_metric "${SORT_METRIC}"
-  --limit_samples "${LIMIT_SAMPLES}"
 )
 
-if [[ -n "${MODEL_PY}" ]]; then
-  CMD+=(--model_py "${MODEL_PY}")
+if [[ -n "${OUT_DIR}" ]]; then
+  CMD+=(--out_dir "${OUT_DIR}")
+fi
+if [[ -n "${LIMIT_SAMPLES}" ]]; then
+  CMD+=(--limit_samples "${LIMIT_SAMPLES}")
 fi
 if [[ "${USE_CALIBRATION:-0}" == "1" ]]; then
   CMD+=(--use_calibration)
@@ -77,6 +61,11 @@ if [[ "${CATALOG_ONLY:-0}" == "1" ]]; then
 fi
 if [[ "${NO_PLOT:-0}" == "1" ]]; then
   CMD+=(--no_plot)
+fi
+if [[ -n "${EXTRA_ARGS}" ]]; then
+  # shellcheck disable=SC2206
+  EXTRA_ARGV=(${EXTRA_ARGS})
+  CMD+=("${EXTRA_ARGV[@]}")
 fi
 
 echo "Command: ${CMD[*]}"

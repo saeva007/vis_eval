@@ -37,70 +37,53 @@ export OMP_NUM_THREADS=32
 export OPENBLAS_NUM_THREADS=32
 export MKL_NUM_THREADS=32
 
-# 3. 脚本路径
+# 3. 脚本路径与集中配置
 SCRIPT_PATH="/public/home/putianshu/vis_mlp/paper_eval/run_paper_eval_pm10_pm25_journal.py"
-EVAL_MODE="${EVAL_MODE:-all}"
-S2_RUN_ID="${S2_RUN_ID:-exp_1778563813_pm10_more_temp_search_utc}"
-OUT_DIR="${OUT_DIR:-paper_eval_results_pm10_pm25_journal_utc}"
+CONFIG_JSON="${CONFIG_JSON:-/public/home/putianshu/vis_mlp/paper_eval/paper_eval_config.json}"
+EVAL_MODE="${EVAL_MODE:-}"
+OUT_DIR="${OUT_DIR:-}"
 HISTORY_PATHS="${HISTORY_PATHS:-}"
-HISTORY_LABELS="${HISTORY_LABELS:-No FE values,Full FE}"
-DATA_DIR="${DATA_DIR:-ml_dataset_s2_tianji_12h_pm10_pm25_monthtail_2}"
-DATA_48H_DIR="${DATA_48H_DIR:-ml_dataset_fe_12h_48h_pm10_pm25_testonly_leadtime}"
-CKPT_PATH="${CKPT_PATH:-checkpoints/${S2_RUN_ID}_S2_PhaseB_best_score.pt}"
-SCALER_PATH="${SCALER_PATH:-checkpoints/robust_scaler_${S2_RUN_ID}_w12_dyn27_s2_48h_pm10.pkl}"
-SEASON_TH_PATH="${SEASON_TH_PATH:-checkpoints/${S2_RUN_ID}_season_thresholds.pt}"
-MODEL_PY="${MODEL_PY:-PMST_net_test_11_s2_pm10.py}"
-IFS_VIS_NC="${IFS_VIS_NC:-VIS_IDW_KDTree_20250101_20251231.nc}"
-LOCAL_TIME_OFFSET_HOURS="${LOCAL_TIME_OFFSET_HOURS:-8}"
-FOG_TH="${FOG_TH:-0.34}"
-MIST_TH="${MIST_TH:-0.56}"
-LEAD_FOG_TH="${LEAD_FOG_TH:-${FOG_TH}}"
-LEAD_MIST_TH="${LEAD_MIST_TH:-${MIST_TH}}"
+HISTORY_LABELS="${HISTORY_LABELS:-}"
+DEVICE="${DEVICE:-}"
+LIMIT_SAMPLES="${LIMIT_SAMPLES:-}"
+EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 # 4. 执行数据处理
 echo "Running Python script: ${SCRIPT_PATH}"
-echo "Eval mode: ${EVAL_MODE}"
-echo "S2 run id: ${S2_RUN_ID}"
-echo "Output dir: ${OUT_DIR}"
-echo "Thresholds: fog=${FOG_TH}, mist=${MIST_TH}, lead_fog=${LEAD_FOG_TH}, lead_mist=${LEAD_MIST_TH}"
+echo "Config JSON: ${CONFIG_JSON}"
+echo "Eval mode override: ${EVAL_MODE:-<from config>}"
+echo "Output dir override: ${OUT_DIR:-<from config>}"
 
 CMD=(
     python "${SCRIPT_PATH}"
-    --mode "${EVAL_MODE}"
-    --out_dir "${OUT_DIR}"
-    --fog_th "${FOG_TH}"
-    --mist_th "${MIST_TH}"
-    --lead_fog_th "${LEAD_FOG_TH}"
-    --lead_mist_th "${LEAD_MIST_TH}"
+    --config_json "${CONFIG_JSON}"
 )
 
-if [[ -n "${DATA_DIR}" ]]; then
-    CMD+=(--data_dir "${DATA_DIR}")
+if [[ -n "${EVAL_MODE}" ]]; then
+    CMD+=(--mode "${EVAL_MODE}")
 fi
-if [[ -n "${DATA_48H_DIR}" ]]; then
-    CMD+=(--data_48h_dir "${DATA_48H_DIR}")
+if [[ -n "${OUT_DIR}" ]]; then
+    CMD+=(--out_dir "${OUT_DIR}")
 fi
-if [[ -n "${CKPT_PATH}" ]]; then
-    CMD+=(--ckpt_path "${CKPT_PATH}")
+if [[ -n "${DEVICE}" ]]; then
+    CMD+=(--device "${DEVICE}")
 fi
-if [[ -n "${SCALER_PATH}" ]]; then
-    CMD+=(--scaler_path "${SCALER_PATH}")
+if [[ -n "${LIMIT_SAMPLES}" ]]; then
+    CMD+=(--limit_samples "${LIMIT_SAMPLES}")
 fi
-if [[ -n "${SEASON_TH_PATH}" ]]; then
-    CMD+=(--season_th_path "${SEASON_TH_PATH}")
+if [[ -n "${HISTORY_PATHS}" ]]; then
+    CMD+=(--history_paths "${HISTORY_PATHS}")
 fi
-if [[ -n "${MODEL_PY}" ]]; then
-    CMD+=(--model_py "${MODEL_PY}")
+if [[ -n "${HISTORY_LABELS}" ]]; then
+    CMD+=(--history_labels "${HISTORY_LABELS}")
 fi
-if [[ -n "${IFS_VIS_NC}" ]]; then
-    CMD+=(--ifs_vis_nc "${IFS_VIS_NC}")
+if [[ "${SKIP_OVERLAP_BOOTSTRAP:-0}" == "1" ]]; then
+    CMD+=(--skip_overlap_bootstrap)
 fi
-if [[ -n "${LOCAL_TIME_OFFSET_HOURS}" ]]; then
-    CMD+=(--local_time_offset_hours "${LOCAL_TIME_OFFSET_HOURS}")
-fi
-
-if [[ "${EVAL_MODE}" == "tables" && -n "${HISTORY_PATHS}" ]]; then
-    CMD+=(--history_paths "${HISTORY_PATHS}" --history_labels "${HISTORY_LABELS}")
+if [[ -n "${EXTRA_ARGS}" ]]; then
+    # shellcheck disable=SC2206
+    EXTRA_ARGV=(${EXTRA_ARGS})
+    CMD+=("${EXTRA_ARGV[@]}")
 fi
 
 echo "Command: ${CMD[*]}"

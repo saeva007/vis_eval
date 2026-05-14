@@ -35,35 +35,42 @@ export OMP_NUM_THREADS=32
 export OPENBLAS_NUM_THREADS=32
 export MKL_NUM_THREADS=32
 
-# 3. 脚本路径与参数
+# 3. 脚本路径与集中配置
 SCRIPT_PATH="/public/home/putianshu/vis_mlp/paper_eval/run_feature_engineering_ablation_journal.py"
-MODE="${MODE:-all}"
-BASE_DIR="${BASE_DIR:-/public/home/putianshu/vis_mlp}"
-S2_RUN_ID="${S2_RUN_ID:-exp_1778563813_pm10_more_temp_search_utc}"
-SPEC_CSV="${SPEC_CSV:-${BASE_DIR}/feature_engineering_ablation_spec_${S2_RUN_ID}_th034_056.csv}"
-OUT_DIR="${OUT_DIR:-paper_eval_results_pm10_pm25_journal/feature_engineering_ablation}"
+CONFIG_JSON="${CONFIG_JSON:-/public/home/putianshu/vis_mlp/paper_eval/paper_eval_config.json}"
+MODE="${MODE:-}"
+OUT_DIR="${OUT_DIR:-}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 REFRESH_SPEC="${REFRESH_SPEC:-0}"
 
-if [[ "${REFRESH_SPEC}" == "1" || ! -f "${SPEC_CSV}" ]]; then
-    echo "Writing current template: ${SPEC_CSV}"
-    python "${SCRIPT_PATH}" --write_template "${SPEC_CSV}"
-fi
-
 echo "Running Python script: ${SCRIPT_PATH}"
-echo "MODE=${MODE}"
-echo "BASE_DIR=${BASE_DIR}"
-echo "S2_RUN_ID=${S2_RUN_ID}"
-echo "SPEC_CSV=${SPEC_CSV}"
-echo "OUT_DIR=${OUT_DIR}"
+echo "CONFIG_JSON=${CONFIG_JSON}"
+echo "MODE override=${MODE:-<from config>}"
+echo "OUT_DIR override=${OUT_DIR:-<from config>}"
 echo "REFRESH_SPEC=${REFRESH_SPEC}"
 echo "EXTRA_ARGS=${EXTRA_ARGS}"
 
-python "${SCRIPT_PATH}" \
-    --mode "${MODE}" \
-    --base "${BASE_DIR}" \
-    --spec_csv "${SPEC_CSV}" \
-    --out_dir "${OUT_DIR}" \
-    ${EXTRA_ARGS}
+CMD=(
+    python "${SCRIPT_PATH}"
+    --config_json "${CONFIG_JSON}"
+)
+
+if [[ -n "${MODE}" ]]; then
+    CMD+=(--mode "${MODE}")
+fi
+if [[ -n "${OUT_DIR}" ]]; then
+    CMD+=(--out_dir "${OUT_DIR}")
+fi
+if [[ "${REFRESH_SPEC}" == "1" ]]; then
+    CMD+=(--refresh_spec)
+fi
+if [[ -n "${EXTRA_ARGS}" ]]; then
+    # shellcheck disable=SC2206
+    EXTRA_ARGV=(${EXTRA_ARGS})
+    CMD+=("${EXTRA_ARGV[@]}")
+fi
+
+echo "Command: ${CMD[*]}"
+"${CMD[@]}"
 
 echo "Job finished at: $(date)"

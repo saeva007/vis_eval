@@ -31,6 +31,7 @@ for _p in (str(LOCAL_ROOT), str(VIS_EVAL_DIR)):
         sys.path.insert(0, _p)
 
 from feature_catalog_pm10_pm25 import catalog_rows, permutation_groups, write_catalog
+from paper_eval_config import DEFAULT_CONFIG_NAME, apply_paper_eval_config
 
 
 DEFAULT_CKPT = "checkpoints/exp_1778563813_pm10_more_temp_search_utc_S2_PhaseB_best_score.pt"
@@ -81,6 +82,11 @@ def eval_helpers():
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Run grouped permutation feature importance for the PMST S2 model.")
+    p.add_argument(
+        "--config_json",
+        default=os.environ.get("PAPER_EVAL_CONFIG", str(VIS_EVAL_DIR / DEFAULT_CONFIG_NAME)),
+        help="Central JSON run configuration. Pass 'none' to use hard-coded CLI defaults only.",
+    )
     p.add_argument("--base", default=os.environ.get("VIS_MLP_ROOT", "/public/home/putianshu/vis_mlp"))
     p.add_argument("--data_dir", default="ml_dataset_s2_tianji_12h_pm10_pm25_monthtail_2")
     p.add_argument("--out_dir", default="paper_eval_results_pm10_pm25_journal_utc/feature_importance")
@@ -109,7 +115,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sort_metric", default="low_vis_f2", choices=METRIC_KEYS)
     p.add_argument("--catalog_only", action="store_true", help="Write feature catalog and exit without loading model.")
     p.add_argument("--no_plot", action="store_true")
-    return p.parse_args()
+    args = p.parse_args()
+    return apply_paper_eval_config(args, "feature_importance", default_dir=VIS_EVAL_DIR)
 
 
 def load_test_labels(data_dir: Path, limit_samples: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -403,6 +410,8 @@ def main() -> None:
                 "x_path": str(x_path),
                 "ckpt_path": str(abs_under_base(base, args.ckpt_path)),
                 "scaler_path": str(abs_under_base(base, args.scaler_path)),
+                "config_json": getattr(args, "config_json", ""),
+                "config_run_tag": getattr(args, "config_run_tag", ""),
                 "threshold_rule": args.threshold_rule,
                 "fog_th": float(args.fog_th),
                 "mist_th": float(args.mist_th),

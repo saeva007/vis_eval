@@ -68,6 +68,11 @@ for _p in (str(LOCAL_ROOT), str(VIS_EVAL_DIR)):
         sys.path.insert(0, _p)
 
 try:
+    from paper_eval_config import DEFAULT_CONFIG_NAME, apply_paper_eval_config
+except Exception as exc:  # pragma: no cover - import failure should be explicit on remote.
+    raise RuntimeError(f"Cannot import paper_eval_config from {VIS_EVAL_DIR}") from exc
+
+try:
     from metrics_core import (
         compute_rare_event_report,
         pred_from_joint_thresholds,
@@ -235,6 +240,11 @@ def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         description="Run PM10+PM2.5 paper evaluation, IFS baseline matching, and journal figures."
     )
+    ap.add_argument(
+        "--config_json",
+        default=os.environ.get("PAPER_EVAL_CONFIG", str(VIS_EVAL_DIR / DEFAULT_CONFIG_NAME)),
+        help="Central JSON run configuration. Pass 'none' to use hard-coded CLI defaults only.",
+    )
     ap.add_argument("--mode", choices=["main", "overlap", "all", "tables", "lead48"], default="all")
     ap.add_argument("--base", default=os.environ.get("VIS_MLP_ROOT", "/public/home/putianshu/vis_mlp"))
     ap.add_argument("--data_dir", default=DEFAULT_DATA_DIR)
@@ -284,7 +294,8 @@ def parse_args() -> argparse.Namespace:
     )
     ap.add_argument("--history_paths", default="", help="Comma/semicolon-separated training history JSON or stdout .out/.log files.")
     ap.add_argument("--history_labels", default="", help="Optional labels matching --history_paths order.")
-    return ap.parse_args()
+    args = ap.parse_args()
+    return apply_paper_eval_config(args, "journal", default_dir=VIS_EVAL_DIR)
 
 
 def abs_under_base(base: Path, path_value: str) -> Path:
@@ -2352,7 +2363,7 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
     season_th_path = abs_under_base(base, args.season_th_path)
     ifs_nc = abs_under_base(base, args.ifs_vis_nc)
     model_py = resolve_model_py(base, args.model_py)
-    print(f"[profile] S2 run id: {DEFAULT_S2_RUN_ID}", flush=True)
+    print(f"[profile] S2 run id: {getattr(args, 'config_s2_run_id', DEFAULT_S2_RUN_ID)}", flush=True)
     print(f"[paths] data_dir       : {data_dir}", flush=True)
     print(f"[paths] checkpoint     : {ckpt_path}", flush=True)
     print(f"[paths] scaler         : {scaler_path}", flush=True)
@@ -2639,6 +2650,8 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
 
     run_config = {
         "args": vars(args),
+        "config_json": getattr(args, "config_json", ""),
+        "config_run_tag": getattr(args, "config_run_tag", ""),
         "base": str(base),
         "data_dir": str(data_dir),
         "x_path": str(x_path),
@@ -2735,6 +2748,9 @@ def main() -> None:
     print(f"mode     : {args.mode}", flush=True)
     print(f"base     : {base}", flush=True)
     print(f"out_dir  : {out_dir}", flush=True)
+    if getattr(args, "config_loaded", False):
+        print(f"config   : {args.config_json}", flush=True)
+        print(f"run_tag  : {getattr(args, 'config_run_tag', '')}", flush=True)
     print("=" * 72, flush=True)
 
     if args.mode == "tables":

@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "common": {
+    "base": "/public/home/putianshu/vis_mlp",
+    "data_dir": "ml_dataset_s2_tianji_12h_pm10_pm25_monthtail_2",
+    "model_py": "PMST_net_test_11_s2_pm10.py",
+    "window_size": 12,
+    "dyn_vars_count": 0,
+    "extra_feat_dim": 0,
+    "hidden_dim": 512,
+    "dropout": 0.3,
+    "batch_size": 8192,
+    "device": "auto",
+    "limit_samples": 0,
+    "threshold_rule": "mutual",
+    "fog_th": 0.34,
+    "mist_th": 0.56,
+    "use_calibration": false
+  },
+  "model": {
+    "s2_run_id": "exp_1778563813_pm10_more_temp_search_utc",
+    "ckpt_path": "checkpoints/{s2_run_id}_S2_PhaseB_best_score.pt",
+    "scaler_path": "checkpoints/robust_scaler_{s2_run_id}_w12_dyn27_s2_48h_pm10.pkl",
+    "season_th_path": "checkpoints/{s2_run_id}_season_thresholds.pt"
+  },
+  "outputs": {
+    "root_dir": "paper_eval_results_pm10_pm25_journal_utc/config_runs",
+    "run_tag": "exp_1778563813_pm10_pm25_th034_056",
+    "prevent_overwrite": true,
+    "journal_out_dir": "{root_dir}/{run_tag}/journal",
+    "feature_importance_out_dir": "{root_dir}/{run_tag}/feature_importance",
+    "feature_ablation_out_dir": "{root_dir}/{run_tag}/feature_engineering_ablation"
+  },
+  "journal": {
+    "mode": "all",
+    "data_48h_dir": "ml_dataset_fe_12h_48h_pm10_pm25_testonly_leadtime",
+    "ifs_vis_nc": "VIS_IDW_KDTree_20250101_20251231.nc",
+    "ifs_48h_nc": "IFS_VIS_0_48h_stations_2025_00_12.nc",
+    "ifs_vis_var": "VIS",
+    "ifs_48h_var": "VIS_ifs",
+    "lead_fog_th": 0.34,
+    "lead_mist_th": 0.56,
+    "local_time_offset_hours": 8,
+    "event_top_k": 3,
+    "event_window_hours": 3,
+    "event_min_fog_stations": 80,
+    "event_min_regions": 3,
+    "event_min_lon_span": 10.0,
+    "event_min_lat_span": 4.0,
+    "event_gap_hours": 24,
+    "overlap_script": "ifs_baseline/test_PMST_overlap_forecast_source_s2.py",
+    "overlap_extra_args": "",
+    "skip_overlap_bootstrap": false
+  },
+  "feature_importance": {
+    "seed": 42,
+    "repeats": 3,
+    "max_fog": 8000,
+    "max_mist": 8000,
+    "max_clear": 20000,
+    "max_groups": 0,
+    "sort_metric": "low_vis_f2",
+    "catalog_only": false,
+    "no_plot": false
+  },
+  "feature_ablation": {
+    "mode": "all",
+    "scaler_path": "checkpoints/robust_scaler_{s2_run_id}_w12_dyn27_s2_48h_pm10.pkl",
+    "spec_csv": "feature_engineering_ablation_spec_{s2_run_id}_th034_056.csv",
+    "metrics_csv": "",
+    "refresh_spec": false,
+    "baseline_variant": "full",
+    "variant_order": "",
+    "figure_stem": "fig12_feature_engineering_ablation"
+  }
+}

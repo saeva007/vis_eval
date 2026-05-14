@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -50,6 +51,7 @@ for _p in (str(LOCAL_ROOT), str(VIS_EVAL_DIR)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from paper_eval_config import DEFAULT_CONFIG_NAME, apply_paper_eval_config  # noqa: E402
 from run_paper_eval_pm10_pm25_journal import (  # noqa: E402
     CLEAR_COLOR,
     DEFAULT_CKPT_PATH,
@@ -205,15 +207,23 @@ def mask_for_mode(mode: str, fe_dim: int, custom_indices: str = "") -> np.ndarra
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Evaluate and plot PMST FE ablations.")
+    ap.add_argument(
+        "--config_json",
+        default=os.environ.get("PAPER_EVAL_CONFIG", str(VIS_EVAL_DIR / DEFAULT_CONFIG_NAME)),
+        help="Central JSON run configuration. Pass 'none' to use hard-coded CLI defaults only.",
+    )
     ap.add_argument("--mode", choices=["eval", "plot", "all"], default="all")
     ap.add_argument("--base", default="/public/home/putianshu/vis_mlp")
     ap.add_argument("--data_dir", default="ml_dataset_s2_tianji_12h_pm10_pm25_monthtail_2")
     ap.add_argument("--model_py", default="")
+    ap.add_argument("--ckpt_path", default="")
     ap.add_argument("--scaler_path", default="")
+    ap.add_argument("--season_th_path", default="")
     ap.add_argument("--spec_csv", default="")
     ap.add_argument("--metrics_csv", default="")
     ap.add_argument("--out_dir", default="paper_eval_results_pm10_pm25_journal/feature_engineering_ablation")
     ap.add_argument("--write_template", default="", help="Write a spec CSV template and exit.")
+    ap.add_argument("--refresh_spec", action="store_true", help="Rewrite the configured spec CSV before evaluation.")
 
     ap.add_argument("--window_size", type=int, default=12)
     ap.add_argument("--dyn_vars_count", type=int, default=0)
@@ -234,16 +244,24 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def write_template(path: Path) -> None:
+def write_template(
+    path: Path,
+    *,
+    s2_run_id: str = DEFAULT_S2_RUN_ID,
+    checkpoint: str = DEFAULT_CKPT_PATH,
+    season_th_path: str = DEFAULT_SEASON_TH_PATH,
+    fog_th: float = DEFAULT_FOG_TH,
+    mist_th: float = DEFAULT_MIST_TH,
+) -> None:
     rows = [
         {
             "variant": "full",
             "label": "Full FE",
             "ablation_mode": "full",
-            "checkpoint": DEFAULT_CKPT_PATH,
-            "season_th_path": DEFAULT_SEASON_TH_PATH,
-            "fog_th": DEFAULT_FOG_TH,
-            "mist_th": DEFAULT_MIST_TH,
+            "checkpoint": checkpoint,
+            "season_th_path": season_th_path,
+            "fog_th": fog_th,
+            "mist_th": mist_th,
             "threshold_rule": "mutual",
             "temperature": "",
             "custom_indices": "",
@@ -252,10 +270,10 @@ def write_template(path: Path) -> None:
             "variant": "no_fe_all",
             "label": "No FE values",
             "ablation_mode": "no_fe_all",
-            "checkpoint": f"checkpoints/{DEFAULT_S2_RUN_ID}_feabl_no_fe_all_S2_PhaseB_best_score.pt",
-            "season_th_path": f"checkpoints/{DEFAULT_S2_RUN_ID}_feabl_no_fe_all_season_thresholds.pt",
-            "fog_th": DEFAULT_FOG_TH,
-            "mist_th": DEFAULT_MIST_TH,
+            "checkpoint": f"checkpoints/{s2_run_id}_feabl_no_fe_all_S2_PhaseB_best_score.pt",
+            "season_th_path": f"checkpoints/{s2_run_id}_feabl_no_fe_all_season_thresholds.pt",
+            "fog_th": fog_th,
+            "mist_th": mist_th,
             "threshold_rule": "mutual",
             "temperature": "",
             "custom_indices": "",
@@ -436,7 +454,7 @@ def evaluate_specs(args: argparse.Namespace, base: Path, out_dir: Path, manifest
                 f"spec_csv={spec_path}; checkpoint={ckpt}. This usually "
                 "means a legacy PM10-only or pre-PM2.5 checkpoint is being evaluated "
                 "with the current PM10+PM2.5 model/data. Use checkpoints trained "
-                f"with the current run id ({DEFAULT_S2_RUN_ID}), regenerate the spec "
+                f"with the current run id ({getattr(args, 'config_s2_run_id', DEFAULT_S2_RUN_ID)}), regenerate the spec "
                 "with --write_template, or pass the matching legacy --model_py, "
                 "--data_dir, --dyn_vars_count, and --scaler_path together."
             )
@@ -647,14 +665,34 @@ def write_delta_table(metrics_df: pd.DataFrame, out_dir: Path, baseline_variant:
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
     args = build_parser().parse_args(argv)
+    args = apply_paper_eval_config(args, "feature_ablation", argv=argv, default_dir=VIS_EVAL_DIR)
     if args.write_template:
-        write_template(Path(args.write_template))
+        write_template(
+            Path(args.write_template),
+            s2_run_id=getattr(args, "config_s2_run_id", DEFAULT_S2_RUN_ID),
+            checkpoint=args.ckpt_path or DEFAULT_CKPT_PATH,
+            season_th_path=args.season_th_path or DEFAULT_SEASON_TH_PATH,
+            fog_th=float(args.fog_th),
+            mist_th=float(args.mist_th),
+        )
         return
 
     base = Path(args.base).resolve()
     out_dir = abs_under_base(base, args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest = Manifest(out_dir)
+
+    if args.mode in ("eval", "all") and args.spec_csv:
+        spec_path = abs_under_base(base, args.spec_csv)
+        if args.refresh_spec or not spec_path.exists():
+            write_template(
+                spec_path,
+                s2_run_id=getattr(args, "config_s2_run_id", DEFAULT_S2_RUN_ID),
+                checkpoint=args.ckpt_path or DEFAULT_CKPT_PATH,
+                season_th_path=args.season_th_path or DEFAULT_SEASON_TH_PATH,
+                fog_th=float(args.fog_th),
+                mist_th=float(args.mist_th),
+            )
 
     if args.mode in ("eval", "all"):
         metrics_df = evaluate_specs(args, base, out_dir, manifest)
@@ -683,6 +721,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     metadata = {
         "script": str(SCRIPT_PATH),
         "mode": args.mode,
+        "config_json": getattr(args, "config_json", ""),
+        "config_run_tag": getattr(args, "config_run_tag", ""),
         "data_dir": args.data_dir,
         "metrics_csv": args.metrics_csv,
         "spec_csv": args.spec_csv,
