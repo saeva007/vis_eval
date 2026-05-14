@@ -81,12 +81,16 @@ try:
     from plot_spatial import (
         run_widespread_event_evaluation,
         detect_widespread_fog_events,
+        plot_three_events_footprint_row,
+        plot_three_events_peak_row,
         load_china_shapefile as _load_china_shapefile,
         _draw_event_basemap as _plot_spatial_event_basemap,
     )
 except Exception:
     run_widespread_event_evaluation = None
     detect_widespread_fog_events = None
+    plot_three_events_footprint_row = None
+    plot_three_events_peak_row = None
     _load_china_shapefile = None
     _plot_spatial_event_basemap = None
 
@@ -231,7 +235,7 @@ def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         description="Run PM10+PM2.5 paper evaluation, IFS baseline matching, and journal figures."
     )
-    ap.add_argument("--mode", choices=["main", "overlap", "all", "tables"], default="all")
+    ap.add_argument("--mode", choices=["main", "overlap", "all", "tables", "lead48"], default="all")
     ap.add_argument("--base", default=os.environ.get("VIS_MLP_ROOT", "/public/home/putianshu/vis_mlp"))
     ap.add_argument("--data_dir", default=DEFAULT_DATA_DIR)
     ap.add_argument("--data_48h_dir", default=DEFAULT_DATA_48H_DIR)
@@ -1757,7 +1761,10 @@ def plot_event_footprint(
     for df in dfs:
         for col in ("obs_low_vis_count", "pmst_low_vis_count", "ifs_low_vis_count"):
             if col in df:
-                ymax = max(ymax, int(np.nanmax(df[col].to_numpy(dtype=float))))
+                vals = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=float)
+                vals = vals[np.isfinite(vals)]
+                if vals.size:
+                    ymax = max(ymax, int(np.nanmax(vals)))
     fig, axes = plt.subplots(1, len(dfs), figsize=(4.3 * len(dfs), 3.7), sharey=True, squeeze=False)
     for i, (ax, df) in enumerate(zip(axes.ravel(), dfs), start=1):
         x = df["hour_offset"].to_numpy(dtype=float)
@@ -2178,6 +2185,8 @@ def run_48h_optional(
         else:
             print(f"[48h] data dir not found: {data_48h}; skip fig11.", flush=True)
             return
+    print(f"[48h] data_dir: {data_48h}", flush=True)
+    print("[48h] expected figures: fig11_48h_lead_init_00Z_12Z and fig11_48h_model_vs_ifs_by_lead", flush=True)
     try:
         x_path, y_cls, _, meta = load_main_data(data_48h, args.limit_samples)
         dyn, fe = infer_layout_from_x(x_path, args.window_size)
@@ -2553,6 +2562,8 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
         vmax=0.2,
     )
 
+    run_48h_optional(args, base, out_dir, model, device, scaler, manifest)
+
     event_df = pd.DataFrame()
     if run_widespread_event_evaluation is not None:
         try:
@@ -2582,11 +2593,45 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
     if "ifs_diagnostic_pred" not in eval_df and ifs_pred is not None:
         eval_df["ifs_diagnostic_pred"] = ifs_pred
         eval_df["ifs_diagnostic_valid"] = ifs_valid
+    if event_df is not None and not event_df.empty:
+        event_sources = [str(event_path), str(out_dir / "per_sample_eval.csv")]
+        if plot_three_events_footprint_row is not None:
+            three_footprint_path = out_dir / "fig_three_events_footprint_row.png"
+            if plot_three_events_footprint_row(
+                meta,
+                y_raw,
+                pmst_pred,
+                event_df,
+                str(three_footprint_path),
+                shp_gdf=shp_gdf,
+                window_hours=args.event_window_hours,
+            ) is not None:
+                manifest.add(
+                    three_footprint_path.name,
+                    event_sources,
+                    notes="Three selected widespread fog events with complete test-set windows where available.",
+                    n=int(len(y_cls)),
+                    matched_ifs=int(np.sum(ifs_valid)) if ifs_valid is not None else None,
+                )
+        if plot_three_events_peak_row is not None:
+            three_peak_path = out_dir / "fig_three_events_peak_row.png"
+            if plot_three_events_peak_row(
+                meta,
+                y_raw,
+                pmst_pred,
+                event_df,
+                str(three_peak_path),
+                shp_gdf=shp_gdf,
+            ) is not None:
+                manifest.add(
+                    three_peak_path.name,
+                    event_sources,
+                    notes="Observed visibility at the peak hour for the same three selected widespread fog events.",
+                    n=int(len(y_cls)),
+                )
     plot_event_peak_grid(eval_df, event_df, out_dir, manifest, [str(event_path), str(out_dir / "per_sample_eval.csv")], shp_gdf=shp_gdf)
     hourly_paths = [out_dir / f"fig9_event_{k}_hourly_metrics.csv" for k in (1, 2, 3)]
     plot_event_footprint(hourly_paths, out_dir, manifest, [str(p) for p in hourly_paths])
-
-    run_48h_optional(args, base, out_dir, model, device, scaler, manifest)
 
     run_config = {
         "args": vars(args),
@@ -2609,6 +2654,43 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
     with open(out_dir / "run_config.json", "w", encoding="utf-8") as f:
         json.dump(run_config, f, ensure_ascii=False, indent=2)
     return model, device, scaler
+
+
+def run_lead48_mode(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Manifest) -> None:
+    import torch
+    import joblib
+
+    ckpt_path = abs_under_base(base, args.ckpt_path)
+    scaler_path = abs_under_base(base, args.scaler_path)
+    model_py = resolve_model_py(base, args.model_py)
+    data_48h = abs_under_base(base, args.data_48h_dir)
+    if not data_48h.is_dir():
+        fallback = base / "ml_dataset_fe_12h_48h_pm10_pm25"
+        if fallback.is_dir():
+            data_48h = fallback
+    require_existing_path(data_48h, "data_48h_dir", expect_dir=True)
+    require_existing_path(ckpt_path, "checkpoint")
+    require_existing_path(scaler_path, "scaler")
+    require_existing_path(model_py, "model_py")
+
+    x_path = data_48h / "X_test.npy"
+    dyn, fe = infer_layout_from_x(x_path, args.window_size)
+    model_cls = import_model_class(model_py)
+    device = resolve_device(args.device)
+    scaler = joblib.load(scaler_path)
+    model = model_cls(
+        dyn_vars_count=dyn,
+        window_size=args.window_size,
+        hidden_dim=args.hidden_dim,
+        dropout=args.dropout,
+        extra_feat_dim=fe,
+    ).to(device)
+    load_checkpoint_into_model(model, ckpt_path, device)
+    if device.type == "cuda" and torch.cuda.device_count() > 1:
+        model = torch.nn.DataParallel(model)
+        print(f"[model] DataParallel on {torch.cuda.device_count()} devices", flush=True)
+    model.eval()
+    run_48h_optional(args, base, out_dir, model, device, scaler, manifest)
 
 
 def run_tables_mode(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Manifest) -> None:
@@ -2653,6 +2735,8 @@ def main() -> None:
 
     if args.mode == "tables":
         run_tables_mode(args, base, out_dir, manifest)
+    if args.mode == "lead48":
+        run_lead48_mode(args, base, out_dir, manifest)
     if args.mode in ("main", "all"):
         run_main(args, base, out_dir, manifest)
     if args.mode in ("overlap", "all"):

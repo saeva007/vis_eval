@@ -337,6 +337,7 @@ def detect_widespread_fog_events(
     meta,
     y_true,
     top_k=3,
+    window_hours=None,
     min_fog_stations=80,
     min_regions=3,
     min_lon_span=10.0,
@@ -435,7 +436,34 @@ def detect_widespread_fog_events(
     out = pd.DataFrame(event_rows).sort_values(
         ["event_score", "peak_fog_count", "peak_region_count"],
         ascending=False,
-    ).head(top_k).reset_index(drop=True)
+    ).reset_index(drop=True)
+    if window_hours is not None and not out.empty:
+        wh = int(window_hours)
+        available_times = set(pd.to_datetime(df["time"]).dropna().astype("int64").tolist())
+
+        def _window_available(peak_time):
+            peak = pd.Timestamp(peak_time)
+            needed = [peak + pd.Timedelta(hours=offset) for offset in range(-wh, wh + 1)]
+            flags = [t.value in available_times for t in needed]
+            return pd.Series(
+                {
+                    "window_start": needed[0],
+                    "window_end": needed[-1],
+                    "window_complete": bool(all(flags)),
+                    "window_available_hours": int(sum(flags)),
+                    "window_required_hours": int(len(flags)),
+                }
+            )
+
+        window_df = out["peak_time"].apply(_window_available)
+        out = pd.concat([out, window_df], axis=1)
+        complete = out[out["window_complete"]].copy()
+        if len(complete) >= int(top_k):
+            out = complete
+        elif not complete.empty:
+            out = pd.concat([complete, out[~out.index.isin(complete.index)]], axis=0)
+
+    out = out.head(top_k).reset_index(drop=True)
     if not out.empty:
         out.insert(0, "event_rank", np.arange(1, len(out) + 1))
     return out
@@ -509,19 +537,43 @@ def compute_event_hourly_metrics(
         t_now = pd.Timestamp(center_time) + pd.Timedelta(hours=hour_offset)
         time_mask = (times == t_now).to_numpy()
         valid_mask = time_mask & np.asarray(ifs_valid, dtype=bool)
+        has_samples = int(time_mask.sum()) > 0
 
         row = {
             "time": t_now,
             "hour_offset": hour_offset,
+            "has_test_samples": bool(has_samples),
             "n_total": int(time_mask.sum()),
             "n_matched_ifs": int(valid_mask.sum()),
+        }
+        if not has_samples:
+            row.update({
+                "obs_fog_count": np.nan,
+                "obs_low_vis_count": np.nan,
+                "pmst_fog_count": np.nan,
+                "pmst_low_vis_count": np.nan,
+                "ifs_fog_count": np.nan,
+                "ifs_low_vis_count": np.nan,
+                "pmst_fog_csi": np.nan,
+                "pmst_fog_recall": np.nan,
+                "pmst_fog_far": np.nan,
+                "pmst_low_vis_recall": np.nan,
+                "ifs_fog_csi": np.nan,
+                "ifs_fog_recall": np.nan,
+                "ifs_fog_far": np.nan,
+                "ifs_low_vis_recall": np.nan,
+            })
+            rows.append(row)
+            continue
+
+        row.update({
             "obs_fog_count": int(((np.asarray(y_true) == 0) & time_mask).sum()),
             "obs_low_vis_count": int(((np.asarray(y_true) <= 1) & time_mask).sum()),
             "pmst_fog_count": int(((np.asarray(pmst_pred) == 0) & time_mask).sum()),
             "pmst_low_vis_count": int(((np.asarray(pmst_pred) <= 1) & time_mask).sum()),
             "ifs_fog_count": int(((np.asarray(ifs_pred) == 0) & valid_mask).sum()),
             "ifs_low_vis_count": int(((np.asarray(ifs_pred) <= 1) & valid_mask).sum()),
-        }
+        })
 
         if valid_mask.sum() == 0:
             row.update({
@@ -1111,6 +1163,7 @@ def run_widespread_event_evaluation(
         meta,
         y_true,
         top_k=top_k,
+        window_hours=window_hours,
         min_fog_stations=min_fog_stations,
         min_regions=min_regions,
         min_lon_span=min_lon_span,
