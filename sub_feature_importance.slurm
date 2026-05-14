@@ -4,7 +4,7 @@
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=16
-#SBATCH --gres=dcu:1
+#SBATCH --gres=dcu:4
 #SBATCH --mem=0
 #SBATCH -t 48:00:00
 #SBATCH -o logs/feature_importance_%j.out
