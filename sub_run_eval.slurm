@@ -52,14 +52,27 @@ SEASON_TH_PATH="${SEASON_TH_PATH:-checkpoints/${S2_RUN_ID}_season_thresholds.pt}
 MODEL_PY="${MODEL_PY:-PMST_net_test_11_s2_pm10.py}"
 IFS_VIS_NC="${IFS_VIS_NC:-VIS_IDW_KDTree_20250101_20251231.nc}"
 LOCAL_TIME_OFFSET_HOURS="${LOCAL_TIME_OFFSET_HOURS:-8}"
+FOG_TH="${FOG_TH:-0.34}"
+MIST_TH="${MIST_TH:-0.56}"
+LEAD_FOG_TH="${LEAD_FOG_TH:-${FOG_TH}}"
+LEAD_MIST_TH="${LEAD_MIST_TH:-${MIST_TH}}"
 
 # 4. 执行数据处理
 echo "Running Python script: ${SCRIPT_PATH}"
 echo "Eval mode: ${EVAL_MODE}"
 echo "S2 run id: ${S2_RUN_ID}"
 echo "Output dir: ${OUT_DIR}"
+echo "Thresholds: fog=${FOG_TH}, mist=${MIST_TH}, lead_fog=${LEAD_FOG_TH}, lead_mist=${LEAD_MIST_TH}"
 
-CMD=(python "${SCRIPT_PATH}" --mode "${EVAL_MODE}" --out_dir "${OUT_DIR}")
+CMD=(
+    python "${SCRIPT_PATH}"
+    --mode "${EVAL_MODE}"
+    --out_dir "${OUT_DIR}"
+    --fog_th "${FOG_TH}"
+    --mist_th "${MIST_TH}"
+    --lead_fog_th "${LEAD_FOG_TH}"
+    --lead_mist_th "${LEAD_MIST_TH}"
+)
 
 if [[ -n "${DATA_DIR}" ]]; then
     CMD+=(--data_dir "${DATA_DIR}")
