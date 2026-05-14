@@ -45,6 +45,8 @@ MAX_MIST="${MAX_MIST:-8000}"
 MAX_CLEAR="${MAX_CLEAR:-20000}"
 SORT_METRIC="${SORT_METRIC:-low_vis_f2}"
 LIMIT_SAMPLES="${LIMIT_SAMPLES:-0}"
+FOG_TH="${FOG_TH:-0.34}"
+MIST_TH="${MIST_TH:-0.56}"
 
 CMD=(
   python "${SCRIPT_PATH}"
@@ -53,6 +55,8 @@ CMD=(
   --ckpt_path "${CKPT_PATH}"
   --scaler_path "${SCALER_PATH}"
   --season_th_path "${SEASON_TH_PATH}"
+  --fog_th "${FOG_TH}"
+  --mist_th "${MIST_TH}"
   --device "${DEVICE}"
   --repeats "${REPEATS}"
   --max_fog "${MAX_FOG}"

@@ -53,6 +53,8 @@ for _p in (str(LOCAL_ROOT), str(VIS_EVAL_DIR)):
 from run_paper_eval_pm10_pm25_journal import (  # noqa: E402
     CLEAR_COLOR,
     DEFAULT_CKPT_PATH,
+    DEFAULT_FOG_TH,
+    DEFAULT_MIST_TH,
     DEFAULT_SCALER_PATH,
     DEFAULT_SEASON_TH_PATH,
     DEFAULT_S2_RUN_ID,
@@ -222,8 +224,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--device", default="auto")
     ap.add_argument("--limit_samples", type=int, default=0)
 
-    ap.add_argument("--fog_th", type=float, default=0.10)
-    ap.add_argument("--mist_th", type=float, default=0.42)
+    ap.add_argument("--fog_th", type=float, default=DEFAULT_FOG_TH)
+    ap.add_argument("--mist_th", type=float, default=DEFAULT_MIST_TH)
     ap.add_argument("--threshold_rule", choices=["default", "mutual", "joint"], default="mutual")
     ap.add_argument("--use_calibration", action="store_true")
     ap.add_argument("--baseline_variant", default="full")
@@ -240,8 +242,8 @@ def write_template(path: Path) -> None:
             "ablation_mode": "full",
             "checkpoint": DEFAULT_CKPT_PATH,
             "season_th_path": DEFAULT_SEASON_TH_PATH,
-            "fog_th": 0.10,
-            "mist_th": 0.42,
+            "fog_th": DEFAULT_FOG_TH,
+            "mist_th": DEFAULT_MIST_TH,
             "threshold_rule": "mutual",
             "temperature": "",
             "custom_indices": "",
@@ -252,8 +254,8 @@ def write_template(path: Path) -> None:
             "ablation_mode": "no_fe_all",
             "checkpoint": f"checkpoints/{DEFAULT_S2_RUN_ID}_feabl_no_fe_all_S2_PhaseB_best_score.pt",
             "season_th_path": f"checkpoints/{DEFAULT_S2_RUN_ID}_feabl_no_fe_all_season_thresholds.pt",
-            "fog_th": 0.10,
-            "mist_th": 0.42,
+            "fog_th": DEFAULT_FOG_TH,
+            "mist_th": DEFAULT_MIST_TH,
             "threshold_rule": "mutual",
             "temperature": "",
             "custom_indices": "",

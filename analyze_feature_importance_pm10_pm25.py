@@ -36,6 +36,8 @@ from feature_catalog_pm10_pm25 import catalog_rows, permutation_groups, write_ca
 DEFAULT_CKPT = "checkpoints/exp_1778563813_pm10_more_temp_search_utc_S2_PhaseB_best_score.pt"
 DEFAULT_SCALER = "checkpoints/robust_scaler_exp_1778563813_pm10_more_temp_search_utc_w12_dyn27_s2_48h_pm10.pkl"
 DEFAULT_SEASON_TH = "checkpoints/exp_1778563813_pm10_more_temp_search_utc_season_thresholds.pt"
+DEFAULT_FOG_TH = 0.34
+DEFAULT_MIST_TH = 0.56
 LOWER_IS_BETTER = {"false_positive_rate", "Fog_FAR", "Mist_FAR", "Clear_FAR", "ECE", "Brier_Fog", "Brier_Mist"}
 METRIC_KEYS = [
     "low_vis_f2",
@@ -91,8 +93,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--extra_feat_dim", type=int, default=0)
     p.add_argument("--hidden_dim", type=int, default=512)
     p.add_argument("--dropout", type=float, default=0.3)
-    p.add_argument("--fog_th", type=float, default=0.10)
-    p.add_argument("--mist_th", type=float, default=0.42)
+    p.add_argument("--fog_th", type=float, default=DEFAULT_FOG_TH)
+    p.add_argument("--mist_th", type=float, default=DEFAULT_MIST_TH)
     p.add_argument("--threshold_rule", choices=["default", "mutual", "joint"], default="mutual")
     p.add_argument("--use_calibration", action="store_true", help="Load temperature from --season_th_path if present.")
     p.add_argument("--device", default="auto")

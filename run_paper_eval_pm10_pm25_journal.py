@@ -123,6 +123,8 @@ DEFAULT_CKPT_PATH = f"checkpoints/{DEFAULT_S2_RUN_ID}_S2_PhaseB_best_score.pt"
 DEFAULT_SCALER_PATH = f"checkpoints/robust_scaler_{DEFAULT_S2_RUN_ID}_w12_dyn27_s2_48h_pm10.pkl"
 DEFAULT_SEASON_TH_PATH = f"checkpoints/{DEFAULT_S2_RUN_ID}_season_thresholds.pt"
 DEFAULT_OUT_DIR = "paper_eval_results_pm10_pm25_journal_utc"
+DEFAULT_FOG_TH = 0.34
+DEFAULT_MIST_TH = 0.56
 KNOWN_CONVERGENCE_LOG_LABELS = {
     "112606205.out": "No FE values",
     "111696811.out": "Full FE",
@@ -248,10 +250,10 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--extra_feat_dim", type=int, default=0, help="0 means infer from X_test.npy")
     ap.add_argument("--hidden_dim", type=int, default=512)
     ap.add_argument("--dropout", type=float, default=0.3)
-    ap.add_argument("--fog_th", type=float, default=0.10)
-    ap.add_argument("--mist_th", type=float, default=0.42)
-    ap.add_argument("--lead_fog_th", type=float, default=0.10)
-    ap.add_argument("--lead_mist_th", type=float, default=0.30)
+    ap.add_argument("--fog_th", type=float, default=DEFAULT_FOG_TH)
+    ap.add_argument("--mist_th", type=float, default=DEFAULT_MIST_TH)
+    ap.add_argument("--lead_fog_th", type=float, default=DEFAULT_FOG_TH)
+    ap.add_argument("--lead_mist_th", type=float, default=DEFAULT_MIST_TH)
     ap.add_argument("--threshold_rule", choices=["default", "mutual", "joint"], default="mutual")
     ap.add_argument("--no_calibration", action="store_true")
     ap.add_argument("--use_calibration", action="store_true", help="Load --season_th_path if present.")
