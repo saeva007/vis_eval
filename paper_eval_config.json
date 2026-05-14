@@ -1,5 +1,17 @@
 {
   "schema_version": 1,
+  "experiment": {
+    "experiment_id": "exp_1778563813_pm10_more_temp_search_utc_lowvis_gate081_fpr040",
+    "purpose": "Paper evaluation with the validation-selected low-visibility binary gate as the primary decision rule.",
+    "primary_decision": "binary_gate_fine_argmax",
+    "selected_binary_threshold": 0.81,
+    "selection_result_json": "diagnostics/exp_1778563813_pm10_more_temp_search_utc_lowvis_gate_fpr040/selected_lowvis_gate.json",
+    "comparison_outputs": {
+      "run_config_json": "{journal_out_dir}/run_config.json",
+      "decision_comparison_json": "{journal_out_dir}/decision_comparison_metrics.json",
+      "decision_comparison_csv": "{journal_out_dir}/decision_comparison_metrics.csv"
+    }
+  },
   "common": {
     "base": "/public/home/putianshu/vis_mlp",
     "data_dir": "ml_dataset_s2_tianji_12h_pm10_pm25_monthtail_2",
@@ -25,13 +37,22 @@
   },
   "outputs": {
     "root_dir": "paper_eval_results_pm10_pm25_journal_utc/config_runs",
-    "run_tag": "exp_1778563813_pm10_pm25_th034_056",
+    "run_tag": "exp_1778563813_pm10_pm25_lowvis_gate081_fpr040",
     "prevent_overwrite": true,
     "journal_out_dir": "{root_dir}/{run_tag}/journal",
+    "journal_run_config_json": "{journal_out_dir}/run_config.json",
+    "journal_decision_comparison_json": "{journal_out_dir}/decision_comparison_metrics.json",
+    "journal_decision_comparison_csv": "{journal_out_dir}/decision_comparison_metrics.csv",
     "feature_importance_out_dir": "{root_dir}/{run_tag}/feature_importance",
     "feature_ablation_out_dir": "{root_dir}/{run_tag}/feature_engineering_ablation"
   },
   "journal": {
+    "experiment_id": "exp_1778563813_pm10_more_temp_search_utc_lowvis_gate081_fpr040",
+    "decision_rule": "binary_gate",
+    "lowvis_gate_th": 0.81,
+    "lead_lowvis_gate_th": 0.81,
+    "selection_result_json": "diagnostics/exp_1778563813_pm10_more_temp_search_utc_lowvis_gate_fpr040/selected_lowvis_gate.json",
+    "write_decision_comparison": true,
     "mode": "all",
     "data_48h_dir": "ml_dataset_fe_12h_48h_pm10_pm25_testonly_leadtime",
     "ifs_vis_nc": "VIS_IDW_KDTree_20250101_20251231.nc",

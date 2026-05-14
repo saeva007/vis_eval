@@ -117,6 +117,20 @@ CLASS_LONG = ["Fog (0-500 m)", "Mist (500-1000 m)", "Clear (>=1000 m)"]
 CLASS_CMAP = ListedColormap(CLASS_COLORS)
 CLASS_NORM = BoundaryNorm([-0.5, 0.5, 1.5, 2.5], CLASS_CMAP.N)
 LOCAL_TIME_OFFSET_HOURS = 8
+SEASON_MAP = {
+    12: "DJF",
+    1: "DJF",
+    2: "DJF",
+    3: "MAM",
+    4: "MAM",
+    5: "MAM",
+    6: "JJA",
+    7: "JJA",
+    8: "JJA",
+    9: "SON",
+    10: "SON",
+    11: "SON",
+}
 LOCAL_TIME_LABEL = "UTC+8"
 TIME_OF_DAY_LOCAL_ORDER = [
     f"Night (00-05 {LOCAL_TIME_LABEL})",
@@ -269,6 +283,35 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--lead_fog_th", type=float, default=DEFAULT_FOG_TH)
     ap.add_argument("--lead_mist_th", type=float, default=DEFAULT_MIST_TH)
     ap.add_argument("--threshold_rule", choices=["default", "mutual", "joint"], default="mutual")
+    ap.add_argument(
+        "--decision_rule",
+        choices=["fine_threshold", "binary_gate"],
+        default="fine_threshold",
+        help="Primary PMST decision rule for paper figures and tables.",
+    )
+    ap.add_argument(
+        "--lowvis_gate_th",
+        type=float,
+        default=0.81,
+        help="Binary low-visibility gate threshold used when --decision_rule=binary_gate.",
+    )
+    ap.add_argument(
+        "--lead_lowvis_gate_th",
+        type=float,
+        default=0.81,
+        help="Binary gate threshold for optional 48h lead evaluation.",
+    )
+    ap.add_argument("--experiment_id", default="", help="Traceable experiment id written to run_config.json.")
+    ap.add_argument(
+        "--selection_result_json",
+        default="",
+        help="Optional low-vis gate selection JSON used to justify --lowvis_gate_th.",
+    )
+    ap.add_argument(
+        "--write_decision_comparison",
+        action="store_true",
+        help="Write fine-threshold, binary-gate, and saved-season-threshold comparison tables.",
+    )
     ap.add_argument("--no_calibration", action="store_true")
     ap.add_argument("--use_calibration", action="store_true", help="Load --season_th_path if present.")
     ap.add_argument("--batch_size", type=int, default=8192)
@@ -384,6 +427,82 @@ def pred_from_probs_rule(probs: np.ndarray, fog_th: float, mist_th: float, rule:
     return pred_from_thresholds(probs, fog_th, mist_th)
 
 
+def binary_gate_pred(probs: np.ndarray, low_prob: np.ndarray, low_th: float) -> np.ndarray:
+    """Predict low visibility with the binary head, then split Fog/Mist by fine-head argmax."""
+
+    if low_prob is None:
+        raise ValueError("binary_gate decision requires low-visibility probabilities from the model.")
+    probs = np.asarray(probs, dtype=np.float64)
+    low_prob = np.asarray(low_prob, dtype=np.float64).reshape(-1)
+    if len(low_prob) != len(probs):
+        raise ValueError(f"low_prob length {len(low_prob)} does not match probs length {len(probs)}")
+    pred = np.full(len(low_prob), 2, dtype=np.int64)
+    low = low_prob >= float(low_th)
+    low_class = np.where(probs[:, 0] >= probs[:, 1], 0, 1)
+    pred[low] = low_class[low]
+    return pred
+
+
+def pred_from_decision_rule(
+    probs: np.ndarray,
+    low_prob: Optional[np.ndarray],
+    decision_rule: str,
+    fog_th: float,
+    mist_th: float,
+    threshold_rule: str,
+    lowvis_gate_th: float,
+) -> np.ndarray:
+    if decision_rule == "binary_gate":
+        return binary_gate_pred(probs, low_prob, lowvis_gate_th)
+    return pred_from_probs_rule(probs, fog_th, mist_th, threshold_rule)
+
+
+def load_saved_season_thresholds(season_th_path: Path) -> Tuple[Optional[dict], Optional[float]]:
+    if not season_th_path or not season_th_path.exists():
+        return None, None
+    try:
+        import torch
+
+        try:
+            payload = torch.load(season_th_path, map_location="cpu", weights_only=True)
+        except TypeError:
+            payload = torch.load(season_th_path, map_location="cpu")
+    except Exception as exc:
+        print(f"[season] could not load saved thresholds from {season_th_path}: {exc}", flush=True)
+        return None, None
+    if not isinstance(payload, dict):
+        return None, None
+    temperature = payload.get("temperature")
+    if temperature is not None:
+        temperature = float(temperature)
+    return payload.get("season_thresholds"), temperature
+
+
+def thresholds_from_saved_seasons(
+    meta: pd.DataFrame,
+    season_thresholds: dict,
+    default_fog: float,
+    default_mist: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    if "month_analysis" in meta:
+        months = pd.to_numeric(meta["month_analysis"], errors="coerce")
+    elif "month" in meta:
+        months = pd.to_numeric(meta["month"], errors="coerce")
+    else:
+        months = pd.to_datetime(meta["time"], errors="coerce").dt.month
+    fog = np.full(len(meta), float(default_fog), dtype=np.float64)
+    mist = np.full(len(meta), float(default_mist), dtype=np.float64)
+    for i, month in enumerate(months):
+        if pd.isna(month):
+            continue
+        season = SEASON_MAP.get(int(month))
+        rec = season_thresholds.get(season, {}) if season else {}
+        if isinstance(rec, dict):
+            fog[i] = float(rec.get("fog_th", rec.get("fog", default_fog)))
+            mist[i] = float(rec.get("mist_th", rec.get("mist", default_mist)))
+    return fog, mist
+
+
 def dyn_log_indices(dyn_vars_count: int) -> List[int]:
     idxs = [2, 4, 9]
     if dyn_vars_count >= 27:
@@ -440,7 +559,8 @@ def run_model_inference(
     extra_feat_dim: int,
     limit_samples: int = 0,
     temperature: Optional[float] = None,
-) -> np.ndarray:
+    return_low_prob: bool = False,
+) -> Tuple[np.ndarray, Optional[np.ndarray]]:
     import torch
     import torch.nn.functional as F
 
@@ -448,6 +568,7 @@ def run_model_inference(
     n = len(X) if not limit_samples or limit_samples <= 0 else min(int(limit_samples), len(X))
     temp = 1.0 if temperature is None else max(float(temperature), 1e-6)
     out = []
+    low_out = []
     model.eval()
     for start in range(0, n, batch_size):
         end = min(start + batch_size, n)
@@ -455,12 +576,22 @@ def run_model_inference(
         final = prepare_batch_rows(rows, scaler, window_size, dyn_vars_count, extra_feat_dim)
         x = torch.from_numpy(final).float().to(device, non_blocking=(device.type == "cuda"))
         with torch.inference_mode():
-            logits = model(x)[0]
+            model_out = model(x)
+            logits = model_out[0]
             probs = F.softmax(logits / temp, dim=1)
+            low_logit = model_out[2] if len(model_out) >= 3 else None
         out.append(probs.detach().cpu().numpy())
+        if return_low_prob:
+            if low_logit is None:
+                raise ValueError("Model forward output does not include low_vis_detector logits.")
+            low_out.append(torch.sigmoid(low_logit).detach().cpu().numpy().reshape(-1))
         if start == 0 or end == n or (start // max(batch_size, 1)) % 20 == 0:
             print(f"  [inference] {end}/{n}", flush=True)
-    return np.concatenate(out, axis=0) if out else np.zeros((0, 3), dtype=np.float32)
+    probs_all = np.concatenate(out, axis=0) if out else np.zeros((0, 3), dtype=np.float32)
+    if return_low_prob:
+        low_all = np.concatenate(low_out, axis=0) if low_out else np.zeros((0,), dtype=np.float32)
+        return probs_all, low_all
+    return probs_all, None
 
 
 def load_checkpoint_into_model(model, ckpt_path: Path, device) -> None:
@@ -521,6 +652,7 @@ def classification_metrics(y_true: np.ndarray, pred: np.ndarray, probs: Optional
     low_tp = float((true_low & pred_low).sum())
     low_fp = float((~true_low & pred_low).sum())
     low_fn = float((true_low & ~pred_low).sum())
+    d["low_vis_precision"] = safe_div(low_tp, low_tp + low_fp)
     low_r = safe_div(low_tp, low_tp + low_fn)
     d["low_vis_csi"] = safe_div(low_tp, low_tp + low_fp + low_fn)
     d["low_vis_recall"] = low_r
@@ -705,6 +837,7 @@ def export_per_sample(
     y_raw: np.ndarray,
     pred: np.ndarray,
     probs: np.ndarray,
+    low_prob: Optional[np.ndarray] = None,
     ifs_pred: Optional[np.ndarray] = None,
     ifs_vis: Optional[np.ndarray] = None,
     ifs_valid: Optional[np.ndarray] = None,
@@ -735,6 +868,8 @@ def export_per_sample(
     df["pmst_p_fog"] = probs[:, 0]
     df["pmst_p_mist"] = probs[:, 1]
     df["pmst_p_clear"] = probs[:, 2]
+    if low_prob is not None:
+        df["pmst_p_lowvis_binary"] = np.asarray(low_prob, dtype=np.float64).reshape(-1)
     df["pmst_correct"] = pred == y_true
     if ifs_pred is not None:
         df["ifs_diagnostic_valid"] = ifs_valid
@@ -764,6 +899,7 @@ def write_report(path: Path, y_true: np.ndarray, pred: np.ndarray, metrics: Dict
             )
         f.write(f"  low_vis_csi: {values.get('low_vis_csi', np.nan):.6f}\n")
         f.write(f"  low_vis_recall: {values.get('low_vis_recall', np.nan):.6f}\n")
+        f.write(f"  low_vis_precision: {values.get('low_vis_precision', np.nan):.6f}\n")
         f.write(f"  clear_to_low_vis_false_positive_rate: {values.get('false_positive_rate', np.nan):.6f}\n")
         f.write(f"  accuracy: {values.get('accuracy', np.nan):.6f}\n")
         for key in ("balanced_acc", "mcc", "Brier_Fog", "Brier_Mist", "ECE"):
@@ -2222,7 +2358,7 @@ def run_48h_optional(
         if init_hour.isna().all():
             print("[48h] meta_test.csv has no parseable init_time/init_hour; skip fig11.", flush=True)
             return
-        probs = run_model_inference(
+        probs, low_prob = run_model_inference(
             x_path,
             scaler,
             model,
@@ -2233,8 +2369,17 @@ def run_48h_optional(
             fe,
             limit_samples=args.limit_samples,
             temperature=None,
+            return_low_prob=(args.decision_rule == "binary_gate"),
         )
-        pred = pred_from_probs_rule(probs, args.lead_fog_th, args.lead_mist_th, args.threshold_rule)
+        pred = pred_from_decision_rule(
+            probs,
+            low_prob,
+            args.decision_rule,
+            args.lead_fog_th,
+            args.lead_mist_th,
+            args.threshold_rule,
+            args.lead_lowvis_gate_th,
+        )
         lead = pd.to_numeric(meta["lead_hour"], errors="coerce").to_numpy(dtype=float)
         pooled = lead_metrics_table(y_cls, pred, probs, lead)
         lead00 = lead_metrics_table(y_cls, pred, probs, lead, mask=(init_hour.to_numpy() == 0))
@@ -2396,21 +2541,13 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
         print(f"[model] DataParallel on {torch.cuda.device_count()} devices", flush=True)
     model.eval()
 
+    season_thresholds, season_temp = load_saved_season_thresholds(season_th_path)
     temperature = None
-    if args.use_calibration and season_th_path.exists():
-        try:
-            try:
-                cal = torch.load(season_th_path, map_location="cpu", weights_only=True)
-            except TypeError:
-                cal = torch.load(season_th_path, map_location="cpu")
-            temperature = cal.get("temperature")
-            if temperature is not None:
-                temperature = float(temperature)
-            print(f"[calibration] temperature={temperature} from {season_th_path}", flush=True)
-        except Exception as exc:
-            print(f"[calibration] could not load {season_th_path}: {exc}", flush=True)
+    if args.use_calibration and season_temp is not None:
+        temperature = season_temp
+        print(f"[calibration] temperature={temperature} from {season_th_path}", flush=True)
 
-    probs = run_model_inference(
+    probs, low_prob = run_model_inference(
         x_path,
         scaler,
         model,
@@ -2421,9 +2558,87 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
         fe,
         limit_samples=args.limit_samples,
         temperature=temperature,
+        return_low_prob=(args.decision_rule == "binary_gate" or args.write_decision_comparison),
     )
-    pmst_pred = pred_from_probs_rule(probs, args.fog_th, args.mist_th, args.threshold_rule)
+    pmst_pred = pred_from_decision_rule(
+        probs,
+        low_prob,
+        args.decision_rule,
+        args.fog_th,
+        args.mist_th,
+        args.threshold_rule,
+        args.lowvis_gate_th,
+    )
     pmst_metrics = classification_metrics(y_cls, pmst_pred, probs=probs)
+    selection_json_path = abs_under_base(base, args.selection_result_json) if args.selection_result_json else None
+    primary_decision_meta = {
+        "decision_rule": args.decision_rule,
+        "fog_threshold": args.fog_th,
+        "mist_threshold": args.mist_th,
+        "threshold_rule": args.threshold_rule,
+        "lowvis_gate_threshold": args.lowvis_gate_th if args.decision_rule == "binary_gate" else np.nan,
+        "selection_result_json": str(selection_json_path) if selection_json_path else "",
+    }
+    if args.write_decision_comparison:
+        comparison_rows = [
+            (
+                "current_fine_threshold",
+                classification_metrics(
+                    y_cls,
+                    pred_from_probs_rule(probs, args.fog_th, args.mist_th, args.threshold_rule),
+                    probs=probs,
+                ),
+                {
+                    "decision_rule": "fine_threshold",
+                    "fog_threshold": args.fog_th,
+                    "mist_threshold": args.mist_th,
+                    "threshold_rule": args.threshold_rule,
+                },
+            )
+        ]
+        if low_prob is not None:
+            comparison_rows.append(
+                (
+                    "binary_gate_fine_argmax",
+                    classification_metrics(y_cls, binary_gate_pred(probs, low_prob, args.lowvis_gate_th), probs=probs),
+                    {
+                        "decision_rule": "binary_gate",
+                        "binary_threshold": args.lowvis_gate_th,
+                        "selection_result_json": str(selection_json_path) if selection_json_path else "",
+                    },
+                )
+            )
+        if season_thresholds:
+            fog_arr, mist_arr = thresholds_from_saved_seasons(meta, season_thresholds, args.fog_th, args.mist_th)
+            comparison_rows.append(
+                (
+                    "saved_season_thresholds",
+                    classification_metrics(y_cls, pred_from_thresholds_mutual(probs, fog_arr, mist_arr), probs=probs),
+                    {
+                        "decision_rule": "season_thresholds",
+                        "threshold_rule": "mutual",
+                        "season_threshold_path": str(season_th_path),
+                    },
+                )
+            )
+        comparison_df = metrics_rows(comparison_rows)
+        comparison_df.to_csv(out_dir / "decision_comparison_metrics.csv", index=False)
+        comparison_json = {
+            "experiment_id": args.experiment_id or getattr(args, "config_run_tag", ""),
+            "s2_run_id": getattr(args, "config_s2_run_id", DEFAULT_S2_RUN_ID),
+            "primary_decision": primary_decision_meta,
+            "comparison_source": {
+                "data_dir": str(data_dir),
+                "checkpoint": str(ckpt_path),
+                "scaler": str(scaler_path),
+                "season_threshold_path": str(season_th_path),
+            },
+            "comparison_rows": comparison_df.to_dict(orient="records"),
+        }
+        with open(out_dir / "decision_comparison_metrics.json", "w", encoding="utf-8") as f:
+            json.dump(comparison_json, f, ensure_ascii=False, indent=2)
+        print(f"[table] {out_dir / 'decision_comparison_metrics.csv'}", flush=True)
+        print(f"[json] {out_dir / 'decision_comparison_metrics.json'}", flush=True)
     overall_df = metrics_rows(
         [
             (
@@ -2431,9 +2646,7 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
                 pmst_metrics,
                 {
                     "sample_scope": "test",
-                    "fog_threshold": args.fog_th,
-                    "mist_threshold": args.mist_th,
-                    "threshold_rule": args.threshold_rule,
+                    **primary_decision_meta,
                     "checkpoint": str(ckpt_path),
                     "data_dir": str(data_dir),
                 },
@@ -2450,7 +2663,7 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
             matched_pmst_metrics = classification_metrics(y_cls[ifs_valid], pmst_pred[ifs_valid], probs=probs[ifs_valid])
             ifs_df = metrics_rows(
                 [
-                    ("pmst", matched_pmst_metrics, {"sample_scope": "ifs_diagnostic_matched_test", "matched_rows": int(np.sum(ifs_valid))}),
+                    ("pmst", matched_pmst_metrics, {"sample_scope": "ifs_diagnostic_matched_test", "matched_rows": int(np.sum(ifs_valid)), **primary_decision_meta}),
                     ("ifs_diagnostic", ifs_metrics, {"sample_scope": "ifs_diagnostic_matched_test", "matched_rows": int(np.sum(ifs_valid)), "ifs_forecast_nc": str(ifs_nc)}),
                 ]
             )
@@ -2489,6 +2702,7 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
         y_raw,
         pmst_pred,
         probs,
+        low_prob=low_prob,
         ifs_pred=ifs_pred,
         ifs_vis=ifs_vis,
         ifs_valid=ifs_valid,
@@ -2502,6 +2716,8 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
 
     setup_journal_style()
     sources_main = [str(x_path), str(data_dir / "y_test.npy"), str(data_dir / "meta_test.csv"), str(ckpt_path), str(scaler_path)]
+    if selection_json_path:
+        sources_main.append(str(selection_json_path))
     if ifs_nc.exists():
         sources_main.append(str(ifs_nc))
     plot_confusion_pmst_vs_ifs(y_cls, pmst_pred, ifs_pred, ifs_valid, out_dir, manifest, sources_main)
@@ -2649,9 +2865,14 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
     plot_event_footprint(hourly_paths, out_dir, manifest, [str(p) for p in hourly_paths])
 
     run_config = {
+        "experiment_id": args.experiment_id or getattr(args, "config_run_tag", ""),
         "args": vars(args),
         "config_json": getattr(args, "config_json", ""),
         "config_run_tag": getattr(args, "config_run_tag", ""),
+        "primary_decision": primary_decision_meta,
+        "decision_comparison_metrics_json": str(out_dir / "decision_comparison_metrics.json")
+        if args.write_decision_comparison
+        else "",
         "base": str(base),
         "data_dir": str(data_dir),
         "x_path": str(x_path),
