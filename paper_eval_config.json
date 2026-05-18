@@ -93,5 +93,39 @@
     "baseline_variant": "full",
     "variant_order": "",
     "figure_stem": "fig12_feature_engineering_ablation"
+  },
+  "static_rnn_eval": {
+    "mode": "main",
+    "train_dir": "/public/home/putianshu/vis_mlp/train",
+    "data_dir": "ml_dataset_s2_tianji_12h_pm10_pm25_monthtail_2",
+    "ckpt_dir": "checkpoints",
+    "ckpt_path": "",
+    "run_id": "",
+    "main_run_id": "",
+    "main_ckpt": "",
+    "matrix_run_prefix": "",
+    "out_dir": "static_rnn_eval_results",
+    "window_size": 12,
+    "batch_size": 8192,
+    "device": "auto",
+    "limit_samples": 0,
+    "threshold_source": "checkpoint",
+    "plots": "core",
+    "matrix_experiments": "1:2:3:4:5:6:7"
+  },
+  "lowvis_eval_suite": {
+    "target": "main",
+    "main_script": "run_paper_eval_pm10_pm25_journal.py",
+    "matrix_script": "run_static_rnn_lowvis_eval_journal.py",
+    "main_mode": "all",
+    "main_out_dir": "",
+    "matrix_run_prefix": "",
+    "matrix_experiments": "1:2:3:4:5:6:7",
+    "matrix_out_dir": "",
+    "plots": "core",
+    "device": "auto",
+    "limit_samples": 0,
+    "extra_main_args": "",
+    "extra_matrix_args": ""
   }
 }
