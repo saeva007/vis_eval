@@ -343,6 +343,7 @@ def detect_widespread_fog_events(
     min_lon_span=10.0,
     min_lat_span=4.0,
     gap_hours=24,
+    required_valid_mask=None,
 ):
     """
     Detect nationwide/widespread fog events from the test set.
@@ -353,6 +354,18 @@ def detect_widespread_fog_events(
     df = meta[["time", "station_id", "lat", "lon"]].copy()
     df["time"] = pd.to_datetime(df["time"])
     df["y_true"] = np.asarray(y_true, dtype=np.int64)
+    if required_valid_mask is not None:
+        required_valid_mask = np.asarray(required_valid_mask, dtype=bool)
+        if len(required_valid_mask) != len(df):
+            raise ValueError(
+                "required_valid_mask length mismatch: "
+                f"{len(required_valid_mask)} vs meta rows {len(df)}"
+            )
+        df["required_valid"] = required_valid_mask
+        # Event candidates must be drawn from rows where observation/PMST/IFS
+        # are all available. PMST/observation are defined for every test row;
+        # this mask adds the IFS availability constraint.
+        df = df[df["required_valid"]].copy()
     fog_df = df[df["y_true"] == 0].copy()
     if fog_df.empty:
         return pd.DataFrame(columns=[
@@ -534,7 +547,11 @@ def detect_widespread_fog_events(
         return True
 
     selected_rows = []
-    for require_complete in (True, False):
+    # When a required-valid mask is supplied, do not fall back to incomplete
+    # windows: the selected event panels must be fully covered by the
+    # observation/model/IFS intersection.
+    complete_modes = (True,) if required_valid_mask is not None else (True, False)
+    for require_complete in complete_modes:
         for _, row in all_candidates.iterrows():
             if len(selected_rows) >= top_k:
                 break
@@ -558,7 +575,7 @@ def detect_widespread_fog_events(
     if len(out) < top_k:
         print(
             f"  [Event] Selected {len(out)}/{top_k} distinct events even after relaxed tiers; "
-            "check event thresholds or test-set coverage.",
+            "check event thresholds, test-set coverage, or IFS overlap.",
             flush=True,
         )
     elif (out["selection_tier"] != "strict").any():
@@ -1259,6 +1276,11 @@ def run_widespread_event_evaluation(
     os.makedirs(output_dir, exist_ok=True)
     shp_gdf = load_china_shapefile(shp_path) if shp_path and os.path.exists(shp_path) else None
     ifs_pred, _, ifs_valid = load_ifs_baseline(meta, ifs_nc_path)
+    print(
+        "  [Event] Selecting cases on observation/model/IFS intersection: "
+        f"{int(np.asarray(ifs_valid, dtype=bool).sum())}/{len(meta)} rows matched.",
+        flush=True,
+    )
 
     event_df = detect_widespread_fog_events(
         meta,
@@ -1270,6 +1292,7 @@ def run_widespread_event_evaluation(
         min_lon_span=min_lon_span,
         min_lat_span=min_lat_span,
         gap_hours=gap_hours,
+        required_valid_mask=ifs_valid,
     )
     summary_path = os.path.join(output_dir, "event_case_summary.csv")
     event_df.to_csv(summary_path, index=False)
