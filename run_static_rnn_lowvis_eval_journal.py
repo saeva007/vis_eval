@@ -64,14 +64,27 @@ try:
         aggregate_station_metrics,
         build_scenario_metrics,
         classification_metrics,
+        lead_metrics_table,
         load_main_data,
+        load_ifs_diagnostic,
+        load_ifs_48h_diagnostic,
         plot_csi_recall_pmst_vs_ifs,
         plot_confusion_pmst_vs_ifs,
+        plot_diurnal_time_detail,
+        plot_event_footprint,
+        plot_event_peak_grid,
+        plot_fig11_48h_model_vs_ifs,
+        plot_fig11_lead_init,
+        plot_ifs_visibility_bias,
         plot_region_detail,
         plot_scenario_split,
         plot_station_metric_map,
+        plot_three_events_footprint_row,
+        plot_three_events_peak_row,
         plot_time_of_day_detail,
+        parse_init_hour,
         read_shapefile,
+        run_widespread_event_evaluation,
         save_fig_pair,
         setup_journal_style,
         write_report,
@@ -135,6 +148,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--base", default=str(DEFAULT_BASE))
     p.add_argument("--train_dir", default=str(DEFAULT_TRAIN_DIR))
     p.add_argument("--data_dir", default=DEFAULT_DATA_DIR)
+    p.add_argument("--data_48h_dir", default="ml_dataset_fe_12h_48h_pm10_pm25_testonly_leadtime")
     p.add_argument("--ckpt_dir", default="checkpoints")
     p.add_argument("--out_dir", default=DEFAULT_OUT_DIR)
     p.add_argument("--window_size", type=int, default=12)
@@ -154,8 +168,21 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--threshold_source", choices=["checkpoint", "cli", "argmax"], default="checkpoint")
     p.add_argument("--fog_th", type=float, default=0.5)
     p.add_argument("--mist_th", type=float, default=0.5)
+    p.add_argument("--ifs_vis_nc", default="VIS_IDW_KDTree_20250101_20251231.nc")
+    p.add_argument("--ifs_vis_var", default="VIS")
+    p.add_argument("--ifs_48h_nc", default="IFS_VIS_0_48h_stations_2025_00_12.nc")
+    p.add_argument("--ifs_48h_var", default="VIS_ifs")
+    p.add_argument("--skip_48h", action="store_true")
+    p.add_argument("--local_time_offset_hours", type=int, default=8)
+    p.add_argument("--event_top_k", type=int, default=3)
+    p.add_argument("--event_window_hours", type=int, default=3)
+    p.add_argument("--event_min_fog_stations", type=int, default=80)
+    p.add_argument("--event_min_regions", type=int, default=3)
+    p.add_argument("--event_min_lon_span", type=float, default=10.0)
+    p.add_argument("--event_min_lat_span", type=float, default=4.0)
+    p.add_argument("--event_gap_hours", type=int, default=24)
     p.add_argument("--plots", choices=["none", "core", "all"], default="core")
-    p.add_argument("--shp_path", default="", help="Optional China boundary shapefile for station maps when --plots all.")
+    p.add_argument("--shp_path", default="/public/home/putianshu/中华人民共和国/中华人民共和国.shp", help="Optional China boundary shapefile for station/event maps when --plots all.")
     p.add_argument("--allow_missing", action="store_true", help="Skip missing matrix checkpoints instead of failing.")
     return p.parse_args()
 
@@ -415,6 +442,226 @@ def plot_summary_bar(summary: pd.DataFrame, out_dir: Path, manifest: Manifest, s
     save_fig_pair(fig, out_dir, "fig_static_rnn_model_matrix_summary", manifest, sources, notes="Static-RNN main/ablation checkpoint comparison.")
 
 
+def predict_for_lead(probs: np.ndarray, decision_meta: Dict[str, object]) -> np.ndarray:
+    if decision_meta.get("threshold_source") == "argmax":
+        return np.argmax(probs, axis=1).astype(np.int64)
+    fog_th = float(decision_meta.get("fog_th", 0.5))
+    mist_th = float(decision_meta.get("mist_th", 0.5))
+    return pred_from_thresholds_mutual(probs, fog_th, mist_th).astype(np.int64)
+
+
+def run_static_48h_optional(
+    args: argparse.Namespace,
+    target: EvalTarget,
+    base: Path,
+    data_dir: Path,
+    out_dir: Path,
+    manifest: Manifest,
+    scaler,
+    model,
+    device,
+    layout,
+    mod,
+    decision_meta: Dict[str, object],
+) -> None:
+    if args.skip_48h:
+        print("[48h] skipped by --skip_48h", flush=True)
+        return
+    data_48h = as_abs_under(base, args.data_48h_dir)
+    if not data_48h.is_dir():
+        print(f"[48h] data dir not found: {data_48h}; skip fig11.", flush=True)
+        return
+    try:
+        x_path, y_cls, _, meta = load_main_data(data_48h, args.limit_samples)
+        dyn, fe = infer_layout_from_x(x_path, args.window_size)
+        if dyn != layout.dyn_vars or fe != layout.fe_dim:
+            print(
+                f"[48h] layout dyn/fe=({dyn},{fe}) differs from checkpoint layout "
+                f"({layout.dyn_vars},{layout.fe_dim}); skip fig11.",
+                flush=True,
+            )
+            return
+        if "lead_hour" not in meta:
+            print("[48h] meta_test.csv has no lead_hour; skip fig11.", flush=True)
+            return
+        init_hour = parse_init_hour(meta)
+        if init_hour.isna().all():
+            print("[48h] meta_test.csv has no parseable init_time/init_hour; skip fig11.", flush=True)
+            return
+        print(f"[48h] data_dir: {data_48h}", flush=True)
+        probs = run_static_inference(
+            x_path,
+            scaler,
+            model,
+            device,
+            args.batch_size,
+            layout,
+            mod,
+            target.variant,
+            args.limit_samples,
+        )
+        pred = predict_for_lead(probs, decision_meta)
+        lead = pd.to_numeric(meta["lead_hour"], errors="coerce").to_numpy(dtype=float)
+        pooled = lead_metrics_table(y_cls, pred, probs, lead)
+        lead00 = lead_metrics_table(y_cls, pred, probs, lead, mask=(init_hour.to_numpy() == 0))
+        lead12 = lead_metrics_table(y_cls, pred, probs, lead, mask=(init_hour.to_numpy() == 12))
+        pooled_path = out_dir / "metrics_by_lead_hour_48h_model.csv"
+        lead00_path = out_dir / "metrics_by_lead_hour_init00Z.csv"
+        lead12_path = out_dir / "metrics_by_lead_hour_init12Z.csv"
+        pooled.to_csv(pooled_path, index=False)
+        lead00.to_csv(lead00_path, index=False)
+        lead12.to_csv(lead12_path, index=False)
+        plot_fig11_lead_init(
+            pooled,
+            lead00,
+            lead12,
+            out_dir,
+            manifest,
+            [str(x_path), str(data_48h / "meta_test.csv"), str(target.checkpoint)],
+        )
+        ifs_48h_nc = as_abs_under(base, args.ifs_48h_nc)
+        if not ifs_48h_nc.exists():
+            print(f"[48h IFS] NetCDF not found: {ifs_48h_nc}; skip model-vs-IFS lead figure.", flush=True)
+            return
+        try:
+            ifs_pred, _, ifs_valid, ifs_diag = load_ifs_48h_diagnostic(meta, ifs_48h_nc, args.ifs_48h_var)
+            diag_path = out_dir / "lead_eval_alignment_diagnostics_48h_ifs.csv"
+            pd.DataFrame([ifs_diag]).to_csv(diag_path, index=False, float_format="%.6f")
+            matched_mask = np.asarray(ifs_valid, dtype=bool)
+            if int(matched_mask.sum()) < 50:
+                print("[48h IFS] fewer than 50 matched rows; skip model-vs-IFS lead figure.", flush=True)
+                return
+            model_matched = lead_metrics_table(y_cls, pred, probs, lead, mask=matched_mask)
+            ifs_lead = lead_metrics_table(y_cls, ifs_pred, None, lead, mask=matched_mask)
+            model_matched_path = out_dir / "model_metrics_by_lead_hour_48h_ifs_matched.csv"
+            ifs_lead_path = out_dir / "ifs_metrics_by_lead_hour_48h.csv"
+            cmp_path = out_dir / "model_vs_ifs_metrics_by_lead_hour_48h.csv"
+            model_matched.to_csv(model_matched_path, index=False, float_format="%.6f")
+            ifs_lead.to_csv(ifs_lead_path, index=False, float_format="%.6f")
+            cmp_df = model_matched.merge(
+                ifs_lead,
+                on="lead_hour",
+                how="inner",
+                suffixes=("_model", "_ifs"),
+            ).sort_values("lead_hour").reset_index(drop=True)
+            for metric in (
+                "Fog_CSI",
+                "Fog_R",
+                "Mist_CSI",
+                "Mist_R",
+                "low_vis_csi",
+                "low_vis_recall",
+                "false_positive_rate",
+            ):
+                mc = f"{metric}_model"
+                ic = f"{metric}_ifs"
+                if mc in cmp_df and ic in cmp_df:
+                    cmp_df[f"{metric}_diff_model_minus_ifs"] = cmp_df[mc] - cmp_df[ic]
+            cmp_df.to_csv(cmp_path, index=False, float_format="%.6f")
+            plot_fig11_48h_model_vs_ifs(
+                cmp_df,
+                out_dir,
+                manifest,
+                [str(x_path), str(data_48h / "meta_test.csv"), str(ifs_48h_nc), str(cmp_path)],
+            )
+        except Exception as exc:
+            print(f"[48h IFS] skipped after error: {exc}", flush=True)
+    except Exception as exc:
+        print(f"[48h] skipped after error: {exc}", flush=True)
+
+
+def run_event_plots(
+    args: argparse.Namespace,
+    base: Path,
+    out_dir: Path,
+    manifest: Manifest,
+    meta: pd.DataFrame,
+    y_cls: np.ndarray,
+    y_raw: np.ndarray,
+    pred: np.ndarray,
+    eval_df: pd.DataFrame,
+    ifs_nc: Path,
+    ifs_valid: Optional[np.ndarray],
+    shp_gdf,
+) -> None:
+    event_df = pd.DataFrame()
+    event_eval_completed = False
+    if run_widespread_event_evaluation is not None:
+        try:
+            event_df = run_widespread_event_evaluation(
+                meta=meta,
+                y_true=y_cls,
+                y_true_raw=y_raw,
+                pmst_pred=pred,
+                output_dir=str(out_dir),
+                shp_path=args.shp_path,
+                ifs_nc_path=str(ifs_nc),
+                top_k=args.event_top_k,
+                window_hours=args.event_window_hours,
+                min_fog_stations=args.event_min_fog_stations,
+                min_regions=args.event_min_regions,
+                min_lon_span=args.event_min_lon_span,
+                min_lat_span=args.event_min_lat_span,
+                gap_hours=args.event_gap_hours,
+            )
+            event_eval_completed = True
+        except Exception as exc:
+            print(f"[events] run_widespread_event_evaluation failed: {exc}", flush=True)
+    event_path = out_dir / "event_case_summary.csv"
+    if event_eval_completed and event_path.exists():
+        event_df = pd.read_csv(event_path, parse_dates=["peak_time", "start_time", "end_time"])
+    elif event_df is not None and not event_df.empty:
+        event_df.to_csv(event_path, index=False)
+    elif (not event_eval_completed) and event_path.exists():
+        print(f"[events] ignoring stale event summary after failed/skipped event evaluation: {event_path}", flush=True)
+    if event_df is not None and not event_df.empty:
+        event_sources = [str(event_path), str(out_dir / "per_sample_eval.csv")]
+        if plot_three_events_footprint_row is not None:
+            three_footprint_path = out_dir / "fig_three_events_footprint_row.png"
+            if plot_three_events_footprint_row(
+                meta,
+                y_raw,
+                pred,
+                event_df,
+                str(three_footprint_path),
+                shp_gdf=shp_gdf,
+                window_hours=args.event_window_hours,
+            ) is not None:
+                manifest.add(
+                    three_footprint_path.name,
+                    event_sources,
+                    notes="Three selected widespread fog events with complete test-set windows where available.",
+                    n=int(len(y_cls)),
+                    matched_ifs=int(np.sum(ifs_valid)) if ifs_valid is not None else None,
+                )
+        if plot_three_events_peak_row is not None:
+            three_peak_path = out_dir / "fig_three_events_peak_row.png"
+            if plot_three_events_peak_row(
+                meta,
+                y_raw,
+                pred,
+                event_df,
+                str(three_peak_path),
+                shp_gdf=shp_gdf,
+            ) is not None:
+                manifest.add(
+                    three_peak_path.name,
+                    event_sources,
+                    notes="Observed visibility at the peak hour for the same three selected widespread fog events.",
+                    n=int(len(y_cls)),
+                )
+    plot_event_peak_grid(
+        eval_df,
+        event_df,
+        out_dir,
+        manifest,
+        [str(event_path), str(out_dir / "per_sample_eval.csv")],
+        shp_gdf=shp_gdf,
+    )
+    hourly_paths = [out_dir / f"fig9_event_{k}_hourly_metrics.csv" for k in (1, 2, 3)]
+    plot_event_footprint(hourly_paths, out_dir, manifest, [str(p) for p in hourly_paths])
+
+
 def evaluate_target(
     args: argparse.Namespace,
     target: EvalTarget,
@@ -462,10 +709,48 @@ def evaluate_target(
     manifest = Manifest(out_dir)
     sources = [str(x_path), str(data_dir / "y_test.npy"), str(data_dir / "meta_test.csv"), str(target.checkpoint), str(scaler_path)]
 
-    pd.DataFrame([{"source": target.label, **decision_meta, **metrics}]).to_csv(out_dir / "overall_metrics.csv", index=False)
+    ifs_pred = ifs_vis = ifs_valid = None
+    ifs_metrics = None
+    ifs_nc = as_abs_under(base, args.ifs_vis_nc)
+    overall_rows = [{"source": "pmst", "model_label": target.label, "sample_scope": "test", **decision_meta, **metrics}]
+    if ifs_nc.exists():
+        try:
+            ifs_pred, ifs_vis, ifs_valid = load_ifs_diagnostic(meta, ifs_nc, args.ifs_vis_var)
+            if int(np.sum(ifs_valid)) > 0:
+                ifs_metrics = classification_metrics(y_cls[ifs_valid], ifs_pred[ifs_valid])
+                matched_metrics = classification_metrics(y_cls[ifs_valid], pred[ifs_valid], probs=probs[ifs_valid])
+                pd.DataFrame(
+                    [
+                        {"source": "pmst", "model_label": target.label, "sample_scope": "ifs_diagnostic_matched_test", "matched_rows": int(np.sum(ifs_valid)), **decision_meta, **matched_metrics},
+                        {"source": "ifs_diagnostic", "sample_scope": "ifs_diagnostic_matched_test", "matched_rows": int(np.sum(ifs_valid)), "ifs_forecast_nc": str(ifs_nc), **ifs_metrics},
+                    ]
+                ).to_csv(out_dir / "ifs_diagnostic_matched_metrics.csv", index=False)
+                overall_rows.extend(
+                    [
+                        {"source": "pmst", "model_label": target.label, "sample_scope": "ifs_diagnostic_matched_test", "matched_rows": int(np.sum(ifs_valid)), **decision_meta, **matched_metrics},
+                        {"source": "ifs_diagnostic", "sample_scope": "ifs_diagnostic_matched_test", "matched_rows": int(np.sum(ifs_valid)), "ifs_forecast_nc": str(ifs_nc), **ifs_metrics},
+                    ]
+                )
+                sources.append(str(ifs_nc))
+        except Exception as exc:
+            print(f"[IFS] diagnostic baseline skipped: {exc}", flush=True)
+            ifs_valid = np.zeros(len(y_cls), dtype=bool)
+    elif args.plots == "all":
+        print(f"[IFS] diagnostic NetCDF not found: {ifs_nc}; skip IFS comparison plots.", flush=True)
+    pd.DataFrame(overall_rows).to_csv(out_dir / "overall_metrics.csv", index=False)
     np.save(out_dir / "probs.npy", probs.astype(np.float32))
-    eval_df = export_per_sample(out_dir / "per_sample_eval.csv", meta, y_cls, y_raw, pred, probs)
-    write_report(out_dir / "rare_event_report.txt", y_cls, pred, metrics)
+    eval_df = export_per_sample(
+        out_dir / "per_sample_eval.csv",
+        meta,
+        y_cls,
+        y_raw,
+        pred,
+        probs,
+        ifs_pred=ifs_pred,
+        ifs_vis=ifs_vis,
+        ifs_valid=ifs_valid,
+    )
+    write_report(out_dir / "rare_event_report.txt", y_cls, pred, metrics, ifs_metrics)
 
     scenario_df = build_scenario_metrics(eval_df)
     scenario_df.to_csv(out_dir / "scenario_metrics.csv", index=False)
@@ -473,17 +758,25 @@ def evaluate_target(
     station_df.to_csv(out_dir / "station_metrics.csv", index=False)
 
     if args.plots != "none":
-        plot_confusion_pmst_vs_ifs(y_cls, pred, None, None, out_dir, manifest, sources)
-        plot_csi_recall_pmst_vs_ifs(metrics, None, out_dir, manifest, sources, n=len(y_cls), matched_ifs=None)
+        matched_for_plot = None
+        metrics_for_plot = metrics
+        if ifs_metrics is not None and ifs_valid is not None and int(np.sum(ifs_valid)) > 0:
+            matched_for_plot = int(np.sum(ifs_valid))
+            metrics_for_plot = classification_metrics(y_cls[ifs_valid], pred[ifs_valid], probs=probs[ifs_valid])
+        plot_confusion_pmst_vs_ifs(y_cls, pred, ifs_pred, ifs_valid, out_dir, manifest, sources)
+        plot_csi_recall_pmst_vs_ifs(metrics_for_plot, ifs_metrics, out_dir, manifest, sources, n=len(y_cls), matched_ifs=matched_for_plot)
+        if args.plots == "all" and ifs_vis is not None and ifs_valid is not None:
+            plot_ifs_visibility_bias(y_cls, y_raw, ifs_vis, ifs_valid, out_dir, manifest, sources)
         for split, order in (
             ("time_of_day", TIME_OF_DAY_LOCAL_ORDER),
             ("season", ["DJF", "MAM", "JJA", "SON"]),
             ("region", [r[0] for r in REGION_DEFS] + ["Other"]),
         ):
             plot_scenario_split(scenario_df, split, order, out_dir, manifest, [str(out_dir / "scenario_metrics.csv")])
-        plot_time_of_day_detail(eval_df, out_dir, manifest, [str(out_dir / "per_sample_eval.csv")])
+        plot_time_of_day_detail(eval_df, out_dir, manifest, [str(out_dir / "per_sample_eval.csv")], offset_hours=args.local_time_offset_hours)
         plot_region_detail(eval_df, out_dir, manifest, [str(out_dir / "per_sample_eval.csv")])
         if args.plots == "all":
+            plot_diurnal_time_detail(eval_df, out_dir, manifest, [str(out_dir / "per_sample_eval.csv")], offset_hours=args.local_time_offset_hours)
             shp = read_shapefile(args.shp_path) if args.shp_path else None
             plot_station_metric_map(
                 station_df,
@@ -529,6 +822,34 @@ def evaluate_target(
                 cmap="magma_r",
                 vmin=0,
                 vmax=0.2,
+            )
+            run_static_48h_optional(
+                args,
+                target,
+                base,
+                data_dir,
+                out_dir,
+                manifest,
+                scaler,
+                model,
+                device,
+                layout,
+                mod,
+                decision_meta,
+            )
+            run_event_plots(
+                args,
+                base,
+                out_dir,
+                manifest,
+                meta,
+                y_cls,
+                y_raw,
+                pred,
+                eval_df,
+                ifs_nc,
+                ifs_valid,
+                shp,
             )
     manifest.write()
 

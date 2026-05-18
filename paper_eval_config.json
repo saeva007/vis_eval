@@ -70,7 +70,7 @@
     "event_min_lat_span": 4.0,
     "event_gap_hours": 24,
     "overlap_script": "ifs_baseline/test_PMST_overlap_forecast_source_s2.py",
-    "overlap_extra_args": "",
+    "overlap_extra_args": "--model_arch static_rnn --static_rnn_train_dir /public/home/putianshu/vis_mlp/train",
     "skip_overlap_bootstrap": false
   },
   "feature_importance": {
@@ -110,8 +110,22 @@
     "device": "auto",
     "limit_samples": 0,
     "threshold_source": "checkpoint",
-    "plots": "core",
-    "matrix_experiments": "1:2:3:4:5:6:7"
+    "plots": "all",
+    "matrix_experiments": "1:2:3:4:5:6:7",
+    "ifs_vis_nc": "VIS_IDW_KDTree_20250101_20251231.nc",
+    "ifs_vis_var": "VIS",
+    "data_48h_dir": "ml_dataset_fe_12h_48h_pm10_pm25_testonly_leadtime",
+    "ifs_48h_nc": "IFS_VIS_0_48h_stations_2025_00_12.nc",
+    "ifs_48h_var": "VIS_ifs",
+    "shp_path": "/public/home/putianshu/中华人民共和国/中华人民共和国.shp",
+    "local_time_offset_hours": 8,
+    "event_top_k": 3,
+    "event_window_hours": 3,
+    "event_min_fog_stations": 80,
+    "event_min_regions": 3,
+    "event_min_lon_span": 10.0,
+    "event_min_lat_span": 4.0,
+    "event_gap_hours": 24
   },
   "lowvis_eval_suite": {
     "target": "main",
@@ -122,7 +136,7 @@
     "matrix_run_prefix": "",
     "matrix_experiments": "1:2:3:4:5:6:7",
     "matrix_out_dir": "",
-    "plots": "core",
+    "plots": "all",
     "device": "auto",
     "limit_samples": 0,
     "extra_main_args": "",
