@@ -775,6 +775,20 @@ def evaluate_target(
             plot_scenario_split(scenario_df, split, order, out_dir, manifest, [str(out_dir / "scenario_metrics.csv")])
         plot_time_of_day_detail(eval_df, out_dir, manifest, [str(out_dir / "per_sample_eval.csv")], offset_hours=args.local_time_offset_hours)
         plot_region_detail(eval_df, out_dir, manifest, [str(out_dir / "per_sample_eval.csv")])
+        run_static_48h_optional(
+            args,
+            target,
+            base,
+            data_dir,
+            out_dir,
+            manifest,
+            scaler,
+            model,
+            device,
+            layout,
+            mod,
+            decision_meta,
+        )
         if args.plots == "all":
             plot_diurnal_time_detail(eval_df, out_dir, manifest, [str(out_dir / "per_sample_eval.csv")], offset_hours=args.local_time_offset_hours)
             shp = read_shapefile(args.shp_path) if args.shp_path else None
@@ -822,20 +836,6 @@ def evaluate_target(
                 cmap="magma_r",
                 vmin=0,
                 vmax=0.2,
-            )
-            run_static_48h_optional(
-                args,
-                target,
-                base,
-                data_dir,
-                out_dir,
-                manifest,
-                scaler,
-                model,
-                device,
-                layout,
-                mod,
-                decision_meta,
             )
             run_event_plots(
                 args,
