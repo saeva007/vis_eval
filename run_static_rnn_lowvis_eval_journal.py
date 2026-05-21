@@ -64,6 +64,8 @@ try:
         aggregate_station_metrics,
         build_scenario_metrics,
         classification_metrics,
+        infer_init_cycle_hour,
+        init_cycle_mask,
         lead_metrics_table,
         load_main_data,
         load_ifs_diagnostic,
@@ -82,7 +84,6 @@ try:
         plot_three_events_footprint_row,
         plot_three_events_peak_row,
         plot_time_of_day_detail,
-        parse_init_hour,
         read_shapefile,
         run_widespread_event_evaluation,
         save_fig_pair,
@@ -420,8 +421,8 @@ def plot_summary_bar(summary: pd.DataFrame, out_dir: Path, manifest: Manifest, s
         ("Fog_R", "Fog recall"),
         ("Mist_CSI", "Mist CSI"),
         ("Mist_R", "Mist recall"),
-        ("low_vis_precision", "Low-vis precision"),
-        ("false_positive_rate", "False alarm rate"),
+        ("low_vis_csi", "Low-vis CSI"),
+        ("low_vis_recall", "Low-vis recall"),
     ]
     labels = summary["label"].astype(str).tolist()
     x = np.arange(len(labels))
@@ -484,8 +485,8 @@ def run_static_48h_optional(
         if "lead_hour" not in meta:
             print("[48h] meta_test.csv has no lead_hour; skip fig11.", flush=True)
             return
-        init_hour = parse_init_hour(meta)
-        if init_hour.isna().all():
+        init_cycle_hour, init_cycle_source = infer_init_cycle_hour(meta, args.local_time_offset_hours)
+        if init_cycle_hour.isna().all():
             print("[48h] meta_test.csv has no parseable init_time/init_hour; skip fig11.", flush=True)
             return
         print(f"[48h] data_dir: {data_48h}", flush=True)
@@ -503,8 +504,14 @@ def run_static_48h_optional(
         pred = predict_for_lead(probs, decision_meta)
         lead = pd.to_numeric(meta["lead_hour"], errors="coerce").to_numpy(dtype=float)
         pooled = lead_metrics_table(y_cls, pred, probs, lead)
-        lead00 = lead_metrics_table(y_cls, pred, probs, lead, mask=(init_hour.to_numpy() == 0))
-        lead12 = lead_metrics_table(y_cls, pred, probs, lead, mask=(init_hour.to_numpy() == 12))
+        mask00 = init_cycle_mask(init_cycle_hour, 0)
+        mask12 = init_cycle_mask(init_cycle_hour, 12)
+        print(
+            f"[48h] init cycle source={init_cycle_source}; rows 00Z={int(mask00.sum())}, 12Z={int(mask12.sum())}",
+            flush=True,
+        )
+        lead00 = lead_metrics_table(y_cls, pred, probs, lead, mask=mask00)
+        lead12 = lead_metrics_table(y_cls, pred, probs, lead, mask=mask12)
         pooled_path = out_dir / "metrics_by_lead_hour_48h_model.csv"
         lead00_path = out_dir / "metrics_by_lead_hour_init00Z.csv"
         lead12_path = out_dir / "metrics_by_lead_hour_init12Z.csv"
@@ -544,6 +551,10 @@ def run_static_48h_optional(
                 how="inner",
                 suffixes=("_model", "_ifs"),
             ).sort_values("lead_hour").reset_index(drop=True)
+            print(
+                f"[48h IFS] lead table rows: model={len(model_matched)}, ifs={len(ifs_lead)}, merged={len(cmp_df)}",
+                flush=True,
+            )
             for metric in (
                 "Fog_CSI",
                 "Fog_R",
@@ -551,7 +562,6 @@ def run_static_48h_optional(
                 "Mist_R",
                 "low_vis_csi",
                 "low_vis_recall",
-                "false_positive_rate",
             ):
                 mc = f"{metric}_model"
                 ic = f"{metric}_ifs"
@@ -824,18 +834,18 @@ def evaluate_target(
             )
             plot_station_metric_map(
                 station_df,
-                "fpr_fog",
-                "n_clear",
-                20,
-                "Station Low-Visibility False Positive Rate",
-                "fig8_station_fpr",
+                "low_vis_csi",
+                "n_low_vis",
+                5,
+                "Station Low-Visibility CSI",
+                "fig8_station_low_vis_csi",
                 out_dir,
                 manifest,
                 [str(out_dir / "station_metrics.csv")],
                 shp_gdf=shp,
-                cmap="magma_r",
+                cmap="cividis",
                 vmin=0,
-                vmax=0.2,
+                vmax=1,
             )
             run_event_plots(
                 args,

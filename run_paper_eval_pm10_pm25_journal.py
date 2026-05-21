@@ -991,6 +991,16 @@ def aggregate_station_metrics(eval_df: pd.DataFrame, pred_col: str = "pmst_pred"
         n_mist = int((y == 1).sum())
         n_clear = int((y == 2).sum())
         pred_low = p <= 1
+        true_low = y <= 1
+        fog_tp = float(((y == 0) & (p == 0)).sum())
+        fog_fp = float(((y != 0) & (p == 0)).sum())
+        fog_fn = float(((y == 0) & (p != 0)).sum())
+        mist_tp = float(((y == 1) & (p == 1)).sum())
+        mist_fp = float(((y != 1) & (p == 1)).sum())
+        mist_fn = float(((y == 1) & (p != 1)).sum())
+        low_tp = float((true_low & pred_low).sum())
+        low_fp = float((~true_low & pred_low).sum())
+        low_fn = float((true_low & ~pred_low).sum())
         row = {
             "station_id": sid,
             "lat": float(sub["lat"].iloc[0]),
@@ -998,9 +1008,14 @@ def aggregate_station_metrics(eval_df: pd.DataFrame, pred_col: str = "pmst_pred"
             "n_total": int(len(sub)),
             "n_fog": n_fog,
             "n_mist": n_mist,
+            "n_low_vis": n_fog + n_mist,
             "n_clear": n_clear,
-            "fog_recall": safe_div(float(((y == 0) & (p == 0)).sum()), float(n_fog)),
-            "mist_recall": safe_div(float(((y == 1) & (p == 1)).sum()), float(n_mist)),
+            "fog_recall": safe_div(fog_tp, float(n_fog)),
+            "fog_csi": safe_div(fog_tp, fog_tp + fog_fp + fog_fn),
+            "mist_recall": safe_div(mist_tp, float(n_mist)),
+            "mist_csi": safe_div(mist_tp, mist_tp + mist_fp + mist_fn),
+            "low_vis_recall": safe_div(low_tp, low_tp + low_fn),
+            "low_vis_csi": safe_div(low_tp, low_tp + low_fp + low_fn),
             "fpr_fog": safe_div(float(((y == 2) & pred_low).sum()), float(n_clear)),
             "overall_acc": float((y == p).mean()) if len(sub) else math.nan,
         }
@@ -1193,9 +1208,10 @@ def plot_scenario_split(
         ("Fog_R", "Fog recall"),
         ("Mist_CSI", "Mist CSI"),
         ("Mist_R", "Mist recall"),
+        ("low_vis_csi", "Low-vis CSI"),
         ("low_vis_recall", "Low-vis recall"),
     ]
-    colors = [FOG_COLOR, "#6E91B5", MIST_COLOR, "#F0B84A", "#4B5563"]
+    colors = [FOG_COLOR, "#6E91B5", MIST_COLOR, "#F0B84A", "#334155", "#64748B"]
     x = np.arange(len(df))
     width = min(0.16, 0.80 / len(metrics))
     fig, ax = plt.subplots(figsize=(max(7.5, 0.78 * len(df)), 4.2))
@@ -1208,7 +1224,7 @@ def plot_scenario_split(
     ax.set_ylabel("Score")
     title = {"time_of_day": f"Metrics by time of day ({LOCAL_TIME_LABEL})", "season": "Metrics by season", "region": "Metrics by region"}.get(split, split)
     ax.set_title(title)
-    ax.legend(ncol=min(5, len(metrics)), frameon=False, loc="upper center", bbox_to_anchor=(0.5, 1.16))
+    ax.legend(ncol=3, frameon=False, loc="upper center", bbox_to_anchor=(0.5, 1.22))
     fig.tight_layout()
     stem = {
         "time_of_day": "fig7_split_time_of_day",
@@ -1294,7 +1310,8 @@ def plot_diurnal_time_detail(
         ("Fog_R", "Fog recall", "#6E91B5"),
         ("Mist_CSI", "Mist CSI", MIST_COLOR),
         ("Mist_R", "Mist recall", "#F0B84A"),
-        ("low_vis_recall", "Low-vis recall", "#4B5563"),
+        ("low_vis_csi", "Low-vis CSI", "#334155"),
+        ("low_vis_recall", "Low-vis recall", "#64748B"),
     ]
     ax = axes[1]
     for key, label, color in metric_specs:
@@ -2029,27 +2046,54 @@ def plot_fig11_lead_init(
     sources: Sequence[str],
 ) -> None:
     setup_journal_style()
-    fig, axes = plt.subplots(2, 2, figsize=(11.0, 7.0), sharex=True)
+    if lead_pooled.empty and lead00.empty and lead12.empty:
+        print("  [WARN] Empty 48h lead tables; skip init-hour figure.", flush=True)
+        return
+    fig, axes = plt.subplots(2, 3, figsize=(13.2, 7.2), sharex=True)
     specs = [
         ("Fog_CSI", "Fog CSI"),
         ("Fog_R", "Fog recall"),
         ("Mist_CSI", "Mist CSI"),
+        ("Mist_R", "Mist recall"),
+        ("low_vis_csi", "Low-vis CSI"),
         ("low_vis_recall", "Low-vis recall"),
     ]
-    for ax, (metric, title), letter in zip(axes.ravel(), specs, "abcd"):
-        if metric in lead_pooled:
-            ax.plot(lead_pooled["lead_hour"], lead_pooled[metric], color=PMST_COLOR, lw=2.2, label="Pooled")
+    for ax, (metric, title), letter in zip(axes.ravel(), specs, "abcdef"):
+        plotted = False
+        if metric in lead_pooled and not lead_pooled.empty:
+            ax.plot(
+                lead_pooled["lead_hour"],
+                lead_pooled[metric],
+                color="#111827",
+                lw=2.2,
+                marker="o",
+                ms=3.0,
+                label="Pooled",
+                zorder=3,
+            )
+            plotted = True
         if metric in lead00 and not lead00.empty:
-            ax.plot(lead00["lead_hour"], lead00[metric], "o-", color="#4C78A8", lw=1.4, ms=3, label="00Z")
+            ax.plot(lead00["lead_hour"], lead00[metric], "o-", color="#0F766E", lw=1.5, ms=3.2, label="00Z", zorder=4)
+            plotted = True
         if metric in lead12 and not lead12.empty:
-            ax.plot(lead12["lead_hour"], lead12[metric], "s-", color="#F58518", lw=1.4, ms=3, label="12Z")
+            ax.plot(lead12["lead_hour"], lead12[metric], "s-", color="#C2410C", lw=1.5, ms=3.2, label="12Z", zorder=4)
+            plotted = True
+        if not plotted:
+            ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center", color="#6B7280")
         ax.set_title(title)
         ax.set_xlabel("Lead time (h)")
         ax.set_ylabel("Score")
         ax.set_ylim(0, 1.0)
+        ax.grid(axis="y", alpha=0.25)
+        ax.grid(axis="x", alpha=0.10)
         add_panel_label(ax, letter)
-    handles, labels = axes.ravel()[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", ncol=3, frameon=False, bbox_to_anchor=(0.5, 1.03))
+    handles, labels = [], []
+    for ax in axes.ravel():
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            break
+    if handles:
+        fig.legend(handles, labels, loc="upper center", ncol=3, frameon=False, bbox_to_anchor=(0.5, 1.03))
     fig.tight_layout()
     save_fig_pair(
         fig,
@@ -2077,6 +2121,44 @@ def parse_init_hour(meta: pd.DataFrame) -> pd.Series:
         raw = s.astype(str).str.replace(r"\.0$", "", regex=True)
         dt = pd.to_datetime(raw, format="%Y%m%d%H", errors="coerce")
     return dt.dt.hour
+
+
+def infer_init_cycle_hour(
+    meta: pd.DataFrame,
+    local_time_offset_hours: int = LOCAL_TIME_OFFSET_HOURS,
+) -> Tuple[pd.Series, str]:
+    """Return a 00Z/12Z forecast-cycle hour, tolerating local 08/20 encodings."""
+
+    raw = pd.to_numeric(parse_init_hour(meta), errors="coerce")
+    candidates: List[Tuple[str, pd.Series]] = [("raw", raw)]
+    offset = int(local_time_offset_hours or 0) % 24
+    if offset:
+        candidates.append((f"raw_minus_{offset}h", (raw - offset) % 24))
+        candidates.append((f"raw_plus_{offset}h", (raw + offset) % 24))
+
+    best_name, best_series, best_score = candidates[0][0], candidates[0][1], -1
+    for name, series in candidates:
+        arr = pd.to_numeric(series, errors="coerce").to_numpy(dtype=float)
+        finite = np.isfinite(arr)
+        rounded = np.full(len(arr), -9999, dtype=np.int32)
+        rounded[finite] = (np.rint(arr[finite]).astype(np.int32) % 24)
+        score = int(np.isin(rounded[finite], [0, 12]).sum())
+        if score > best_score:
+            best_name, best_series, best_score = name, series, score
+
+    arr = pd.to_numeric(best_series, errors="coerce").to_numpy(dtype=float)
+    out = np.full(len(arr), np.nan, dtype=float)
+    finite = np.isfinite(arr)
+    out[finite] = np.rint(arr[finite]) % 24
+    return pd.Series(out, index=meta.index, name="init_cycle_hour"), best_name
+
+
+def init_cycle_mask(init_cycle_hour: pd.Series, target_hour: int) -> np.ndarray:
+    arr = pd.to_numeric(init_cycle_hour, errors="coerce").to_numpy(dtype=float)
+    mask = np.zeros(len(arr), dtype=bool)
+    finite = np.isfinite(arr)
+    mask[finite] = (np.rint(arr[finite]).astype(np.int32) % 24) == int(target_hour)
+    return mask
 
 
 def lead_metrics_table(
@@ -2257,7 +2339,9 @@ def plot_fig11_48h_model_vs_ifs(
     setup_journal_style()
     specs = [
         ("Fog_CSI", "Fog CSI"),
+        ("Fog_R", "Fog recall"),
         ("Mist_CSI", "Mist CSI"),
+        ("Mist_R", "Mist recall"),
         ("low_vis_csi", "Low-vis CSI"),
         ("low_vis_recall", "Low-vis recall"),
     ]
@@ -2276,27 +2360,37 @@ def plot_fig11_48h_model_vs_ifs(
         step = 0.02 if padded <= 0.20 else 0.05 if padded <= 0.50 else 0.10
         return min(1.0, max(step * 3, math.ceil(padded / step) * step))
 
-    fig, axes = plt.subplots(2, 2, figsize=(11.0, 7.0), sharex=True)
-    for ax, (metric, title), letter in zip(axes.ravel(), specs, "abcd"):
+    fig, axes = plt.subplots(2, 3, figsize=(13.2, 7.2), sharex=True)
+    for ax, (metric, title), letter in zip(axes.ravel(), specs, "abcdef"):
         model_col = f"{metric}_model"
         ifs_col = f"{metric}_ifs"
         panel_values: List[float] = []
+        plotted = False
         if model_col in cmp_df:
             y_model = cmp_df[model_col].to_numpy(dtype=float)
             panel_values.extend(y_model.tolist())
-            ax.plot(cmp_df["lead_hour"], y_model, color=PMST_COLOR, lw=2.2, label="PMST")
+            ax.plot(cmp_df["lead_hour"], y_model, color=PMST_COLOR, lw=2.2, marker="o", ms=3.0, label="PMST", zorder=4)
+            plotted = True
         if ifs_col in cmp_df:
             y_ifs = cmp_df[ifs_col].to_numpy(dtype=float)
             panel_values.extend(y_ifs.tolist())
-            ax.plot(cmp_df["lead_hour"], y_ifs, color=IFS_DIAG_COLOR, lw=1.9, ls="--", marker="o", ms=2.5, label="IFS diagnostic")
+            ax.plot(cmp_df["lead_hour"], y_ifs, color=IFS_DIAG_COLOR, lw=1.9, ls="--", marker="s", ms=2.8, label="IFS diagnostic", zorder=4)
+            plotted = True
+        if not plotted:
+            ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center", color="#6B7280")
         ax.set_title(title)
         ax.set_xlabel("Lead time (h)")
         ax.set_ylabel("Score")
-        ax.set_ylim(0, _adaptive_ylim(panel_values))
+        ax.set_ylim(-0.02, _adaptive_ylim(panel_values))
+        ax.axhline(0, color="#D1D5DB", lw=0.8, zorder=1)
         ax.grid(axis="y", alpha=0.25)
         ax.grid(axis="x", alpha=0.10)
         add_panel_label(ax, letter)
-    handles, labels = axes.ravel()[0].get_legend_handles_labels()
+    handles, labels = [], []
+    for ax in axes.ravel():
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            break
     if handles:
         fig.legend(handles, labels, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.03))
     fig.tight_layout()
@@ -2354,8 +2448,8 @@ def run_48h_optional(
         if "lead_hour" not in meta:
             print("[48h] meta_test.csv has no lead_hour; skip fig11.", flush=True)
             return
-        init_hour = parse_init_hour(meta)
-        if init_hour.isna().all():
+        init_cycle_hour, init_cycle_source = infer_init_cycle_hour(meta, args.local_time_offset_hours)
+        if init_cycle_hour.isna().all():
             print("[48h] meta_test.csv has no parseable init_time/init_hour; skip fig11.", flush=True)
             return
         probs, low_prob = run_model_inference(
@@ -2382,8 +2476,14 @@ def run_48h_optional(
         )
         lead = pd.to_numeric(meta["lead_hour"], errors="coerce").to_numpy(dtype=float)
         pooled = lead_metrics_table(y_cls, pred, probs, lead)
-        lead00 = lead_metrics_table(y_cls, pred, probs, lead, mask=(init_hour.to_numpy() == 0))
-        lead12 = lead_metrics_table(y_cls, pred, probs, lead, mask=(init_hour.to_numpy() == 12))
+        mask00 = init_cycle_mask(init_cycle_hour, 0)
+        mask12 = init_cycle_mask(init_cycle_hour, 12)
+        print(
+            f"[48h] init cycle source={init_cycle_source}; rows 00Z={int(mask00.sum())}, 12Z={int(mask12.sum())}",
+            flush=True,
+        )
+        lead00 = lead_metrics_table(y_cls, pred, probs, lead, mask=mask00)
+        lead12 = lead_metrics_table(y_cls, pred, probs, lead, mask=mask12)
         pooled.to_csv(out_dir / "metrics_by_lead_hour_48h_model.csv", index=False)
         lead00.to_csv(out_dir / "metrics_by_lead_hour_init00Z.csv", index=False)
         lead12.to_csv(out_dir / "metrics_by_lead_hour_init12Z.csv", index=False)
@@ -2417,6 +2517,10 @@ def run_48h_optional(
                         how="inner",
                         suffixes=("_model", "_ifs"),
                     ).sort_values("lead_hour").reset_index(drop=True)
+                    print(
+                        f"[48h IFS] lead table rows: model={len(model_matched)}, ifs={len(ifs_lead)}, merged={len(cmp_df)}",
+                        flush=True,
+                    )
                     for metric in (
                         "Fog_CSI",
                         "Fog_R",
@@ -2424,7 +2528,6 @@ def run_48h_optional(
                         "Mist_R",
                         "low_vis_csi",
                         "low_vis_recall",
-                        "false_positive_rate",
                     ):
                         model_col = f"{metric}_model"
                         ifs_col = f"{metric}_ifs"
@@ -2676,16 +2779,10 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
                 [
                     "Fog_CSI",
                     "Fog_R",
-                    "Fog_P",
-                    "Fog_FAR",
                     "Mist_CSI",
                     "Mist_R",
-                    "Mist_P",
-                    "Mist_FAR",
                     "low_vis_csi",
                     "low_vis_recall",
-                    "false_positive_rate",
-                    "accuracy",
                 ],
             )
             delta_df.to_csv(out_dir / "metric_deltas_pmst_minus_ifs_diagnostic.csv", index=False)
@@ -2775,18 +2872,18 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
     )
     plot_station_metric_map(
         station_df,
-        "fpr_fog",
-        "n_clear",
-        20,
-        "Station Low-Visibility False Positive Rate",
-        "fig8_station_fpr",
+        "low_vis_csi",
+        "n_low_vis",
+        5,
+        "Station Low-Visibility CSI",
+        "fig8_station_low_vis_csi",
         out_dir,
         manifest,
         [str(out_dir / "station_metrics.csv")],
         shp_gdf=shp_gdf,
-        cmap="magma_r",
+        cmap="cividis",
         vmin=0,
-        vmax=0.2,
+        vmax=1,
     )
 
     run_48h_optional(args, base, out_dir, model, device, scaler, manifest)
