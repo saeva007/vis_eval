@@ -2110,17 +2110,24 @@ def plot_fig11_lead_init(
 # ---------------------------------------------------------------------------
 
 
+def parse_compact_datetime(values, index=None) -> pd.Series:
+    s = pd.Series(values, index=index)
+    raw = s.astype("string").str.strip().str.replace(r"\.0$", "", regex=True)
+    compact_mask = raw.str.match(r"^\d{10}$", na=False)
+    dt = pd.Series(pd.NaT, index=s.index, dtype="datetime64[ns]")
+    if compact_mask.any():
+        dt.loc[compact_mask] = pd.to_datetime(raw.loc[compact_mask], format="%Y%m%d%H", errors="coerce")
+    if (~compact_mask).any():
+        dt.loc[~compact_mask] = pd.to_datetime(raw.loc[~compact_mask], errors="coerce")
+    return dt
+
+
 def parse_init_hour(meta: pd.DataFrame) -> pd.Series:
     if "init_hour" in meta:
         return pd.to_numeric(meta["init_hour"], errors="coerce")
     if "init_time" not in meta:
         return pd.Series(np.nan, index=meta.index)
-    s = meta["init_time"]
-    dt = pd.to_datetime(s, errors="coerce")
-    if dt.isna().all():
-        raw = s.astype(str).str.replace(r"\.0$", "", regex=True)
-        dt = pd.to_datetime(raw, format="%Y%m%d%H", errors="coerce")
-    return dt.dt.hour
+    return parse_compact_datetime(meta["init_time"], index=meta.index).dt.hour
 
 
 def infer_init_cycle_hour(
@@ -2267,34 +2274,65 @@ def load_ifs_48h_diagnostic(
         stations = normalize_station_ids(ds[station_coord].values)
         if len(stations) != n_st:
             raise ValueError(f"{station_coord} len={len(stations)} != station dimension={n_st}")
-        valid_time_grid = recover_ifs_48h_valid_time_grid(ds, n_rec, n_lead, lead_vals)
-        if valid_time_grid.shape != (n_rec, n_lead):
-            raise ValueError(f"valid_time_grid shape={valid_time_grid.shape}, expected {(n_rec, n_lead)}")
 
-        pair_time_ns = valid_time_grid.reshape(-1).astype("datetime64[ns]").astype(np.int64)
         pair_lead = np.tile(lead_vals, n_rec).astype(np.int32)
-        pair_index = pd.MultiIndex.from_arrays([pair_time_ns, pair_lead])
-        pair_values = np.arange(pair_index.size, dtype=np.int64)
-        if not pair_index.is_unique:
-            keep = ~pair_index.duplicated(keep="first")
-            pair_index = pair_index[keep]
-            pair_values = pair_values[keep]
-        meta_time = pd.to_datetime(meta["time"], errors="coerce").values.astype("datetime64[ns]").astype(np.int64)
         meta_lead = pd.to_numeric(meta["lead_hour"], errors="coerce").to_numpy(dtype=float)
         finite_lead = np.isfinite(meta_lead)
         meta_lead_i = np.full(len(meta), -9999, dtype=np.int32)
         meta_lead_i[finite_lead] = np.rint(meta_lead[finite_lead]).astype(np.int32)
-        meta_index = pd.MultiIndex.from_arrays([meta_time, meta_lead_i])
-        pair_pos = pd.Series(pair_values, index=pair_index).reindex(meta_index).to_numpy()
 
         station_lookup = pd.Series(np.arange(len(stations), dtype=np.int64), index=stations)
         meta_station = normalize_station_ids(meta["station_id"].values)
         station_pos = meta_station.map(station_lookup).to_numpy()
 
+        pair_values_full = np.arange(n_rec * n_lead, dtype=np.int64)
+        candidates: List[Dict[str, object]] = []
+
+        def _add_match_candidate(label: str, ifs_key_ns: np.ndarray, meta_key_ns: np.ndarray) -> None:
+            pair_index = pd.MultiIndex.from_arrays([ifs_key_ns, pair_lead])
+            pair_values = pair_values_full
+            if not pair_index.is_unique:
+                keep = ~pair_index.duplicated(keep="first")
+                pair_index = pair_index[keep]
+                pair_values = pair_values[keep]
+            meta_index = pd.MultiIndex.from_arrays([meta_key_ns, meta_lead_i])
+            pair_pos_cand = pd.Series(pair_values, index=pair_index).reindex(meta_index).to_numpy()
+            pair_match = pd.notna(pair_pos_cand)
+            exact_key = pair_match & pd.notna(station_pos)
+            candidates.append(
+                {
+                    "label": label,
+                    "pair_pos": pair_pos_cand,
+                    "n_pair_matches": int(np.sum(pair_match)),
+                    "n_exact_key_matches": int(np.sum(exact_key)),
+                }
+            )
+
+        if "forecast_reference_time" in ds.coords and "init_time" in meta:
+            init_raw = np.asarray(ds["forecast_reference_time"].values).reshape(-1)
+            if init_raw.shape[0] == n_rec:
+                ifs_init_ns = np.repeat(pd.to_datetime(init_raw).values.astype("datetime64[ns]").astype(np.int64), n_lead)
+                meta_init_dt = parse_compact_datetime(meta["init_time"], index=meta.index)
+                meta_init_ns = meta_init_dt.values.astype("datetime64[ns]").astype(np.int64)
+                if not meta_init_dt.isna().all():
+                    _add_match_candidate("init_time+lead", ifs_init_ns, meta_init_ns)
+
+        valid_time_grid = recover_ifs_48h_valid_time_grid(ds, n_rec, n_lead, lead_vals)
+        if valid_time_grid.shape != (n_rec, n_lead):
+            raise ValueError(f"valid_time_grid shape={valid_time_grid.shape}, expected {(n_rec, n_lead)}")
+        pair_time_ns = valid_time_grid.reshape(-1).astype("datetime64[ns]").astype(np.int64)
+        meta_time = pd.to_datetime(meta["time"], errors="coerce").values.astype("datetime64[ns]").astype(np.int64)
+        _add_match_candidate("valid_time+lead", pair_time_ns, meta_time)
+
+        if not candidates:
+            raise ValueError("Cannot build any 48h IFS match keys from init_time or valid_time coordinates.")
+        best = max(candidates, key=lambda c: (int(c["n_exact_key_matches"]), int(c["n_pair_matches"])))
+        pair_pos = np.asarray(best["pair_pos"])
+        key_valid = pd.notna(pair_pos) & pd.notna(station_pos)
+
         raw = np.full(len(meta), np.nan, dtype=np.float64)
         pred = np.full(len(meta), -1, dtype=np.int64)
         valid = np.zeros(len(meta), dtype=bool)
-        key_valid = pd.notna(pair_pos) & pd.notna(station_pos)
         if np.any(key_valid):
             pos = np.flatnonzero(key_valid)
             flat_pair = pair_pos[pos].astype(np.int64)
@@ -2313,13 +2351,16 @@ def load_ifs_48h_diagnostic(
             "n_ifs_records": float(n_rec),
             "n_ifs_leads": float(n_lead),
             "n_ifs_stations": float(n_st),
+            "match_key": str(best["label"]),
+            "n_pair_matches": float(best["n_pair_matches"]),
             "n_exact_key_matches": float(np.sum(key_valid)),
             "n_finite_matches": float(np.sum(valid)),
+            "pair_match_ratio": safe_div(float(best["n_pair_matches"]), float(len(meta))),
             "exact_match_ratio": safe_div(float(np.sum(key_valid)), float(len(meta))),
             "finite_match_ratio": safe_div(float(np.sum(valid)), float(len(meta))),
         }
         print(
-            f"[48h IFS] matched finite rows: {int(valid.sum())}/{len(meta)} from {ifs_nc_path}",
+            f"[48h IFS] match key={best['label']}; matched finite rows: {int(valid.sum())}/{len(meta)} from {ifs_nc_path}",
             flush=True,
         )
         return pred, raw, valid, diag
