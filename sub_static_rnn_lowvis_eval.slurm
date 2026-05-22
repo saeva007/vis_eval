@@ -1,10 +1,9 @@
 #!/bin/bash
 #SBATCH -J static_rnn_eval
-#SBATCH -p kshdexclu01
+#SBATCH -p kshdexclu04
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
-#SBATCH --gres=dcu:4
 #SBATCH --mem=0
 #SBATCH -t 48:00:00
 #SBATCH -D /public/home/putianshu/vis_mlp/paper_eval
