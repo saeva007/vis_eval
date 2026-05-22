@@ -14,7 +14,7 @@ import json
 import math
 import sys
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -34,11 +34,11 @@ from feature_catalog_pm10_pm25 import dynamic_features_for_count
 
 
 OBS_VAR_MAP = {
-    "RH2M": {"obs": "rhu", "label": "2 m RH", "unit": "%", "extreme": "high", "threshold": 90.0},
-    "T2M": {"obs": "tem", "label": "2 m temperature", "unit": "degC", "extreme": "low", "threshold": None},
-    "WSPD10": {"obs": "win_s_avg_10mi", "label": "10 m wind speed", "unit": "m s-1", "extreme": "high", "threshold": None},
-    "MSLP": {"obs": "prs_sea", "label": "Sea-level pressure", "unit": "hPa", "extreme": "high", "threshold": None},
-    "PRECIP": {"obs": "pre_1h", "label": "Hourly precipitation", "unit": "mm h-1", "extreme": "high", "threshold": 0.1},
+    "RH2M": {"obs": "rhu", "label": "2 m RH", "unit": "%", "extreme": "high", "threshold": 90.0, "valid": (0.0, 100.0)},
+    "T2M": {"obs": "tem", "label": "2 m temperature", "unit": "degC", "extreme": "low", "threshold": None, "valid": (-80.0, 60.0)},
+    "WSPD10": {"obs": "win_s_avg_10mi", "label": "10 m wind speed", "unit": "m s-1", "extreme": "high", "threshold": None, "valid": (0.0, 80.0)},
+    "MSLP": {"obs": "prs_sea", "label": "Sea-level pressure", "unit": "hPa", "extreme": "high", "threshold": None, "valid": (800.0, 1100.0)},
+    "PRECIP": {"obs": "pre_1h", "label": "Hourly precipitation", "unit": "mm h-1", "extreme": "high", "threshold": 0.1, "valid": (0.0, 500.0)},
 }
 
 
@@ -59,6 +59,41 @@ def parse_args() -> argparse.Namespace:
 
 def split_list(value: str) -> List[str]:
     return [x.strip() for chunk in str(value or "").split(";") for x in chunk.split(",") if x.strip()]
+
+
+def read_build_config(data_dir: Path) -> Dict[str, object]:
+    path = data_dir / "dataset_build_config.json"
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as exc:
+        print(f"[warn] cannot read {path}: {exc}", flush=True)
+        return {}
+
+
+def available_dynamic_features(data_dir: Path, dyn_vars_count: int) -> Set[str]:
+    """Features that are physically populated in this dataset, not just present as zero slots."""
+    cfg = read_build_config(data_dir)
+    explicit = cfg.get("overlap_vars") or cfg.get("dynamic_features") or cfg.get("feature_order")
+    if explicit:
+        available = {str(v) for v in explicit}
+        if {"U10", "V10"}.issubset(available):
+            available.add("WSPD10")
+        return available
+    return {item["feature"] for item in dynamic_features_for_count(dyn_vars_count)}
+
+
+def clean_physical_values(feature: str, values: np.ndarray) -> np.ndarray:
+    arr = np.asarray(values, dtype=np.float64).copy()
+    arr[~np.isfinite(arr)] = np.nan
+    arr[np.abs(arr) >= 1e5] = np.nan
+    valid = OBS_VAR_MAP.get(feature, {}).get("valid")
+    if valid is not None:
+        lo, hi = valid
+        arr[(arr < float(lo)) | (arr > float(hi))] = np.nan
+    return arr
 
 
 def normalize_station_ids(values) -> pd.Series:
@@ -195,7 +230,7 @@ def convert_forecast_units(feature: str, values: np.ndarray) -> np.ndarray:
         arr = np.maximum(arr, 0.0)
     if feature == "RH2M":
         arr = np.clip(arr, 0.0, 100.0)
-    return arr
+    return clean_physical_values(feature, arr)
 
 
 def metric_row(feature: str, source: str, pred: np.ndarray, obs: np.ndarray, extreme_type: str, threshold: Optional[float]) -> Dict[str, object]:
@@ -249,20 +284,33 @@ def make_quality_tables(args: argparse.Namespace) -> Tuple[pd.DataFrame, pd.Data
 
     feature_lookup = {item["feature"]: i for i, item in enumerate(dynamic_features_for_count(args.dyn_vars_count))}
     features = split_list(args.features)
+    t_available = available_dynamic_features(tianji_dir, args.dyn_vars_count)
+    i_available = available_dynamic_features(ifs_dir, args.dyn_vars_count)
     x_t = np.load(tianji_dir / "X_test.npy", mmap_mode="r")
     x_i = np.load(ifs_dir / "X_test.npy", mmap_mode="r")
     rows = []
+    skipped_features = []
     sample = merged[["time", "station_key", "idx_tianji", "idx_ifs"]].copy()
     for feature in features:
         if feature not in feature_lookup or feature not in OBS_VAR_MAP:
             print(f"[skip] feature={feature} lacks dynamic index or obs mapping.", flush=True)
+            skipped_features.append({"feature": feature, "reason": "missing_index_or_obs_mapping"})
+            continue
+        missing_sources = [name for name, available in (("tianji", t_available), ("ifs", i_available)) if feature not in available]
+        if missing_sources:
+            print(
+                f"[skip] feature={feature} is not populated in {','.join(missing_sources)} overlap dataset(s).",
+                flush=True,
+            )
+            skipped_features.append({"feature": feature, "reason": "not_populated", "sources": missing_sources})
             continue
         obs_col = OBS_VAR_MAP[feature]["obs"]
         if obs_col not in merged:
             print(f"[skip] obs column {obs_col!r} missing for feature={feature}", flush=True)
+            skipped_features.append({"feature": feature, "reason": f"missing_obs_column:{obs_col}"})
             continue
         col = (int(args.window) - 1) * int(args.dyn_vars_count) + int(feature_lookup[feature])
-        obs_vals = pd.to_numeric(merged[obs_col], errors="coerce").to_numpy(dtype=float)
+        obs_vals = clean_physical_values(feature, pd.to_numeric(merged[obs_col], errors="coerce").to_numpy(dtype=float))
         tj_vals = convert_forecast_units(feature, np.asarray(x_t[idx_t, col], dtype=np.float64))
         ifs_vals = convert_forecast_units(feature, np.asarray(x_i[idx_i, col], dtype=np.float64))
         if feature == "PRECIP":
@@ -280,6 +328,8 @@ def make_quality_tables(args: argparse.Namespace) -> Tuple[pd.DataFrame, pd.Data
         "obs_time_shift_to_utc_hours": float(best_shift),
         "obs_time_interpretation": "raw_obs_time_is_bjt" if best_shift == -8.0 else "raw_obs_time_is_utc",
         "features": features,
+        "evaluated_features": sorted(metrics["feature"].dropna().unique().tolist()) if not metrics.empty else [],
+        "skipped_features": skipped_features,
     }
     return metrics, sample, tz_diag, diag
 
@@ -342,23 +392,59 @@ def plot_quality(metrics: pd.DataFrame, sample: pd.DataFrame, out_dir: Path) -> 
     ax.text(-0.12, 1.04, "(b)", transform=ax.transAxes, fontweight="bold", fontsize=11)
 
     ax = axes[1, 0]
+    tail_feature = ""
     if "obs_RH2M" in sample and sample["obs_RH2M"].notna().sum() > 0:
-        thresholds = np.arange(60, 101, 2)
+        tail_feature = "RH2M"
+        thresholds = np.arange(60, 101, 2, dtype=float)
+    else:
+        for candidate in features:
+            if OBS_VAR_MAP.get(candidate, {}).get("threshold") is not None and f"obs_{candidate}" in sample:
+                tail_feature = candidate
+                break
+        if tail_feature == "PRECIP":
+            thresholds = np.asarray([0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0], dtype=float)
+        elif tail_feature:
+            vals = pd.to_numeric(sample[f"obs_{tail_feature}"], errors="coerce").to_numpy(dtype=float)
+            vals = vals[np.isfinite(vals)]
+            thresholds = np.linspace(np.nanpercentile(vals, 50), np.nanpercentile(vals, 99), 24) if vals.size else np.asarray([])
+        else:
+            thresholds = np.asarray([])
+    if tail_feature and thresholds.size:
+        info = OBS_VAR_MAP[tail_feature]
+        direction = info["extreme"]
         for col, label, color, ls in [
-            ("obs_RH2M", "Observed", "#111111", "-"),
-            ("tianji_RH2M", "Tianji", colors["tianji"], "-"),
-            ("ifs_RH2M", "IFS", colors["ifs"], "--"),
+            (f"obs_{tail_feature}", "Observed", "#111111", "-"),
+            (f"tianji_{tail_feature}", "Tianji", colors["tianji"], "-"),
+            (f"ifs_{tail_feature}", "IFS", colors["ifs"], "--"),
         ]:
+            if col not in sample:
+                continue
             vals = pd.to_numeric(sample[col], errors="coerce").to_numpy(dtype=float)
             vals = vals[np.isfinite(vals)]
             if vals.size:
-                ax.plot(thresholds, [100.0 * np.mean(vals >= th) for th in thresholds], color=color, lw=2.0, ls=ls, label=label)
-        ax.set_xlabel("RH threshold (%)")
-        ax.set_ylabel("Samples above threshold (%)")
-        ax.set_title("High-humidity tail capture")
+                if direction == "low":
+                    yvals = [100.0 * np.mean(vals <= th) for th in thresholds]
+                else:
+                    yvals = [100.0 * np.mean(vals >= th) for th in thresholds]
+                ax.plot(thresholds, yvals, color=color, lw=2.0, ls=ls, label=label)
+        unit = info["unit"]
+        relation = "below" if direction == "low" else "above"
+        ax.set_xlabel(f"{label_map.get(tail_feature, tail_feature)} threshold ({unit})")
+        ax.set_ylabel(f"Samples {relation} threshold (%)")
+        ax.set_title(f"{label_map.get(tail_feature, tail_feature)} tail capture")
+        if tail_feature == "PRECIP":
+            ax.set_xscale("log")
         ax.legend(frameon=False)
     else:
-        ax.text(0.5, 0.5, "No RH observations", transform=ax.transAxes, ha="center", va="center")
+        ax.text(
+            0.5,
+            0.5,
+            "No threshold-based shared variable",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+        )
+        ax.set_axis_off()
     ax.text(-0.12, 1.04, "(c)", transform=ax.transAxes, fontweight="bold", fontsize=11)
 
     ax = axes[1, 1]

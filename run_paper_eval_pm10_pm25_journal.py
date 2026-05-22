@@ -2033,7 +2033,13 @@ def plot_station_recall_delta_map(
     hist_lo, hist_hi = _nice_hist_limits(vals, lim)
     cmap = LinearSegmentedColormap.from_list(
         "pmst_ifs_recall_delta",
-        ["#9E1F36", "#D6604D", "#F7F7F7", "#67A9CF", "#2166AC", "#08306B"],
+        [
+            (0.00, "#9E1F36"),
+            (0.24, "#D6604D"),
+            (0.50, "#FFFFFF"),
+            (0.76, "#67A9CF"),
+            (1.00, "#08306B"),
+        ],
         N=256,
     )
     norm = TwoSlopeNorm(vmin=-lim, vcenter=0.0, vmax=lim)
@@ -2113,6 +2119,7 @@ def plot_station_recall_delta_map(
         spine.set_linewidth(0.5)
 
     cb = fig.colorbar(sc, ax=ax, orientation="horizontal", fraction=0.055, pad=0.045, extend="both")
+    cb.set_ticks(np.linspace(-lim, lim, 5))
     cb.set_label("Recall difference (PMST - IFS diagnostic VIS)")
     cb.ax.text(
         0.0,
@@ -3036,6 +3043,25 @@ def run_48h_optional(
 # ---------------------------------------------------------------------------
 
 
+def _probe_overlap_cli_options(script: Path, options: Sequence[str]) -> Dict[str, bool]:
+    """Return whether an overlap evaluator advertises optional CLI switches."""
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(script), "--help"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        help_text = proc.stdout or ""
+        if not help_text:
+            return {opt: True for opt in options}
+        return {opt: opt in help_text for opt in options}
+    except Exception as exc:
+        print(f"[overlap] could not inspect evaluator CLI ({exc}); pass optional arguments as configured.", flush=True)
+        return {opt: True for opt in options}
+
+
 def run_overlap_subprocess(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Manifest) -> Optional[Path]:
     overlap_script = abs_under_base(base, args.overlap_script) if args.overlap_script else base / "ifs_baseline" / "test_PMST_overlap_forecast_source_s2.py"
     if not overlap_script.is_file():
@@ -3056,6 +3082,10 @@ def run_overlap_subprocess(args: argparse.Namespace, base: Path, out_dir: Path, 
         "--batch_size",
         str(args.batch_size),
     ]
+    supported = _probe_overlap_cli_options(
+        overlap_script,
+        ["--feature_importance_csv", "--feature_swap_top_k", "--feature_swap_features"],
+    )
     if args.limit_samples and args.limit_samples > 0:
         cmd.extend(["--limit_samples", str(args.limit_samples)])
         cmd.extend(["--bootstrap", "50", "--bootstrap_size", str(min(args.limit_samples, 20000))])
@@ -3069,16 +3099,25 @@ def run_overlap_subprocess(args: argparse.Namespace, base: Path, out_dir: Path, 
         if value:
             cmd.extend([cli_name, str(abs_under_base(base, value))])
     if str(getattr(args, "overlap_feature_importance_csv", "") or "").strip():
-        cmd.extend(
-            [
-                "--feature_importance_csv",
-                str(abs_under_base(base, args.overlap_feature_importance_csv)),
-            ]
-        )
+        if supported.get("--feature_importance_csv", True):
+            cmd.extend(
+                [
+                    "--feature_importance_csv",
+                    str(abs_under_base(base, args.overlap_feature_importance_csv)),
+                ]
+            )
+        else:
+            print("[overlap] target evaluator lacks --feature_importance_csv; skip that optional argument.", flush=True)
     if int(getattr(args, "overlap_feature_swap_top_k", 0) or 0) > 0:
-        cmd.extend(["--feature_swap_top_k", str(int(args.overlap_feature_swap_top_k))])
+        if supported.get("--feature_swap_top_k", True):
+            cmd.extend(["--feature_swap_top_k", str(int(args.overlap_feature_swap_top_k))])
+        else:
+            print("[overlap] target evaluator lacks --feature_swap_top_k; source comparison will run without feature replacement.", flush=True)
     if str(getattr(args, "overlap_feature_swap_features", "") or "").strip():
-        cmd.extend(["--feature_swap_features", str(args.overlap_feature_swap_features)])
+        if supported.get("--feature_swap_features", True):
+            cmd.extend(["--feature_swap_features", str(args.overlap_feature_swap_features)])
+        else:
+            print("[overlap] target evaluator lacks --feature_swap_features; skip explicit replacement feature list.", flush=True)
     if args.skip_overlap_bootstrap:
         cmd.append("--skip_bootstrap")
     if args.overlap_extra_args.strip():
