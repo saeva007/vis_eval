@@ -85,6 +85,24 @@ def load_test_data(data_dir, scaler_path, window_size=12):
     return X_path, y_cls, y_raw, meta, scaler
 
 
+def apply_meta_time_shift(meta, shift_hours=0.0):
+    df = meta.copy()
+    df["time"] = pd.to_datetime(df["time"], errors="coerce")
+    df["time_utc_original"] = df["time"]
+    if float(shift_hours or 0.0) != 0.0:
+        df["time"] = df["time"] + pd.to_timedelta(float(shift_hours), unit="h")
+        df["meta_time_shift_hours"] = float(shift_hours)
+        print(
+            f"  [Time] Applied meta time shift {float(shift_hours):+g} h; "
+            "meta['time'] is treated as UTC for event/IFS plots.",
+            flush=True,
+        )
+    df["time_utc"] = df["time"]
+    df["hour"] = df["time"].dt.hour
+    df["month"] = df["time"].dt.month
+    return df
+
+
 # Must match CONFIG['FE_EXTRA_DIMS'] in PMST_net_test_10_s2.py (model expects this many extra dims)
 EXTRA_FEAT_DIMS = 36
 
@@ -279,6 +297,15 @@ def main():
     parser.add_argument("--event-min-lon-span", type=float, default=10.0)
     parser.add_argument("--event-min-lat-span", type=float, default=4.0)
     parser.add_argument("--event-gap-hours", type=int, default=24)
+    parser.add_argument(
+        "--meta-time-shift-hours",
+        type=float,
+        default=0.0,
+        help=(
+            "Add this many hours to meta_test.csv time before UTC-indexed plots. "
+            "Use -8 only to audit legacy BJT-labelled metadata; rebuilding with UTC split is preferred."
+        ),
+    )
     parser.add_argument("--cpu", action="store_true", help="Force CPU (avoids loading HIP/CUDA; use if torch import fails on cluster)")
     parser.add_argument("--batch-size", type=int, default=None, help="Inference batch size (default: 8192 on GPU, 1024 on CPU)")
     parser.add_argument("--extra-feat-dims", type=int, default=EXTRA_FEAT_DIMS, help="S2 extra feature dimension used by the checkpoint")
@@ -375,6 +402,7 @@ def main():
     X_path, y_cls, y_raw, meta, scaler = load_test_data(
         args.data_dir, scaler_path, window_size=12
     )
+    meta = apply_meta_time_shift(meta, args.meta_time_shift_hours)
     print(f"[2] Data loaded: {len(y_cls)} samples, {meta['station_id'].nunique()} stations.")
 
     # 3. Inference (with temperature scaling when calibration is loaded)

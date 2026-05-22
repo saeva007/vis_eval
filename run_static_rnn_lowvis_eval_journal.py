@@ -55,13 +55,16 @@ for _p in (str(VIS_EVAL_DIR),):
 
 try:
     from paper_eval_config import DEFAULT_CONFIG_NAME, apply_paper_eval_config
+    from feature_catalog_pm10_pm25 import catalog_rows, permutation_groups, write_catalog
     from metrics_core import pred_from_thresholds_mutual
     from run_paper_eval_pm10_pm25_journal import (
         Manifest,
         TIME_OF_DAY_LOCAL_ORDER,
         REGION_DEFS,
         add_scenario_columns,
+        aggregate_station_model_vs_ifs_metrics,
         aggregate_station_metrics,
+        build_display_lead_table,
         build_scenario_metrics,
         classification_metrics,
         infer_init_cycle_hour,
@@ -80,11 +83,14 @@ try:
         plot_ifs_visibility_bias,
         plot_region_detail,
         plot_scenario_split,
+        plot_station_recall_delta_map,
         plot_station_metric_map,
         plot_three_events_footprint_row,
         plot_three_events_peak_row,
         plot_time_of_day_detail,
         read_shapefile,
+        run_overlap_subprocess,
+        run_key_variable_quality_subprocess,
         run_widespread_event_evaluation,
         save_fig_pair,
         setup_journal_style,
@@ -100,6 +106,18 @@ DEFAULT_TRAIN_DIR = DEFAULT_BASE / "train"
 DEFAULT_DATA_DIR = "ml_dataset_s2_tianji_12h_pm10_pm25_monthtail_2"
 DEFAULT_OUT_DIR = "static_rnn_eval_results"
 DEFAULT_STAGE_TAG = "S2_PhaseB"
+IMPORTANCE_METRICS = [
+    "low_vis_recall",
+    "low_vis_csi",
+    "low_vis_precision",
+    "Fog_R",
+    "Fog_CSI",
+    "Mist_R",
+    "Mist_CSI",
+    "false_positive_rate",
+    "accuracy",
+]
+LOWER_IS_BETTER = {"false_positive_rate", "Fog_FAR", "Mist_FAR", "Clear_FAR", "ECE", "Brier_Fog", "Brier_Mist"}
 
 
 @dataclass(frozen=True)
@@ -175,6 +193,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--ifs_48h_var", default="VIS_ifs")
     p.add_argument("--skip_48h", action="store_true")
     p.add_argument("--local_time_offset_hours", type=int, default=8)
+    p.add_argument(
+        "--meta_time_shift_hours",
+        type=float,
+        default=0.0,
+        help=(
+            "Add this many hours to meta_test.csv time before UTC-indexed evaluation. "
+            "Use -8 only for legacy BJT-labelled datasets; rebuilding with UTC split is preferred."
+        ),
+    )
     p.add_argument("--event_top_k", type=int, default=3)
     p.add_argument("--event_window_hours", type=int, default=3)
     p.add_argument("--event_min_fog_stations", type=int, default=80)
@@ -185,6 +212,33 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--plots", choices=["none", "core", "all"], default="core")
     p.add_argument("--shp_path", default="/public/home/putianshu/中华人民共和国/中华人民共和国.shp", help="Optional China boundary shapefile for station/event maps when --plots all.")
     p.add_argument("--allow_missing", action="store_true", help="Skip missing matrix checkpoints instead of failing.")
+    p.add_argument("--run_feature_importance", action="store_true", help="Run grouped permutation feature importance for each evaluated target.")
+    p.add_argument("--importance_repeats", type=int, default=3)
+    p.add_argument("--importance_seed", type=int, default=42)
+    p.add_argument("--importance_max_fog", type=int, default=8000)
+    p.add_argument("--importance_max_mist", type=int, default=8000)
+    p.add_argument("--importance_max_clear", type=int, default=20000)
+    p.add_argument("--importance_max_groups", type=int, default=0)
+    p.add_argument("--importance_sort_metric", default="low_vis_recall")
+    p.add_argument("--run_variable_quality", action="store_true", help="Run Tianji-vs-IFS forecast-variable quality analysis when overlap data and observations exist.")
+    p.add_argument("--variable_quality_script", default="")
+    p.add_argument("--obs_root", default="/public/home/putianshu/vis_mlp/auto_station")
+    p.add_argument("--quality_tianji_data_dir", default="ifs_baseline/ml_dataset_overlap_tianji_12h_pm10_pm25_baseline")
+    p.add_argument("--quality_ifs_data_dir", default="ifs_baseline/ml_dataset_overlap_ifs_12h_pm10_pm25_baseline")
+    p.add_argument("--quality_out_dir", default="")
+    p.add_argument("--quality_features", default="RH2M,T2M,WSPD10,MSLP,PRECIP")
+    p.add_argument("--run_overlap_source_comparison", action="store_true", help="Run paired Tianji-vs-IFS overlap source comparison for the main target.")
+    p.add_argument("--overlap_script", default="")
+    p.add_argument("--overlap_out_dir", default="")
+    p.add_argument("--overlap_extra_args", default="--model_arch static_rnn")
+    p.add_argument("--overlap_tianji_ckpt", default="")
+    p.add_argument("--overlap_ifs_ckpt", default="")
+    p.add_argument("--overlap_tianji_scaler", default="")
+    p.add_argument("--overlap_ifs_scaler", default="")
+    p.add_argument("--overlap_feature_importance_csv", default="")
+    p.add_argument("--overlap_feature_swap_top_k", type=int, default=0)
+    p.add_argument("--overlap_feature_swap_features", default="")
+    p.add_argument("--skip_overlap_bootstrap", action="store_true")
     return p.parse_args()
 
 
@@ -331,6 +385,32 @@ def run_static_inference(
     return np.concatenate(out, axis=0) if out else np.zeros((0, 3), dtype=np.float32)
 
 
+def predict_static_rows(
+    rows: np.ndarray,
+    scaler,
+    model,
+    device,
+    batch_size: int,
+    layout,
+    mod,
+    spec: VariantSpec,
+) -> np.ndarray:
+    import torch
+    import torch.nn.functional as F
+
+    out = []
+    model.eval()
+    for start in range(0, len(rows), int(batch_size)):
+        end = min(start + int(batch_size), len(rows))
+        final = prepare_static_rows(rows[start:end], scaler, layout, mod, spec)
+        bx = torch.from_numpy(final).float().to(device, non_blocking=(device.type == "cuda"))
+        with torch.inference_mode():
+            logits, _ = model(bx)
+            probs = F.softmax(logits, dim=1)
+        out.append(probs.detach().cpu().numpy())
+    return np.concatenate(out, axis=0) if out else np.zeros((0, 3), dtype=np.float32)
+
+
 def threshold_from_checkpoint(meta: Dict[str, object]) -> Optional[Tuple[float, float]]:
     th = meta.get("thresholds", {}) if isinstance(meta, dict) else {}
     if isinstance(th, dict) and "fog" in th and "mist" in th:
@@ -451,6 +531,175 @@ def predict_for_lead(probs: np.ndarray, decision_meta: Dict[str, object]) -> np.
     return pred_from_thresholds_mutual(probs, fog_th, mist_th).astype(np.int64)
 
 
+def importance_delta(metric: str, baseline: float, perturbed: float) -> float:
+    if metric in LOWER_IS_BETTER:
+        return float(perturbed - baseline)
+    return float(baseline - perturbed)
+
+
+def sample_importance_indices(y_cls: np.ndarray, args: argparse.Namespace) -> np.ndarray:
+    rng = np.random.default_rng(int(args.importance_seed))
+    parts = []
+    for cls, max_n in (
+        (0, int(args.importance_max_fog)),
+        (1, int(args.importance_max_mist)),
+        (2, int(args.importance_max_clear)),
+    ):
+        idx = np.flatnonzero(y_cls == cls)
+        if max_n > 0 and len(idx) > max_n:
+            idx = rng.choice(idx, size=max_n, replace=False)
+        parts.append(idx)
+    out = np.unique(np.concatenate(parts)) if parts else np.arange(len(y_cls))
+    out.sort()
+    if len(out) == 0:
+        raise ValueError("No rows available for feature importance.")
+    return out
+
+
+def score_static_probabilities(y_true: np.ndarray, probs: np.ndarray, decision_meta: Dict[str, object]) -> Dict[str, float]:
+    pred = predict_for_lead(probs, decision_meta)
+    metrics = classification_metrics(y_true, pred, probs=probs)
+    return {k: float(metrics.get(k, np.nan)) for k in IMPORTANCE_METRICS}
+
+
+def plot_static_feature_importance(imp_df: pd.DataFrame, out_dir: Path, sort_metric: str) -> None:
+    col = f"importance_{sort_metric}"
+    if imp_df.empty or col not in imp_df:
+        return
+    setup_journal_style()
+    top = imp_df.sort_values(col, ascending=False).head(24).iloc[::-1].copy()
+    color_map = {
+        "dynamic_12h": "#2E5A87",
+        "static": "#6E91B5",
+        "static_category": "#6E91B5",
+        "feature_engineering": "#E69F00",
+        "feature_engineering_vera_optional": "#2A9D8F",
+    }
+    colors = top["block"].map(color_map).fillna("#7F7F7F")
+    fig, ax = plt.subplots(figsize=(8.6, max(4.8, 0.28 * len(top) + 1.1)))
+    ax.barh(top["feature"].astype(str), top[col].astype(float), color=colors)
+    ax.axvline(0, color="#222222", lw=0.8)
+    ax.set_xlabel(f"Grouped permutation importance ({sort_metric})")
+    ax.set_title("Feature groups that sustain low-visibility skill")
+    ax.grid(axis="x", alpha=0.25)
+    ax.grid(axis="y", visible=False)
+    handles = [
+        plt.Line2D([0], [0], marker="s", color="none", markerfacecolor=color, markersize=7, label=label)
+        for label, color in (
+            ("12 h dynamic", "#2E5A87"),
+            ("Station/static", "#6E91B5"),
+            ("Engineered", "#E69F00"),
+        )
+    ]
+    ax.legend(handles=handles, frameon=False, loc="lower right")
+    fig.tight_layout()
+    for ext in ("png", "pdf", "svg"):
+        path = out_dir / f"fig_static_rnn_feature_importance_{sort_metric}.{ext}"
+        fig.savefig(path, dpi=300, bbox_inches="tight")
+        print(f"[figure] {path}", flush=True)
+    plt.close(fig)
+
+
+def run_static_feature_importance(
+    args: argparse.Namespace,
+    target: EvalTarget,
+    data_dir: Path,
+    out_dir: Path,
+    manifest: Manifest,
+    x_path: Path,
+    y_cls: np.ndarray,
+    scaler,
+    model,
+    device,
+    layout,
+    mod,
+    decision_meta: Dict[str, object],
+) -> Optional[pd.DataFrame]:
+    if not bool(getattr(args, "run_feature_importance", False)):
+        return None
+    imp_dir = out_dir / "feature_importance"
+    imp_dir.mkdir(parents=True, exist_ok=True)
+    rows_catalog = catalog_rows(layout.dyn_vars, layout.fe_dim)
+    catalog_csv = imp_dir / "feature_catalog_pm10_pm25.csv"
+    catalog_md = imp_dir / "feature_catalog_pm10_pm25.md"
+    write_catalog(rows_catalog, catalog_csv, catalog_md)
+
+    idx = sample_importance_indices(y_cls, args)
+    X = np.load(x_path, mmap_mode="r")
+    rows = np.asarray(X[idx], dtype=np.float32)
+    y_sample = y_cls[idx]
+    print(
+        f"[importance:{target.label}] rows={len(idx)} "
+        f"fog={int(np.sum(y_sample == 0))} mist={int(np.sum(y_sample == 1))} clear={int(np.sum(y_sample == 2))}",
+        flush=True,
+    )
+    base_probs = predict_static_rows(rows, scaler, model, device, args.batch_size, layout, mod, target.variant)
+    baseline = score_static_probabilities(y_sample, base_probs, decision_meta)
+    with open(imp_dir / "feature_importance_baseline_metrics.json", "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "baseline_metrics": baseline,
+                "sample_size": int(len(idx)),
+                "checkpoint": str(target.checkpoint),
+                "data_dir": str(data_dir),
+                "decision": decision_meta,
+                "layout": asdict(layout),
+            },
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
+    groups = permutation_groups(layout.window_size, layout.dyn_vars, layout.fe_dim)
+    if int(args.importance_max_groups or 0) > 0:
+        groups = groups[: int(args.importance_max_groups)]
+    rng = np.random.default_rng(int(args.importance_seed))
+    records: List[Dict[str, object]] = []
+    for gi, group in enumerate(groups, start=1):
+        cols = np.asarray(group["columns"], dtype=np.int64)
+        repeat_metrics = []
+        print(f"[importance:{target.label}] {gi}/{len(groups)} {group['block']}::{group['feature']}", flush=True)
+        for _ in range(int(args.importance_repeats)):
+            perm = rng.permutation(len(rows))
+            perturbed = rows.copy()
+            perturbed[:, cols] = rows[perm][:, cols]
+            probs_p = predict_static_rows(perturbed, scaler, model, device, args.batch_size, layout, mod, target.variant)
+            repeat_metrics.append(score_static_probabilities(y_sample, probs_p, decision_meta))
+        row: Dict[str, object] = {
+            "feature": group["feature"],
+            "block": group["block"],
+            "n_columns": int(group["n_columns"]),
+            "repeats": int(args.importance_repeats),
+        }
+        for metric in IMPORTANCE_METRICS:
+            vals = np.asarray([m.get(metric, np.nan) for m in repeat_metrics], dtype=float)
+            mean_val = float(np.nanmean(vals))
+            std_val = float(np.nanstd(vals))
+            row[f"baseline_{metric}"] = float(baseline.get(metric, np.nan))
+            row[f"permuted_{metric}_mean"] = mean_val
+            row[f"permuted_{metric}_std"] = std_val
+            row[f"importance_{metric}"] = importance_delta(metric, float(baseline.get(metric, np.nan)), mean_val)
+        records.append(row)
+    imp_df = pd.DataFrame(records)
+    sort_metric = str(args.importance_sort_metric)
+    sort_col = f"importance_{sort_metric}"
+    if sort_col not in imp_df:
+        sort_metric = "low_vis_recall"
+        sort_col = f"importance_{sort_metric}"
+    if sort_col in imp_df:
+        imp_df = imp_df.sort_values(sort_col, ascending=False).reset_index(drop=True)
+    imp_path = imp_dir / "feature_importance_permutation_static_rnn.csv"
+    imp_df.to_csv(imp_path, index=False, float_format="%.8f")
+    print(f"[table] {imp_path}", flush=True)
+    plot_static_feature_importance(imp_df, imp_dir, sort_metric)
+    manifest.add(
+        f"fig_static_rnn_feature_importance_{sort_metric}.png/pdf/svg",
+        [str(imp_path), str(catalog_csv), str(x_path), str(target.checkpoint)],
+        notes="Grouped permutation feature importance on a stratified S2 test subset for the current Static-RNN model.",
+        n=int(len(idx)),
+    )
+    return imp_df
+
+
 def run_static_48h_optional(
     args: argparse.Namespace,
     target: EvalTarget,
@@ -473,7 +722,9 @@ def run_static_48h_optional(
         print(f"[48h] data dir not found: {data_48h}; skip fig11.", flush=True)
         return
     try:
-        x_path, y_cls, _, meta = load_main_data(data_48h, args.limit_samples)
+        x_path, y_cls, _, meta = load_main_data(
+            data_48h, args.limit_samples, getattr(args, "meta_time_shift_hours", 0.0)
+        )
         dyn, fe = infer_layout_from_x(x_path, args.window_size)
         if dyn != layout.dyn_vars or fe != layout.fe_dim:
             print(
@@ -518,13 +769,22 @@ def run_static_48h_optional(
         pooled.to_csv(pooled_path, index=False)
         lead00.to_csv(lead00_path, index=False)
         lead12.to_csv(lead12_path, index=False)
+        pooled_display = build_display_lead_table(pooled, pooled, "pooled_previous_init_12_24h")
+        lead00_display = build_display_lead_table(lead00, lead12, "previous_12Z_init_12_24h")
+        lead12_display = build_display_lead_table(lead12, lead00, "previous_00Z_init_12_24h")
+        pooled_display_path = out_dir / "metrics_by_display_lead_hour_48h_model.csv"
+        lead00_display_path = out_dir / "metrics_by_display_lead_hour_init00Z.csv"
+        lead12_display_path = out_dir / "metrics_by_display_lead_hour_init12Z.csv"
+        pooled_display.to_csv(pooled_display_path, index=False)
+        lead00_display.to_csv(lead00_display_path, index=False)
+        lead12_display.to_csv(lead12_display_path, index=False)
         plot_fig11_lead_init(
-            pooled,
-            lead00,
-            lead12,
+            pooled_display,
+            lead00_display,
+            lead12_display,
             out_dir,
             manifest,
-            [str(x_path), str(data_48h / "meta_test.csv"), str(target.checkpoint)],
+            [str(x_path), str(data_48h / "meta_test.csv"), str(target.checkpoint), str(pooled_display_path)],
         )
         ifs_48h_nc = as_abs_under(base, args.ifs_48h_nc)
         if not ifs_48h_nc.exists():
@@ -568,11 +828,14 @@ def run_static_48h_optional(
                 if mc in cmp_df and ic in cmp_df:
                     cmp_df[f"{metric}_diff_model_minus_ifs"] = cmp_df[mc] - cmp_df[ic]
             cmp_df.to_csv(cmp_path, index=False, float_format="%.6f")
+            cmp_display = build_display_lead_table(cmp_df, cmp_df, "matched_previous_init_12_24h")
+            cmp_display_path = out_dir / "model_vs_ifs_metrics_by_display_lead_hour_48h.csv"
+            cmp_display.to_csv(cmp_display_path, index=False, float_format="%.6f")
             plot_fig11_48h_model_vs_ifs(
-                cmp_df,
+                cmp_display,
                 out_dir,
                 manifest,
-                [str(x_path), str(data_48h / "meta_test.csv"), str(ifs_48h_nc), str(cmp_path)],
+                [str(x_path), str(data_48h / "meta_test.csv"), str(ifs_48h_nc), str(cmp_display_path)],
             )
         except Exception as exc:
             print(f"[48h IFS] skipped after error: {exc}", flush=True)
@@ -685,7 +948,9 @@ def evaluate_target(
     import joblib
 
     print(f"\n=== Evaluating {target.label}: {target.run_id} ===", flush=True)
-    x_path, y_cls, y_raw, meta = load_main_data(data_dir, args.limit_samples)
+    x_path, y_cls, y_raw, meta = load_main_data(
+        data_dir, args.limit_samples, getattr(args, "meta_time_shift_hours", 0.0)
+    )
     dyn, fe = infer_layout_from_x(x_path, args.window_size)
     layout = mod.Layout(window_size=args.window_size, dyn_vars=dyn, fe_dim=fe)
     ckpt_dir = as_abs_under(base, args.ckpt_dir)
@@ -766,6 +1031,27 @@ def evaluate_target(
     scenario_df.to_csv(out_dir / "scenario_metrics.csv", index=False)
     station_df = aggregate_station_metrics(eval_df, "pmst_pred")
     station_df.to_csv(out_dir / "station_metrics.csv", index=False)
+    station_delta_df = aggregate_station_model_vs_ifs_metrics(eval_df)
+    if station_delta_df is not None and not station_delta_df.empty:
+        station_delta_df.to_csv(out_dir / "station_model_vs_ifs_metrics.csv", index=False, float_format="%.6f")
+        print(f"[table] {out_dir / 'station_model_vs_ifs_metrics.csv'}", flush=True)
+
+    if bool(getattr(args, "run_feature_importance", False)) and args.plots == "all":
+        run_static_feature_importance(
+            args,
+            target,
+            data_dir,
+            out_dir,
+            manifest,
+            x_path,
+            y_cls,
+            scaler,
+            model,
+            device,
+            layout,
+            mod,
+            decision_meta,
+        )
 
     if args.plots != "none":
         matched_for_plot = None
@@ -802,6 +1088,15 @@ def evaluate_target(
         if args.plots == "all":
             plot_diurnal_time_detail(eval_df, out_dir, manifest, [str(out_dir / "per_sample_eval.csv")], offset_hours=args.local_time_offset_hours)
             shp = read_shapefile(args.shp_path) if args.shp_path else None
+            if station_delta_df is not None and not station_delta_df.empty:
+                plot_station_recall_delta_map(
+                    station_delta_df,
+                    out_dir,
+                    manifest,
+                    [str(out_dir / "station_model_vs_ifs_metrics.csv")],
+                    shp_gdf=shp,
+                    min_count=5,
+                )
             plot_station_metric_map(
                 station_df,
                 "fog_recall",
@@ -861,6 +1156,10 @@ def evaluate_target(
                 ifs_valid,
                 shp,
             )
+            if target.label == "main":
+                run_key_variable_quality_subprocess(args, base, out_dir, manifest)
+                if bool(getattr(args, "run_overlap_source_comparison", False)):
+                    run_overlap_subprocess(args, base, out_dir, manifest)
     manifest.write()
 
     run_config = {
@@ -871,6 +1170,9 @@ def evaluate_target(
         "variant": asdict(target.variant),
         "layout": asdict(layout),
         "decision": decision_meta,
+        "meta_time_shift_hours": float(getattr(args, "meta_time_shift_hours", 0.0) or 0.0),
+        "run_feature_importance": bool(getattr(args, "run_feature_importance", False)),
+        "run_variable_quality": bool(getattr(args, "run_variable_quality", False)),
         "data_dir": str(data_dir),
         "out_dir": str(out_dir),
         "checkpoint_metadata": ckpt_meta,

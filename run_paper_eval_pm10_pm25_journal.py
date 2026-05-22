@@ -35,6 +35,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -49,7 +50,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.colors import BoundaryNorm, ListedColormap, Normalize
+from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, ListedColormap, Normalize, TwoSlopeNorm
 from matplotlib.patches import Patch
 from sklearn.metrics import confusion_matrix
 
@@ -167,7 +168,9 @@ REGION_DEFS = [
 def setup_journal_style() -> None:
     plt.rcParams.update(
         {
-            "font.family": "DejaVu Serif",
+            "font.family": "sans-serif",
+            "font.sans-serif": ["Arial", "DejaVu Sans", "Liberation Sans"],
+            "svg.fonttype": "none",
             "font.size": 9,
             "axes.labelsize": 10,
             "axes.titlesize": 10,
@@ -222,13 +225,13 @@ def save_fig_pair(fig, out_dir: Path, stem: str, manifest: Optional[Manifest] = 
                   matched_ifs: Optional[int] = None) -> List[str]:
     out_dir.mkdir(parents=True, exist_ok=True)
     paths = []
-    for ext in ("png", "pdf"):
+    for ext in ("png", "pdf", "svg"):
         path = out_dir / f"{stem}.{ext}"
         fig.savefig(path, dpi=300, bbox_inches="tight")
         paths.append(str(path))
         print(f"  [Fig] Saved -> {path}", flush=True)
     if manifest is not None:
-        manifest.add(f"{stem}.png/pdf", sources, notes=notes, n=n, matched_ifs=matched_ifs)
+        manifest.add(f"{stem}.png/pdf/svg", sources, notes=notes, n=n, matched_ifs=matched_ifs)
     plt.close(fig)
     return paths
 
@@ -328,12 +331,36 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--overlap_script", default="")
     ap.add_argument("--overlap_out_dir", default="")
     ap.add_argument("--overlap_extra_args", default="", help="Extra args passed verbatim to overlap evaluator.")
+    ap.add_argument("--overlap_tianji_ckpt", default="", help="Optional Tianji-source overlap checkpoint path.")
+    ap.add_argument("--overlap_ifs_ckpt", default="", help="Optional IFS-source overlap checkpoint path.")
+    ap.add_argument("--overlap_tianji_scaler", default="", help="Optional Tianji-source overlap scaler path.")
+    ap.add_argument("--overlap_ifs_scaler", default="", help="Optional IFS-source overlap scaler path.")
+    ap.add_argument("--overlap_feature_importance_csv", default="", help="Optional feature-importance CSV used by overlap feature-replacement analysis.")
+    ap.add_argument("--overlap_feature_swap_top_k", type=int, default=0, help="Run overlap feature replacement for top-K dynamic variables when >0.")
+    ap.add_argument("--overlap_feature_swap_features", default="", help="Comma/semicolon feature names for overlap feature replacement.")
     ap.add_argument("--skip_overlap_bootstrap", action="store_true")
+    ap.add_argument("--run_variable_quality", action="store_true", help="Run Tianji-vs-IFS forecast-variable quality analysis when inputs exist.")
+    ap.add_argument("--variable_quality_script", default="", help="Optional path to analyze_key_variable_quality.py.")
+    ap.add_argument("--obs_root", default="/public/home/putianshu/vis_mlp/auto_station", help="Root directory for station observation CSV files.")
+    ap.add_argument("--quality_tianji_data_dir", default="ifs_baseline/ml_dataset_overlap_tianji_12h_pm10_pm25_baseline")
+    ap.add_argument("--quality_ifs_data_dir", default="ifs_baseline/ml_dataset_overlap_ifs_12h_pm10_pm25_baseline")
+    ap.add_argument("--quality_out_dir", default="", help="Optional output dir for forecast-variable quality analysis.")
+    ap.add_argument("--quality_features", default="RH2M,T2M,WSPD10,MSLP,PRECIP", help="Comma/semicolon key variables for forecast-quality analysis.")
     ap.add_argument(
         "--local_time_offset_hours",
         type=int,
         default=LOCAL_TIME_OFFSET_HOURS,
         help="Offset applied to UTC timestamps for diurnal plots; default 8 converts UTC to UTC+8.",
+    )
+    ap.add_argument(
+        "--meta_time_shift_hours",
+        type=float,
+        default=0.0,
+        help=(
+            "Add this many hours to meta_test.csv time before UTC-indexed evaluation. "
+            "Use -8 only for legacy datasets whose meta time is BJT-labelled rather than UTC; "
+            "rebuilding the dataset with UTC splitting is preferred for event windows."
+        ),
     )
     ap.add_argument("--history_paths", default="", help="Comma/semicolon-separated training history JSON or stdout .out/.log files.")
     ap.add_argument("--history_labels", default="", help="Optional labels matching --history_paths order.")
@@ -720,7 +747,23 @@ def metric_deltas(
 # ---------------------------------------------------------------------------
 
 
-def load_main_data(data_dir: Path, limit_samples: int = 0) -> Tuple[Path, np.ndarray, np.ndarray, pd.DataFrame]:
+def canonicalize_meta_time(meta: pd.DataFrame, meta_time_shift_hours: float = 0.0) -> pd.DataFrame:
+    out = meta.copy()
+    parsed = pd.to_datetime(out["time"], errors="coerce")
+    out["time_utc_original"] = parsed
+    if float(meta_time_shift_hours or 0.0) != 0.0:
+        parsed = parsed + pd.to_timedelta(float(meta_time_shift_hours), unit="h")
+        out["meta_time_shift_hours"] = float(meta_time_shift_hours)
+    out["time"] = parsed
+    out["time_utc"] = parsed
+    return out
+
+
+def load_main_data(
+    data_dir: Path,
+    limit_samples: int = 0,
+    meta_time_shift_hours: float = 0.0,
+) -> Tuple[Path, np.ndarray, np.ndarray, pd.DataFrame]:
     x_path = data_dir / "X_test.npy"
     y_path = data_dir / "y_test.npy"
     meta_path = data_dir / "meta_test.csv"
@@ -734,13 +777,17 @@ def load_main_data(data_dir: Path, limit_samples: int = 0) -> Tuple[Path, np.nda
     if len(meta) < n:
         raise ValueError(f"{meta_path} has {len(meta)} rows, expected at least {n}")
     meta = meta.iloc[:n].copy().reset_index(drop=True)
-    meta["time"] = pd.to_datetime(meta["time"], errors="coerce")
-    if "hour" not in meta:
-        meta["hour"] = meta["time"].dt.hour
+    meta = canonicalize_meta_time(meta, meta_time_shift_hours)
+    if float(meta_time_shift_hours or 0.0) != 0.0:
+        print(
+            f"[time] Applied meta_time_shift_hours={float(meta_time_shift_hours):+g}; "
+            "meta['time'] is now UTC for matching and event plots.",
+            flush=True,
+        )
+    meta["hour"] = meta["time"].dt.hour
     meta["hour_utc"] = meta["time"].dt.hour
     meta = add_local_time_columns(meta)
-    if "month" not in meta:
-        meta["month"] = meta["time"].dt.month
+    meta["month"] = meta["time"].dt.month
     return x_path, y_cls, y_raw, meta
 
 
@@ -849,7 +896,10 @@ def export_per_sample(
             "lat",
             "lon",
             "time",
+            "time_utc",
+            "time_utc_original",
             "time_analysis",
+            "meta_time_shift_hours",
             "month",
             "month_analysis",
             "hour",
@@ -1019,6 +1069,68 @@ def aggregate_station_metrics(eval_df: pd.DataFrame, pred_col: str = "pmst_pred"
             "fpr_fog": safe_div(float(((y == 2) & pred_low).sum()), float(n_clear)),
             "overall_acc": float((y == p).mean()) if len(sub) else math.nan,
         }
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def aggregate_station_model_vs_ifs_metrics(
+    eval_df: pd.DataFrame,
+    model_col: str = "pmst_pred",
+    ifs_col: str = "ifs_diagnostic_pred",
+    valid_col: str = "ifs_diagnostic_valid",
+) -> pd.DataFrame:
+    """Per-station PMST-vs-IFS deltas on exactly matched IFS rows."""
+
+    required = {"station_id", "lat", "lon", "y_true", model_col, ifs_col, valid_col}
+    missing = sorted(required - set(eval_df.columns))
+    if missing:
+        print(f"  [WARN] Cannot build station PMST-vs-IFS table; missing columns: {missing}", flush=True)
+        return pd.DataFrame()
+
+    df = eval_df[np.asarray(eval_df[valid_col], dtype=bool)].copy()
+    if df.empty:
+        return pd.DataFrame()
+
+    rows: List[Dict[str, object]] = []
+    for sid, sub in df.groupby("station_id", sort=False):
+        y = sub["y_true"].to_numpy(dtype=np.int64)
+        p_model = sub[model_col].to_numpy(dtype=np.int64)
+        p_ifs = sub[ifs_col].to_numpy(dtype=np.int64)
+        n_fog = int((y == 0).sum())
+        n_mist = int((y == 1).sum())
+        n_low = int((y <= 1).sum())
+        if n_low <= 0:
+            continue
+        met_model = classification_metrics(y, p_model)
+        met_ifs = classification_metrics(y, p_ifs)
+        row: Dict[str, object] = {
+            "station_id": sid,
+            "lat": float(sub["lat"].iloc[0]),
+            "lon": float(sub["lon"].iloc[0]),
+            "n_total_matched": int(len(sub)),
+            "n_fog": n_fog,
+            "n_mist": n_mist,
+            "n_low_vis": n_low,
+            "n_clear": int((y == 2).sum()),
+        }
+        metric_names = {
+            "Fog_R": "fog_recall",
+            "Mist_R": "mist_recall",
+            "low_vis_recall": "low_vis_recall",
+            "Fog_CSI": "fog_csi",
+            "Mist_CSI": "mist_csi",
+            "low_vis_csi": "low_vis_csi",
+            "false_positive_rate": "false_positive_rate",
+            "accuracy": "accuracy",
+        }
+        for metric, safe in metric_names.items():
+            pm = float(met_model.get(metric, np.nan))
+            iv = float(met_ifs.get(metric, np.nan))
+            row[f"pmst_{safe}"] = pm
+            row[f"ifs_{safe}"] = iv
+            row[f"delta_{safe}"] = pm - iv
+        row["pmst_better_low_vis_recall"] = bool(row.get("delta_low_vis_recall", 0.0) > 0)
+        row["ifs_better_low_vis_recall"] = bool(row.get("delta_low_vis_recall", 0.0) < 0)
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -1836,6 +1948,110 @@ def plot_station_metric_map(
     save_fig_pair(fig, out_dir, stem, manifest, sources, notes=f"Station map masked by {mask_col}>={min_count}.", n=len(df))
 
 
+def plot_station_recall_delta_map(
+    station_delta_df: pd.DataFrame,
+    out_dir: Path,
+    manifest: Manifest,
+    sources: Sequence[str],
+    shp_gdf=None,
+    min_count: int = 5,
+) -> None:
+    """Hero map: where PMST improves station recall over IFS diagnostic visibility."""
+
+    if station_delta_df is None or station_delta_df.empty:
+        print("  [WARN] No station PMST-vs-IFS delta rows; skip station delta map.", flush=True)
+        return
+    setup_journal_style()
+    metric_specs = [
+        ("delta_fog_recall", "Fog recall", "n_fog"),
+        ("delta_mist_recall", "Mist recall", "n_mist"),
+        ("delta_low_vis_recall", "Low-vis recall", "n_low_vis"),
+    ]
+    available = [(m, label, count) for m, label, count in metric_specs if m in station_delta_df and count in station_delta_df]
+    if not available:
+        print("  [WARN] Station delta table lacks recall-delta columns; skip station delta map.", flush=True)
+        return
+
+    all_vals: List[float] = []
+    for metric, _, count_col in available:
+        sub = station_delta_df[pd.to_numeric(station_delta_df[count_col], errors="coerce") >= min_count]
+        vals = pd.to_numeric(sub[metric], errors="coerce").to_numpy(dtype=float)
+        all_vals.extend(vals[np.isfinite(vals)].tolist())
+    if not all_vals:
+        print("  [WARN] Station delta map has no finite values after count mask.", flush=True)
+        return
+
+    lim = float(np.nanpercentile(np.abs(np.asarray(all_vals, dtype=float)), 95))
+    lim = min(1.0, max(0.10, math.ceil(lim / 0.05) * 0.05))
+    cmap = LinearSegmentedColormap.from_list(
+        "pmst_ifs_delta",
+        ["#B45B43", "#F0E5D8", "#E9F3E8", "#18864B"],
+        N=256,
+    )
+    norm = TwoSlopeNorm(vmin=-lim, vcenter=0.0, vmax=lim)
+
+    fig, axes = plt.subplots(1, len(available), figsize=(5.0 * len(available), 5.2), squeeze=False)
+    last_sc = None
+    for idx, (ax, (metric, label, count_col)) in enumerate(zip(axes.ravel(), available)):
+        df = station_delta_df.copy()
+        df[count_col] = pd.to_numeric(df[count_col], errors="coerce")
+        df[metric] = pd.to_numeric(df[metric], errors="coerce")
+        df = df[(df[count_col] >= min_count) & np.isfinite(df[metric])]
+        draw_basemap(ax, shp_gdf, compact=True)
+        if not df.empty:
+            sizes = 7.0 + 20.0 * np.sqrt(np.clip(df[count_col].to_numpy(dtype=float), 0, None)) / max(
+                1.0, math.sqrt(float(np.nanmax(df[count_col].to_numpy(dtype=float))))
+            )
+            order = np.argsort(np.abs(df[metric].to_numpy(dtype=float)))
+            df_plot = df.iloc[order]
+            sc = ax.scatter(
+                df_plot["lon"],
+                df_plot["lat"],
+                c=df_plot[metric],
+                s=sizes[order],
+                cmap=cmap,
+                norm=norm,
+                linewidths=0.10,
+                edgecolors="#FFFFFF",
+                alpha=0.96,
+                zorder=3,
+            )
+            last_sc = sc
+        else:
+            sc = None
+        draw_boundary(ax, shp_gdf, color="#1F2937", linewidth=0.55, zorder=6)
+        n_station = int(len(df))
+        better = int((df[metric] > 0).sum()) if n_station else 0
+        median_delta = float(np.nanmedian(df[metric])) if n_station else math.nan
+        ax.set_title(f"{label}\nPMST better at {safe_div(better * 100.0, n_station):.0f}% of stations")
+        ax.text(
+            0.02,
+            0.02,
+            f"n={n_station:,}; median Δ={median_delta:+.2f}",
+            transform=ax.transAxes,
+            ha="left",
+            va="bottom",
+            fontsize=8,
+            color="#1F2937",
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.75, "pad": 2.5},
+        )
+        add_panel_label(ax, chr(ord("a") + idx), x=0.01, y=0.96)
+    if axes.size and last_sc is not None:
+        cb = fig.colorbar(last_sc, ax=axes.ravel().tolist(), shrink=0.72, pad=0.025)
+        cb.set_label("Recall difference (PMST - IFS)")
+    fig.suptitle("Station-level recall advantage over IFS diagnostic visibility", y=0.98, fontsize=12, fontweight="bold")
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    save_fig_pair(
+        fig,
+        out_dir,
+        "fig8_station_model_vs_ifs_recall_delta",
+        manifest,
+        sources,
+        notes="Station-level recall deltas on finite IFS-matched rows; green means PMST recall exceeds IFS diagnostic visibility recall.",
+        n=int(len(station_delta_df)),
+    )
+
+
 def plot_event_peak_grid(
     eval_df: pd.DataFrame,
     event_df: pd.DataFrame,
@@ -2060,30 +2276,17 @@ def plot_fig11_lead_init(
     ]
     for ax, (metric, title), letter in zip(axes.ravel(), specs, "abcdef"):
         plotted = False
-        if metric in lead_pooled and not lead_pooled.empty:
-            ax.plot(
-                lead_pooled["lead_hour"],
-                lead_pooled[metric],
-                color="#111827",
-                lw=2.2,
-                marker="o",
-                ms=3.0,
-                label="Pooled",
-                zorder=3,
-            )
-            plotted = True
-        if metric in lead00 and not lead00.empty:
-            ax.plot(lead00["lead_hour"], lead00[metric], "o-", color="#0F766E", lw=1.5, ms=3.2, label="00Z", zorder=4)
-            plotted = True
-        if metric in lead12 and not lead12.empty:
-            ax.plot(lead12["lead_hour"], lead12[metric], "s-", color="#C2410C", lw=1.5, ms=3.2, label="12Z", zorder=4)
-            plotted = True
+        plotted = _plot_lead_metric_series(ax, lead_pooled, metric, "#111827", "Pooled", "o", 2.2, 3) or plotted
+        plotted = _plot_lead_metric_series(ax, lead00, metric, "#0F766E", "00Z", "o", 1.5, 4) or plotted
+        plotted = _plot_lead_metric_series(ax, lead12, metric, "#C2410C", "12Z", "s", 1.5, 4) or plotted
         if not plotted:
             ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center", color="#6B7280")
         ax.set_title(title)
-        ax.set_xlabel("Lead time (h)")
+        ax.set_xlabel("Display lead time (h)")
         ax.set_ylabel("Score")
         ax.set_ylim(0, 1.0)
+        ax.set_xlim(-0.5, 48.5)
+        ax.axvspan(-0.5, 12.0, color="#EEF7F0", alpha=0.55, zorder=-10)
         ax.grid(axis="y", alpha=0.25)
         ax.grid(axis="x", alpha=0.10)
         add_panel_label(ax, letter)
@@ -2094,6 +2297,15 @@ def plot_fig11_lead_init(
             break
     if handles:
         fig.legend(handles, labels, loc="upper center", ncol=3, frameon=False, bbox_to_anchor=(0.5, 1.03))
+    fig.text(
+        0.995,
+        0.01,
+        "Dotted 0-12 h segment is filled from the previous initialization's 12-24 h verification window.",
+        ha="right",
+        va="bottom",
+        fontsize=7.5,
+        color="#3F4A3F",
+    )
     fig.tight_layout()
     save_fig_pair(
         fig,
@@ -2194,6 +2406,107 @@ def lead_metrics_table(
         row.update(met)
         rows.append(row)
     return pd.DataFrame(rows).sort_values("lead_hour").reset_index(drop=True) if rows else pd.DataFrame()
+
+
+def build_display_lead_table(
+    native: pd.DataFrame,
+    fill_from: Optional[pd.DataFrame] = None,
+    fill_source: str = "previous_init_12_24h",
+    fill_min_hour: int = 12,
+    fill_max_hour: int = 24,
+) -> pd.DataFrame:
+    """Add display lead 0-12 h by shifting another table's 12-24 h rows.
+
+    The underlying 48 h dataset starts at 12 h. For a continuous lead-time figure,
+    the previous initialization's 12-24 h segment is a defensible proxy for the
+    current initialization's 0-12 h display segment.
+    """
+
+    if native is None or native.empty or "lead_hour" not in native:
+        return pd.DataFrame()
+    out = native.copy()
+    out["native_lead_hour"] = pd.to_numeric(out["lead_hour"], errors="coerce")
+    out["display_lead_hour"] = out["native_lead_hour"]
+    out["lead_fill_source"] = "native_12_48h"
+    src = native if fill_from is None else fill_from
+    fill = pd.DataFrame()
+    if src is not None and not src.empty and "lead_hour" in src:
+        fill = src.copy()
+        raw = pd.to_numeric(fill["lead_hour"], errors="coerce")
+        fill = fill[(raw >= float(fill_min_hour)) & (raw < float(fill_max_hour))].copy()
+        if not fill.empty:
+            fill["native_lead_hour"] = pd.to_numeric(fill["lead_hour"], errors="coerce")
+            fill["display_lead_hour"] = fill["native_lead_hour"] - float(fill_min_hour)
+            fill["lead_hour"] = fill["display_lead_hour"]
+            fill["lead_fill_source"] = fill_source
+    if fill.empty:
+        return out.sort_values(["display_lead_hour", "lead_fill_source"]).reset_index(drop=True)
+    combined = pd.concat([fill, out], ignore_index=True, sort=False)
+    return combined.sort_values(["display_lead_hour", "lead_fill_source"]).reset_index(drop=True)
+
+
+def _lead_x(df: pd.DataFrame) -> pd.Series:
+    if "display_lead_hour" in df:
+        return pd.to_numeric(df["display_lead_hour"], errors="coerce")
+    return pd.to_numeric(df["lead_hour"], errors="coerce")
+
+
+def _plot_lead_metric_series(
+    ax,
+    df: pd.DataFrame,
+    metric: str,
+    color: str,
+    label: str,
+    marker: str,
+    lw: float,
+    zorder: int,
+    linestyle: str = "-",
+) -> bool:
+    if df is None or df.empty or metric not in df:
+        return False
+    plotted = False
+    d = df.copy()
+    d["_x"] = _lead_x(d)
+    d["_y"] = pd.to_numeric(d[metric], errors="coerce")
+    d = d[np.isfinite(d["_x"]) & np.isfinite(d["_y"])].sort_values("_x")
+    if d.empty:
+        return False
+    fill_col = d["lead_fill_source"].astype(str) if "lead_fill_source" in d else pd.Series("native_12_48h", index=d.index)
+    native = d[fill_col == "native_12_48h"]
+    front = d[fill_col != "native_12_48h"]
+    if not front.empty:
+        ax.plot(
+            front["_x"],
+            front["_y"],
+            color=color,
+            lw=max(1.1, lw - 0.4),
+            ls=":",
+            marker=marker,
+            ms=2.8,
+            mfc="white",
+            mec=color,
+            alpha=0.82,
+            label=None,
+            zorder=zorder - 1,
+        )
+        plotted = True
+    if not native.empty:
+        ax.plot(
+            native["_x"],
+            native["_y"],
+            color=color,
+            lw=lw,
+            ls=linestyle,
+            marker=marker,
+            ms=3.0,
+            label=label,
+            zorder=zorder,
+        )
+        plotted = True
+    elif not d.empty:
+        ax.plot(d["_x"], d["_y"], color=color, lw=lw, ls=linestyle, marker=marker, ms=3.0, label=label, zorder=zorder)
+        plotted = True
+    return plotted
 
 
 def recover_ifs_48h_valid_time_grid(ds, n_rec: int, n_lead: int, lead_vals: np.ndarray) -> np.ndarray:
@@ -2410,19 +2723,19 @@ def plot_fig11_48h_model_vs_ifs(
         if model_col in cmp_df:
             y_model = cmp_df[model_col].to_numpy(dtype=float)
             panel_values.extend(y_model.tolist())
-            ax.plot(cmp_df["lead_hour"], y_model, color=PMST_COLOR, lw=2.2, marker="o", ms=3.0, label="PMST", zorder=4)
-            plotted = True
+            plotted = _plot_lead_metric_series(ax, cmp_df, model_col, PMST_COLOR, "PMST", "o", 2.2, 4) or plotted
         if ifs_col in cmp_df:
             y_ifs = cmp_df[ifs_col].to_numpy(dtype=float)
             panel_values.extend(y_ifs.tolist())
-            ax.plot(cmp_df["lead_hour"], y_ifs, color=IFS_DIAG_COLOR, lw=1.9, ls="--", marker="s", ms=2.8, label="IFS diagnostic", zorder=4)
-            plotted = True
+            plotted = _plot_lead_metric_series(ax, cmp_df, ifs_col, IFS_DIAG_COLOR, "IFS diagnostic", "s", 1.9, 4, linestyle="--") or plotted
         if not plotted:
             ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center", color="#6B7280")
         ax.set_title(title)
-        ax.set_xlabel("Lead time (h)")
+        ax.set_xlabel("Display lead time (h)")
         ax.set_ylabel("Score")
         ax.set_ylim(-0.02, _adaptive_ylim(panel_values))
+        ax.set_xlim(-0.5, 48.5)
+        ax.axvspan(-0.5, 12.0, color="#EEF7F0", alpha=0.55, zorder=-10)
         ax.axhline(0, color="#D1D5DB", lw=0.8, zorder=1)
         ax.grid(axis="y", alpha=0.25)
         ax.grid(axis="x", alpha=0.10)
@@ -2434,6 +2747,15 @@ def plot_fig11_48h_model_vs_ifs(
             break
     if handles:
         fig.legend(handles, labels, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.03))
+    fig.text(
+        0.995,
+        0.01,
+        "Dotted 0-12 h segment is filled from the previous initialization's 12-24 h verification window.",
+        ha="right",
+        va="bottom",
+        fontsize=7.5,
+        color="#3F4A3F",
+    )
     fig.tight_layout()
     n_val = int(cmp_df["n_ifs"].sum()) if "n_ifs" in cmp_df else None
     save_fig_pair(
@@ -2470,7 +2792,9 @@ def run_48h_optional(
     print(f"[48h] data_dir: {data_48h}", flush=True)
     print("[48h] expected figures: fig11_48h_lead_init_00Z_12Z and fig11_48h_model_vs_ifs_by_lead", flush=True)
     try:
-        x_path, y_cls, _, meta = load_main_data(data_48h, args.limit_samples)
+        x_path, y_cls, _, meta = load_main_data(
+            data_48h, args.limit_samples, getattr(args, "meta_time_shift_hours", 0.0)
+        )
         dyn, fe = infer_layout_from_x(x_path, args.window_size)
         raw_model = model.module if hasattr(model, "module") else model
         model_dyn = int(getattr(raw_model, "dyn_vars", dyn))
@@ -2528,13 +2852,23 @@ def run_48h_optional(
         pooled.to_csv(out_dir / "metrics_by_lead_hour_48h_model.csv", index=False)
         lead00.to_csv(out_dir / "metrics_by_lead_hour_init00Z.csv", index=False)
         lead12.to_csv(out_dir / "metrics_by_lead_hour_init12Z.csv", index=False)
+        pooled_display = build_display_lead_table(pooled, pooled, "pooled_previous_init_12_24h")
+        lead00_display = build_display_lead_table(lead00, lead12, "previous_12Z_init_12_24h")
+        lead12_display = build_display_lead_table(lead12, lead00, "previous_00Z_init_12_24h")
+        pooled_display.to_csv(out_dir / "metrics_by_display_lead_hour_48h_model.csv", index=False)
+        lead00_display.to_csv(out_dir / "metrics_by_display_lead_hour_init00Z.csv", index=False)
+        lead12_display.to_csv(out_dir / "metrics_by_display_lead_hour_init12Z.csv", index=False)
         plot_fig11_lead_init(
-            pooled,
-            lead00,
-            lead12,
+            pooled_display,
+            lead00_display,
+            lead12_display,
             out_dir,
             manifest,
-            [str(x_path), str(data_48h / "meta_test.csv")],
+            [
+                str(x_path),
+                str(data_48h / "meta_test.csv"),
+                str(out_dir / "metrics_by_display_lead_hour_48h_model.csv"),
+            ],
         )
         ifs_48h_nc = abs_under_base(base, args.ifs_48h_nc)
         if ifs_48h_nc.exists():
@@ -2575,14 +2909,18 @@ def run_48h_optional(
                         if model_col in cmp_df and ifs_col in cmp_df:
                             cmp_df[f"{metric}_diff_model_minus_ifs"] = cmp_df[model_col] - cmp_df[ifs_col]
                     cmp_df.to_csv(cmp_path, index=False, float_format="%.6f")
+                    cmp_display = build_display_lead_table(cmp_df, cmp_df, "matched_previous_init_12_24h")
+                    cmp_display_path = out_dir / "model_vs_ifs_metrics_by_display_lead_hour_48h.csv"
+                    cmp_display.to_csv(cmp_display_path, index=False, float_format="%.6f")
                     print(f"[table] {model_matched_path}", flush=True)
                     print(f"[table] {ifs_lead_path}", flush=True)
                     print(f"[table] {cmp_path}", flush=True)
+                    print(f"[table] {cmp_display_path}", flush=True)
                     plot_fig11_48h_model_vs_ifs(
-                        cmp_df,
+                        cmp_display,
                         out_dir,
                         manifest,
-                        [str(x_path), str(data_48h / "meta_test.csv"), str(ifs_48h_nc), str(cmp_path)],
+                        [str(x_path), str(data_48h / "meta_test.csv"), str(ifs_48h_nc), str(cmp_display_path)],
                     )
                 else:
                     print("[48h IFS] fewer than 50 matched rows; skip model-vs-IFS lead figure.", flush=True)
@@ -2622,10 +2960,30 @@ def run_overlap_subprocess(args: argparse.Namespace, base: Path, out_dir: Path, 
     if args.limit_samples and args.limit_samples > 0:
         cmd.extend(["--limit_samples", str(args.limit_samples)])
         cmd.extend(["--bootstrap", "50", "--bootstrap_size", str(min(args.limit_samples, 20000))])
+    for arg_name, cli_name in (
+        ("overlap_tianji_ckpt", "--tianji_ckpt"),
+        ("overlap_ifs_ckpt", "--ifs_ckpt"),
+        ("overlap_tianji_scaler", "--tianji_scaler"),
+        ("overlap_ifs_scaler", "--ifs_scaler"),
+    ):
+        value = str(getattr(args, arg_name, "") or "").strip()
+        if value:
+            cmd.extend([cli_name, str(abs_under_base(base, value))])
+    if str(getattr(args, "overlap_feature_importance_csv", "") or "").strip():
+        cmd.extend(
+            [
+                "--feature_importance_csv",
+                str(abs_under_base(base, args.overlap_feature_importance_csv)),
+            ]
+        )
+    if int(getattr(args, "overlap_feature_swap_top_k", 0) or 0) > 0:
+        cmd.extend(["--feature_swap_top_k", str(int(args.overlap_feature_swap_top_k))])
+    if str(getattr(args, "overlap_feature_swap_features", "") or "").strip():
+        cmd.extend(["--feature_swap_features", str(args.overlap_feature_swap_features)])
     if args.skip_overlap_bootstrap:
         cmd.append("--skip_bootstrap")
     if args.overlap_extra_args.strip():
-        cmd.extend(args.overlap_extra_args.strip().split())
+        cmd.extend(shlex.split(args.overlap_extra_args.strip()))
     print("[overlap] running:", " ".join(cmd), flush=True)
     try:
         subprocess.run(cmd, check=True)
@@ -2640,6 +2998,80 @@ def run_overlap_subprocess(args: argparse.Namespace, base: Path, out_dir: Path, 
             dst = out_dir / f"source_{name}"
             shutil.copy2(src, dst)
     return overlap_out
+
+
+def run_key_variable_quality_subprocess(
+    args: argparse.Namespace,
+    base: Path,
+    out_dir: Path,
+    manifest: Optional[Manifest] = None,
+) -> Optional[Path]:
+    if not bool(getattr(args, "run_variable_quality", False)):
+        return None
+    script = (
+        abs_under_base(base, getattr(args, "variable_quality_script", ""))
+        if str(getattr(args, "variable_quality_script", "") or "").strip()
+        else VIS_EVAL_DIR / "analyze_key_variable_quality.py"
+    )
+    tianji_dir = abs_under_base(base, getattr(args, "quality_tianji_data_dir", ""))
+    ifs_dir = abs_under_base(base, getattr(args, "quality_ifs_data_dir", ""))
+    obs_root = abs_under_base(base, getattr(args, "obs_root", ""))
+    q_out = (
+        abs_under_base(base, getattr(args, "quality_out_dir", ""))
+        if str(getattr(args, "quality_out_dir", "") or "").strip()
+        else out_dir / "key_variable_quality"
+    )
+    missing = []
+    if not script.is_file():
+        missing.append(f"script={script}")
+    if not tianji_dir.is_dir():
+        missing.append(f"tianji_data_dir={tianji_dir}")
+    if not ifs_dir.is_dir():
+        missing.append(f"ifs_data_dir={ifs_dir}")
+    if not obs_root.is_dir():
+        missing.append(f"obs_root={obs_root}")
+    if missing:
+        print("[variable-quality] skipped; missing " + "; ".join(missing), flush=True)
+        return None
+    cmd = [
+        sys.executable,
+        str(script),
+        "--tianji_data_dir",
+        str(tianji_dir),
+        "--ifs_data_dir",
+        str(ifs_dir),
+        "--obs_root",
+        str(obs_root),
+        "--out_dir",
+        str(q_out),
+        "--features",
+        str(getattr(args, "quality_features", "RH2M,T2M,WSPD10,MSLP,PRECIP")),
+        "--window",
+        str(getattr(args, "window_size", 12)),
+        "--limit_samples",
+        str(getattr(args, "limit_samples", 0) or 0),
+    ]
+    print("[variable-quality] running:", " ".join(cmd), flush=True)
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as exc:
+        print(f"[variable-quality] failed with exit code {exc.returncode}; continuing.", flush=True)
+        return q_out
+    if manifest is not None:
+        sources = [
+            str(q_out / "key_variable_quality_metrics.csv"),
+            str(q_out / "key_variable_quality_samples.csv"),
+            str(tianji_dir / "meta_test.csv"),
+            str(ifs_dir / "meta_test.csv"),
+        ]
+        fig_path = q_out / "fig_key_variable_quality_tianji_vs_ifs.png"
+        if fig_path.exists():
+            manifest.add(
+                fig_path.name,
+                sources,
+                notes="Key meteorological-variable forecast quality against station observations; observation time zone is auto-selected by match coverage.",
+            )
+    return q_out
 
 
 def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Manifest):
@@ -2663,7 +3095,9 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
     require_existing_path(ckpt_path, "checkpoint")
     require_existing_path(scaler_path, "scaler")
     require_existing_path(model_py, "model_py")
-    x_path, y_cls, y_raw, meta = load_main_data(data_dir, args.limit_samples)
+    x_path, y_cls, y_raw, meta = load_main_data(
+        data_dir, args.limit_samples, getattr(args, "meta_time_shift_hours", 0.0)
+    )
     dyn_inferred, fe_inferred = infer_layout_from_x(x_path, args.window_size)
     dyn = args.dyn_vars_count or dyn_inferred
     fe = args.extra_feat_dim or fe_inferred
@@ -2849,6 +3283,10 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
 
     station_df = aggregate_station_metrics(eval_df, "pmst_pred")
     station_df.to_csv(out_dir / "station_metrics.csv", index=False)
+    station_delta_df = aggregate_station_model_vs_ifs_metrics(eval_df)
+    if station_delta_df is not None and not station_delta_df.empty:
+        station_delta_df.to_csv(out_dir / "station_model_vs_ifs_metrics.csv", index=False, float_format="%.6f")
+        print(f"[table] {out_dir / 'station_model_vs_ifs_metrics.csv'}", flush=True)
     scenario_df = build_scenario_metrics(eval_df)
     scenario_df.to_csv(out_dir / "scenario_metrics.csv", index=False)
 
@@ -2881,6 +3319,15 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
     plot_region_detail(eval_df, out_dir, manifest, [str(out_dir / "per_sample_eval.csv")])
 
     shp_gdf = read_shapefile(args.shp_path)
+    if station_delta_df is not None and not station_delta_df.empty:
+        plot_station_recall_delta_map(
+            station_delta_df,
+            out_dir,
+            manifest,
+            [str(out_dir / "station_model_vs_ifs_metrics.csv")],
+            shp_gdf=shp_gdf,
+            min_count=5,
+        )
     plot_station_metric_map(
         station_df,
         "fog_recall",
@@ -3001,6 +3448,7 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
     plot_event_peak_grid(eval_df, event_df, out_dir, manifest, [str(event_path), str(out_dir / "per_sample_eval.csv")], shp_gdf=shp_gdf)
     hourly_paths = [out_dir / f"fig9_event_{k}_hourly_metrics.csv" for k in (1, 2, 3)]
     plot_event_footprint(hourly_paths, out_dir, manifest, [str(p) for p in hourly_paths])
+    run_key_variable_quality_subprocess(args, base, out_dir, manifest)
 
     run_config = {
         "experiment_id": args.experiment_id or getattr(args, "config_run_tag", ""),

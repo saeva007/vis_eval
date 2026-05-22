@@ -3,6 +3,7 @@ import os
 import sys
 import argparse
 import numpy as np
+import pandas as pd
 from sklearn.metrics import classification_report
 
 
@@ -42,6 +43,25 @@ from .run_paper_eval import (
 
 EXTRA_FEAT_DIMS = 36
 DYN_VARS_COUNT = 26
+
+
+def apply_meta_time_shift(meta, shift_hours=0.0):
+    """Return meta with UTC-valid time corrected before UTC-indexed figures."""
+    df = meta.copy()
+    df["time"] = pd.to_datetime(df["time"], errors="coerce")
+    df["time_utc_original"] = df["time"]
+    if float(shift_hours or 0.0) != 0.0:
+        df["time"] = df["time"] + pd.to_timedelta(float(shift_hours), unit="h")
+        df["meta_time_shift_hours"] = float(shift_hours)
+        print(
+            f"  [Time] Applied meta time shift {float(shift_hours):+g} h; "
+            "meta['time'] is treated as UTC for event/IFS plots.",
+            flush=True,
+        )
+    df["time_utc"] = df["time"]
+    df["hour"] = df["time"].dt.hour
+    df["month"] = df["time"].dt.month
+    return df
 
 
 def cumulative_to_probs(fine_logits):
@@ -144,6 +164,15 @@ def main():
     parser.add_argument("--event-min-lon-span", type=float, default=10.0)
     parser.add_argument("--event-min-lat-span", type=float, default=4.0)
     parser.add_argument("--event-gap-hours", type=int, default=24)
+    parser.add_argument(
+        "--meta-time-shift-hours",
+        type=float,
+        default=0.0,
+        help=(
+            "Add this many hours to meta_test.csv time before UTC-indexed plots. "
+            "Use -8 only to audit legacy BJT-labelled metadata; rebuilding with UTC split is preferred."
+        ),
+    )
     parser.add_argument("--cpu", action="store_true")
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--extra-feat-dims", type=int, default=EXTRA_FEAT_DIMS)
@@ -197,6 +226,7 @@ def main():
     print(f"     Inference batch_size={batch_size}")
 
     X_path, y_cls, y_raw, meta, scaler = load_test_data(args.data_dir, scaler_path, window_size=12)
+    meta = apply_meta_time_shift(meta, args.meta_time_shift_hours)
     meta = enrich_meta_forecast_init(meta)
     print(f"[2] Data loaded: {len(y_cls)} samples, {meta['station_id'].nunique()} stations.")
 

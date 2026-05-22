@@ -40,6 +40,17 @@ VIS_MIN_EVENT = 50.0
 VIS_MAX_EVENT = 2000.0
 
 
+def _meta_utc_times(meta):
+    """Return the UTC-naive valid-time series used by event plots and IFS matching."""
+    time_col = "time_utc" if "time_utc" in meta.columns else "time"
+    if time_col not in meta.columns:
+        raise ValueError("meta must contain 'time' or 'time_utc' for UTC event evaluation.")
+    times = pd.Series(pd.to_datetime(meta[time_col], errors="coerce"), index=meta.index)
+    if getattr(times.dt, "tz", None) is not None:
+        times = times.dt.tz_convert("UTC").dt.tz_localize(None)
+    return times
+
+
 def build_event_visibility_cmap():
     """
     Continuous visibility colormap aligned with class colors.
@@ -308,7 +319,7 @@ def load_ifs_baseline(meta, ifs_nc_path, vis_var="VIS"):
         time_lookup = pd.Series(np.arange(len(ifs_times), dtype=np.int64), index=pd.Index(ifs_times))
         station_lookup = pd.Series(np.arange(len(ifs_stations), dtype=np.int64), index=ifs_stations)
 
-        meta_times = pd.to_datetime(meta["time"])
+        meta_times = _meta_utc_times(meta)
         meta_stations = meta["station_id"].astype(np.int64).astype(str)
         time_idx = meta_times.map(time_lookup)
         station_idx = meta_stations.map(station_lookup)
@@ -351,8 +362,8 @@ def detect_widespread_fog_events(
     Events are identified from observed fog stations only, then clustered in time.
     The ranking favors events with many fog stations and broad regional coverage.
     """
-    df = meta[["time", "station_id", "lat", "lon"]].copy()
-    df["time"] = pd.to_datetime(df["time"])
+    df = meta[["station_id", "lat", "lon"]].copy()
+    df["time"] = _meta_utc_times(meta)
     df["y_true"] = np.asarray(y_true, dtype=np.int64)
     if required_valid_mask is not None:
         required_valid_mask = np.asarray(required_valid_mask, dtype=bool)
@@ -378,11 +389,12 @@ def detect_widespread_fog_events(
     event_columns = [
         "event_rank", "peak_time", "start_time", "end_time", "duration_h",
         "peak_fog_count", "total_fog_station_hours", "peak_region_count",
-        "peak_lon_span", "peak_lat_span", "event_score", "selection_tier",
-        "selection_tier_rank", "selection_min_fog_stations", "selection_min_regions",
-        "selection_min_lon_span", "selection_min_lat_span", "window_start",
-        "window_end", "window_complete", "window_available_hours",
-        "window_required_hours",
+        "peak_lon_span", "peak_lat_span", "actual_peak_time",
+        "actual_peak_fog_count", "actual_peak_region_count", "actual_peak_lon_span",
+        "actual_peak_lat_span", "event_score", "selection_tier", "selection_tier_rank",
+        "selection_min_fog_stations", "selection_min_regions", "selection_min_lon_span",
+        "selection_min_lat_span", "window_start", "window_end", "window_complete",
+        "window_available_hours", "window_required_hours",
     ]
 
     def _region_count(series):
@@ -405,26 +417,27 @@ def detect_widespread_fog_events(
     def _empty_events():
         return pd.DataFrame(columns=event_columns)
 
+    available_idx = pd.DatetimeIndex(pd.to_datetime(df["time"]).dropna()).astype("datetime64[ns]")
+    available_times = set(available_idx.asi8.tolist())
+
+    def _window_available(peak_time):
+        wh = int(window_hours)
+        peak = pd.Timestamp(peak_time)
+        needed = [peak + pd.Timedelta(hours=offset) for offset in range(-wh, wh + 1)]
+        flags = [t.value in available_times for t in needed]
+        return pd.Series(
+            {
+                "window_start": needed[0],
+                "window_end": needed[-1],
+                "window_complete": bool(all(flags)),
+                "window_available_hours": int(sum(flags)),
+                "window_required_hours": int(len(flags)),
+            }
+        )
+
     def _window_info(events_df):
         if window_hours is None or events_df.empty:
             return events_df
-        wh = int(window_hours)
-        available_times = set(pd.to_datetime(df["time"]).dropna().astype("int64").tolist())
-
-        def _window_available(peak_time):
-            peak = pd.Timestamp(peak_time)
-            needed = [peak + pd.Timedelta(hours=offset) for offset in range(-wh, wh + 1)]
-            flags = [t.value in available_times for t in needed]
-            return pd.Series(
-                {
-                    "window_start": needed[0],
-                    "window_end": needed[-1],
-                    "window_complete": bool(all(flags)),
-                    "window_available_hours": int(sum(flags)),
-                    "window_required_hours": int(len(flags)),
-                }
-            )
-
         window_df = events_df["peak_time"].apply(_window_available)
         return pd.concat([events_df.reset_index(drop=True), window_df.reset_index(drop=True)], axis=1)
 
@@ -453,7 +466,13 @@ def detect_widespread_fog_events(
         event_rows = []
         for ev in events:
             ev = ev.sort_values(["n_fog", "n_regions", "lon_span", "lat_span"], ascending=False)
-            peak = ev.iloc[0]
+            actual_peak = ev.iloc[0]
+            peak = actual_peak
+            if window_hours is not None:
+                for _, cand_peak in ev.iterrows():
+                    if bool(_window_available(cand_peak["time"])["window_complete"]):
+                        peak = cand_peak
+                        break
             start_time = pd.Timestamp(ev["time"].min())
             end_time = pd.Timestamp(ev["time"].max())
             duration_h = int((end_time - start_time) / pd.Timedelta(hours=1)) + 1
@@ -475,6 +494,11 @@ def detect_widespread_fog_events(
                 "peak_region_count": int(peak["n_regions"]),
                 "peak_lon_span": float(peak["lon_span"]),
                 "peak_lat_span": float(peak["lat_span"]),
+                "actual_peak_time": pd.Timestamp(actual_peak["time"]),
+                "actual_peak_fog_count": int(actual_peak["n_fog"]),
+                "actual_peak_region_count": int(actual_peak["n_regions"]),
+                "actual_peak_lon_span": float(actual_peak["lon_span"]),
+                "actual_peak_lat_span": float(actual_peak["lat_span"]),
                 "event_score": float(score),
                 "selection_tier": tier_name,
                 "selection_tier_rank": int(tier_rank),
@@ -604,9 +628,13 @@ def _draw_event_basemap(ax, shp_gdf=None):
 
 def _format_event_label(event_row):
     peak_time = pd.Timestamp(event_row["peak_time"])
+    prefix = f"{peak_time:%Y-%m-%d %H:00} UTC"
+    if "actual_peak_time" in event_row and pd.notna(event_row.get("actual_peak_time")):
+        actual_peak = pd.Timestamp(event_row["actual_peak_time"])
+        if actual_peak != peak_time:
+            prefix = f"{prefix} window center; true peak {actual_peak:%Y-%m-%d %H:00} UTC"
     return (
-        f"{peak_time:%Y-%m-%d %H:00} UTC | "
-        f"peak fog={int(event_row['peak_fog_count'])} | "
+        f"{prefix} | peak fog={int(event_row['peak_fog_count'])} | "
         f"regions={int(event_row['peak_region_count'])} | "
         f"span={event_row['peak_lon_span']:.1f}°×{event_row['peak_lat_span']:.1f}°"
     )
@@ -649,7 +677,7 @@ def compute_event_hourly_metrics(
     window_hours=3,
 ):
     """Compute hourly PMST-vs-IFS metrics around one event peak."""
-    times = pd.to_datetime(meta["time"])
+    times = _meta_utc_times(meta)
     rows = []
     for hour_offset in range(-window_hours, window_hours + 1):
         t_now = pd.Timestamp(center_time) + pd.Timedelta(hours=hour_offset)
@@ -745,7 +773,7 @@ def plot_widespread_event_panels(
     vis_mappable = None
 
     row_labels = ["Observed Visibility", "PMST Prediction", "IFS Baseline"]
-    times = pd.to_datetime(meta["time"])
+    times = _meta_utc_times(meta)
 
     for col_idx, offset in enumerate(hour_offsets):
         t_now = center_time + pd.Timedelta(hours=offset)
@@ -898,7 +926,7 @@ def plot_three_events_footprint_row(
     n_ev = len(event_df)
     offsets = list(range(-int(window_hours), int(window_hours) + 1))
     n_h = len(offsets)
-    times = pd.to_datetime(meta["time"])
+    times = _meta_utc_times(meta)
     y_true_raw = np.asarray(y_true_raw, dtype=np.float64)
     pmst_pred = np.asarray(pmst_pred, dtype=np.int64)
 
@@ -1025,7 +1053,7 @@ def plot_three_events_peak_row(
         return None
 
     event_df = event_df.head(3).copy()
-    times = pd.to_datetime(meta["time"])
+    times = _meta_utc_times(meta)
     y_true_raw = np.asarray(y_true_raw, dtype=np.float64)
     pmst_pred = np.asarray(pmst_pred, dtype=np.int64)
 
