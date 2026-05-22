@@ -1129,8 +1129,11 @@ def aggregate_station_model_vs_ifs_metrics(
             row[f"pmst_{safe}"] = pm
             row[f"ifs_{safe}"] = iv
             row[f"delta_{safe}"] = pm - iv
-        row["pmst_better_low_vis_recall"] = bool(row.get("delta_low_vis_recall", 0.0) > 0)
-        row["ifs_better_low_vis_recall"] = bool(row.get("delta_low_vis_recall", 0.0) < 0)
+            row[f"delta_{safe}_pctpt"] = 100.0 * (pm - iv)
+        for safe in ("fog_recall", "mist_recall", "low_vis_recall"):
+            delta = float(row.get(f"delta_{safe}", np.nan))
+            row[f"pmst_better_{safe}"] = bool(np.isfinite(delta) and delta > 0)
+            row[f"ifs_better_{safe}"] = bool(np.isfinite(delta) and delta < 0)
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -1948,6 +1951,47 @@ def plot_station_metric_map(
     save_fig_pair(fig, out_dir, stem, manifest, sources, notes=f"Station map masked by {mask_col}>={min_count}.", n=len(df))
 
 
+def _nice_delta_limit(values: np.ndarray, quantile: float = 98.0) -> float:
+    vals = np.asarray(values, dtype=float)
+    vals = vals[np.isfinite(vals)]
+    if vals.size == 0:
+        return 0.20
+    raw = float(np.nanpercentile(np.abs(vals), quantile))
+    if not np.isfinite(raw) or raw <= 0:
+        raw = float(np.nanmax(np.abs(vals))) if vals.size else 0.20
+    return min(1.0, max(0.10, math.ceil(raw / 0.05) * 0.05))
+
+
+def _nice_hist_limits(values: np.ndarray, min_abs: float) -> Tuple[float, float]:
+    vals = np.asarray(values, dtype=float)
+    vals = vals[np.isfinite(vals)]
+    if vals.size == 0:
+        return -min_abs, min_abs
+    lo = math.floor(float(np.nanmin(vals)) / 0.10) * 0.10
+    hi = math.ceil(float(np.nanmax(vals)) / 0.10) * 0.10
+    lo = min(lo, -min_abs)
+    hi = max(hi, min_abs)
+    if lo == hi:
+        lo -= 0.10
+        hi += 0.10
+    return lo, hi
+
+
+def _gaussian_density_curve(values: np.ndarray, grid: np.ndarray) -> np.ndarray:
+    vals = np.asarray(values, dtype=float)
+    vals = vals[np.isfinite(vals)]
+    if vals.size < 2:
+        return np.array([], dtype=float)
+    std = float(np.nanstd(vals, ddof=1))
+    if not np.isfinite(std) or std <= 0:
+        return np.array([], dtype=float)
+    bw = 1.06 * std * (vals.size ** (-1.0 / 5.0))
+    if not np.isfinite(bw) or bw <= 0:
+        return np.array([], dtype=float)
+    z = (grid[:, None] - vals[None, :]) / bw
+    return np.exp(-0.5 * z * z).mean(axis=1) / (bw * math.sqrt(2.0 * math.pi))
+
+
 def plot_station_recall_delta_map(
     station_delta_df: pd.DataFrame,
     out_dir: Path,
@@ -1972,82 +2016,137 @@ def plot_station_recall_delta_map(
         print("  [WARN] Station delta table lacks recall-delta columns; skip station delta map.", flush=True)
         return
 
-    all_vals: List[float] = []
-    for metric, _, count_col in available:
-        sub = station_delta_df[pd.to_numeric(station_delta_df[count_col], errors="coerce") >= min_count]
-        vals = pd.to_numeric(sub[metric], errors="coerce").to_numpy(dtype=float)
-        all_vals.extend(vals[np.isfinite(vals)].tolist())
-    if not all_vals:
+    metric_lookup = {metric: (label, count_col) for metric, label, count_col in available}
+    metric = "delta_low_vis_recall" if "delta_low_vis_recall" in metric_lookup else available[0][0]
+    label, count_col = metric_lookup[metric]
+
+    df = station_delta_df.copy()
+    df[count_col] = pd.to_numeric(df[count_col], errors="coerce")
+    df[metric] = pd.to_numeric(df[metric], errors="coerce")
+    df = df[(df[count_col] >= min_count) & np.isfinite(df[metric])].copy()
+    if df.empty:
         print("  [WARN] Station delta map has no finite values after count mask.", flush=True)
         return
 
-    lim = float(np.nanpercentile(np.abs(np.asarray(all_vals, dtype=float)), 95))
-    lim = min(1.0, max(0.10, math.ceil(lim / 0.05) * 0.05))
+    vals = df[metric].to_numpy(dtype=float)
+    lim = _nice_delta_limit(vals)
+    hist_lo, hist_hi = _nice_hist_limits(vals, lim)
     cmap = LinearSegmentedColormap.from_list(
-        "pmst_ifs_delta",
-        ["#B45B43", "#F0E5D8", "#E9F3E8", "#18864B"],
+        "pmst_ifs_recall_delta",
+        ["#9E1F36", "#D6604D", "#F7F7F7", "#67A9CF", "#2166AC", "#08306B"],
         N=256,
     )
     norm = TwoSlopeNorm(vmin=-lim, vcenter=0.0, vmax=lim)
 
-    fig, axes = plt.subplots(1, len(available), figsize=(5.0 * len(available), 5.2), squeeze=False)
-    last_sc = None
-    for idx, (ax, (metric, label, count_col)) in enumerate(zip(axes.ravel(), available)):
-        df = station_delta_df.copy()
-        df[count_col] = pd.to_numeric(df[count_col], errors="coerce")
-        df[metric] = pd.to_numeric(df[metric], errors="coerce")
-        df = df[(df[count_col] >= min_count) & np.isfinite(df[metric])]
-        draw_basemap(ax, shp_gdf, compact=True)
-        if not df.empty:
-            sizes = 7.0 + 20.0 * np.sqrt(np.clip(df[count_col].to_numpy(dtype=float), 0, None)) / max(
-                1.0, math.sqrt(float(np.nanmax(df[count_col].to_numpy(dtype=float))))
-            )
-            order = np.argsort(np.abs(df[metric].to_numpy(dtype=float)))
-            df_plot = df.iloc[order]
-            sc = ax.scatter(
-                df_plot["lon"],
-                df_plot["lat"],
-                c=df_plot[metric],
-                s=sizes[order],
-                cmap=cmap,
-                norm=norm,
-                linewidths=0.10,
-                edgecolors="#FFFFFF",
-                alpha=0.96,
-                zorder=3,
-            )
-            last_sc = sc
-        else:
-            sc = None
-        draw_boundary(ax, shp_gdf, color="#1F2937", linewidth=0.55, zorder=6)
-        n_station = int(len(df))
-        better = int((df[metric] > 0).sum()) if n_station else 0
-        median_delta = float(np.nanmedian(df[metric])) if n_station else math.nan
-        ax.set_title(f"{label}\nPMST better at {safe_div(better * 100.0, n_station):.0f}% of stations")
-        ax.text(
-            0.02,
-            0.02,
-            f"n={n_station:,}; median Δ={median_delta:+.2f}",
-            transform=ax.transAxes,
-            ha="left",
-            va="bottom",
-            fontsize=8,
-            color="#1F2937",
-            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.75, "pad": 2.5},
+    fig, ax = plt.subplots(figsize=(8.0, 6.0))
+    draw_basemap(ax, shp_gdf, compact=True)
+    count_vals = np.clip(df[count_col].to_numpy(dtype=float), 0, None)
+    count_ref = float(np.nanpercentile(count_vals, 95)) if count_vals.size else 1.0
+    count_ref = max(1.0, count_ref)
+    sizes = 14.0 + 28.0 * np.sqrt(np.minimum(count_vals, count_ref) / count_ref)
+    order = np.argsort(np.abs(vals))
+    df_plot = df.iloc[order]
+    sc = ax.scatter(
+        df_plot["lon"],
+        df_plot["lat"],
+        c=df_plot[metric],
+        s=sizes[order],
+        marker="D",
+        cmap=cmap,
+        norm=norm,
+        linewidths=0.45,
+        edgecolors="#6F6F6F",
+        alpha=0.95,
+        zorder=3,
+    )
+    draw_boundary(ax, shp_gdf, color="#1F2937", linewidth=0.60, zorder=6)
+
+    n_station = int(len(df))
+    better = int((df[metric] > 0).sum())
+    worse = int((df[metric] < 0).sum())
+    median_delta = float(np.nanmedian(vals))
+    mean_delta = float(np.nanmean(vals))
+    ax.set_title(f"Station-level {label.lower()} difference", fontsize=11, fontweight="bold", pad=8)
+    ax.text(
+        0.02,
+        0.98,
+        f"PMST better: {safe_div(better * 100.0, n_station):.0f}%\n"
+        f"IFS better: {safe_div(worse * 100.0, n_station):.0f}%\n"
+        f"median delta={median_delta:+.2f}; n={n_station:,}",
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=8.5,
+        color="#1F2937",
+        bbox={"facecolor": "white", "edgecolor": "#B8B8B8", "linewidth": 0.4, "alpha": 0.88, "pad": 3.0},
+        zorder=8,
+    )
+
+    hist_ax = ax.inset_axes([0.055, 0.055, 0.35, 0.26])
+    bins = np.linspace(hist_lo, hist_hi, 19)
+    hist, edges = np.histogram(vals, bins=bins, density=True)
+    widths = np.diff(edges)
+    centers = edges[:-1] + widths / 2.0
+    for center, height, width in zip(centers, hist, widths):
+        hist_ax.bar(
+            center,
+            height,
+            width=width * 0.94,
+            color=cmap(norm(np.clip(center, -lim, lim))),
+            edgecolor="#383838",
+            linewidth=0.25,
+            alpha=0.92,
         )
-        add_panel_label(ax, chr(ord("a") + idx), x=0.01, y=0.96)
-    if axes.size and last_sc is not None:
-        cb = fig.colorbar(last_sc, ax=axes.ravel().tolist(), shrink=0.72, pad=0.025)
-        cb.set_label("Recall difference (PMST - IFS)")
-    fig.suptitle("Station-level recall advantage over IFS diagnostic visibility", y=0.98, fontsize=12, fontweight="bold")
-    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    grid = np.linspace(hist_lo, hist_hi, 240)
+    density = _gaussian_density_curve(vals, grid)
+    if density.size:
+        hist_ax.plot(grid, density, color="#1F2937", linewidth=1.1)
+    hist_ax.axvline(0.0, color="#C62828", linestyle="--", linewidth=1.0)
+    hist_ax.axvline(mean_delta, color="#1F2937", linestyle="-", linewidth=0.9)
+    hist_ax.set_xlim(hist_lo, hist_hi)
+    hist_ax.set_xlabel("Delta recall", fontsize=7)
+    hist_ax.set_ylabel("Density", fontsize=7)
+    hist_ax.tick_params(axis="both", labelsize=7, length=2.5)
+    hist_ax.grid(alpha=0.18)
+    for spine in hist_ax.spines.values():
+        spine.set_color("#555555")
+        spine.set_linewidth(0.5)
+
+    cb = fig.colorbar(sc, ax=ax, orientation="horizontal", fraction=0.055, pad=0.045, extend="both")
+    cb.set_label("Recall difference (PMST - IFS diagnostic VIS)")
+    cb.ax.text(
+        0.0,
+        -1.35,
+        "IFS better",
+        transform=cb.ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=7.5,
+        color="#9E1F36",
+    )
+    cb.ax.text(
+        1.0,
+        -1.35,
+        "PMST better",
+        transform=cb.ax.transAxes,
+        ha="right",
+        va="top",
+        fontsize=7.5,
+        color="#08306B",
+    )
+    fig.tight_layout()
+    notes = (
+        f"Station-level {label.lower()} deltas on finite IFS-matched rows; "
+        "blue means PMST recall exceeds IFS diagnostic visibility recall, "
+        "red means the reverse. Inset histogram is density-normalized."
+    )
     save_fig_pair(
         fig,
         out_dir,
         "fig8_station_model_vs_ifs_recall_delta",
         manifest,
         sources,
-        notes="Station-level recall deltas on finite IFS-matched rows; green means PMST recall exceeds IFS diagnostic visibility recall.",
+        notes=notes,
         n=int(len(station_delta_df)),
     )
 
