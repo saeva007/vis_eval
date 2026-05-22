@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -J static_rnn_eval
-#SBATCH -p kshdexclu04
+#SBATCH -p kshcexclu04
 #SBATCH -N 1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=32
