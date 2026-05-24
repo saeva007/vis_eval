@@ -447,6 +447,77 @@ def paired_distribution_row(
     return row
 
 
+def _number_from_row(row: pd.Series, key: str) -> float:
+    value = row.get(key, math.nan)
+    try:
+        return float(value)
+    except Exception:
+        return math.nan
+
+
+def _skill_vs_reference(candidate: float, reference: float) -> float:
+    if not math.isfinite(candidate) or not math.isfinite(reference) or reference == 0:
+        return math.nan
+    return 100.0 * (reference - candidate) / reference
+
+
+def build_observation_error_summary(metrics: pd.DataFrame) -> pd.DataFrame:
+    """Compact Tianji-vs-IFS error comparison for variables with station observations."""
+    if metrics.empty or "feature" not in metrics or "source" not in metrics:
+        return pd.DataFrame()
+    rows: List[Dict[str, object]] = []
+    for feature, group in metrics.groupby("feature", sort=False):
+        by_source = {str(row["source"]): row for _, row in group.iterrows()}
+        if "tianji" not in by_source or "ifs" not in by_source:
+            continue
+        tj = by_source["tianji"]
+        ii = by_source["ifs"]
+        mae_tj = _number_from_row(tj, "mae")
+        mae_ifs = _number_from_row(ii, "mae")
+        rmse_tj = _number_from_row(tj, "rmse")
+        rmse_ifs = _number_from_row(ii, "rmse")
+        corr_tj = _number_from_row(tj, "corr")
+        corr_ifs = _number_from_row(ii, "corr")
+        hit_tj = _number_from_row(tj, "extreme_hit_rate")
+        hit_ifs = _number_from_row(ii, "extreme_hit_rate")
+        fa_tj = _number_from_row(tj, "extreme_false_alarm_rate")
+        fa_ifs = _number_from_row(ii, "extreme_false_alarm_rate")
+        rows.append(
+            {
+                "feature": feature,
+                "label": feature_info(str(feature)).get("label", feature),
+                "unit": feature_info(str(feature)).get("unit", ""),
+                "n_tianji": int(_number_from_row(tj, "n")) if math.isfinite(_number_from_row(tj, "n")) else 0,
+                "n_ifs": int(_number_from_row(ii, "n")) if math.isfinite(_number_from_row(ii, "n")) else 0,
+                "mae_tianji": mae_tj,
+                "mae_ifs": mae_ifs,
+                "mae_delta_tianji_minus_ifs": mae_tj - mae_ifs if math.isfinite(mae_tj) and math.isfinite(mae_ifs) else math.nan,
+                "mae_skill_vs_ifs_pct": _skill_vs_reference(mae_tj, mae_ifs),
+                "rmse_tianji": rmse_tj,
+                "rmse_ifs": rmse_ifs,
+                "rmse_delta_tianji_minus_ifs": rmse_tj - rmse_ifs if math.isfinite(rmse_tj) and math.isfinite(rmse_ifs) else math.nan,
+                "rmse_skill_vs_ifs_pct": _skill_vs_reference(rmse_tj, rmse_ifs),
+                "bias_tianji": _number_from_row(tj, "bias"),
+                "bias_ifs": _number_from_row(ii, "bias"),
+                "abs_bias_tianji": abs(_number_from_row(tj, "bias")),
+                "abs_bias_ifs": abs(_number_from_row(ii, "bias")),
+                "corr_tianji": corr_tj,
+                "corr_ifs": corr_ifs,
+                "corr_delta_tianji_minus_ifs": corr_tj - corr_ifs if math.isfinite(corr_tj) and math.isfinite(corr_ifs) else math.nan,
+                "extreme_threshold": _number_from_row(tj, "extreme_threshold"),
+                "extreme_type": tj.get("extreme_type", feature_info(str(feature)).get("extreme", "high")),
+                "obs_extreme_count": int(_number_from_row(tj, "obs_extreme_count")) if math.isfinite(_number_from_row(tj, "obs_extreme_count")) else 0,
+                "extreme_hit_rate_tianji": hit_tj,
+                "extreme_hit_rate_ifs": hit_ifs,
+                "extreme_hit_rate_delta_tianji_minus_ifs": hit_tj - hit_ifs if math.isfinite(hit_tj) and math.isfinite(hit_ifs) else math.nan,
+                "extreme_false_alarm_rate_tianji": fa_tj,
+                "extreme_false_alarm_rate_ifs": fa_ifs,
+                "extreme_false_alarm_rate_delta_tianji_minus_ifs": fa_tj - fa_ifs if math.isfinite(fa_tj) and math.isfinite(fa_ifs) else math.nan,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def make_quality_tables(args: argparse.Namespace) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, object]]:
     tianji_dir = Path(args.tianji_data_dir)
     ifs_dir = Path(args.ifs_data_dir)
@@ -669,26 +740,127 @@ def plot_quality(metrics: pd.DataFrame, dist_metrics: pd.DataFrame, sample: pd.D
         plt.close(fig2)
 
 
+def _signed_barh(ax, labels: Sequence[str], values: np.ndarray, xlabel: str, title: str) -> None:
+    vals = np.asarray(values, dtype=float)
+    labels_arr = np.asarray(labels, dtype=object)
+    ok = np.isfinite(vals)
+    if not ok.any():
+        ax.text(0.5, 0.5, "No observation-anchored metric", ha="center", va="center", transform=ax.transAxes)
+        ax.set_axis_off()
+        return
+    yy = np.arange(int(ok.sum()))
+    shown = vals[ok]
+    ax.barh(yy, shown, color=["#1F5A7A" if v >= 0 else "#B85C48" for v in shown], height=0.58)
+    ax.axvline(0, color="#222222", lw=0.9)
+    ax.set_yticks(yy)
+    ax.set_yticklabels(labels_arr[ok])
+    ax.invert_yaxis()
+    ax.set_xlabel(xlabel)
+    ax.set_title(title)
+
+
+def plot_observation_error(error_summary: pd.DataFrame, out_dir: Path) -> None:
+    if error_summary.empty:
+        return
+    plt.rcParams.update(
+        {
+            "font.family": "sans-serif",
+            "font.sans-serif": ["Arial", "DejaVu Sans", "Liberation Sans"],
+            "svg.fonttype": "none",
+            "pdf.fonttype": 42,
+            "font.size": 8.0,
+            "axes.spines.top": False,
+            "axes.spines.right": False,
+            "axes.grid": True,
+            "grid.alpha": 0.22,
+            "axes.axisbelow": True,
+        }
+    )
+    labels = [str(v) for v in error_summary.get("label", error_summary["feature"]).tolist()]
+    colors = {"tianji": "#1F5A7A", "ifs": "#8A8A8A"}
+    fig_height = max(5.6, 1.1 * len(labels) + 3.8)
+    fig, axes = plt.subplots(2, 2, figsize=(10.8, fig_height))
+
+    _signed_barh(
+        axes[0, 0],
+        labels,
+        pd.to_numeric(error_summary["mae_skill_vs_ifs_pct"], errors="coerce").to_numpy(dtype=float),
+        "MAE skill relative to IFS (%)",
+        "Station-anchored MAE",
+    )
+    axes[0, 0].text(-0.12, 1.05, "(a)", transform=axes[0, 0].transAxes, fontweight="bold", fontsize=11)
+
+    _signed_barh(
+        axes[0, 1],
+        labels,
+        pd.to_numeric(error_summary["rmse_skill_vs_ifs_pct"], errors="coerce").to_numpy(dtype=float),
+        "RMSE skill relative to IFS (%)",
+        "Station-anchored RMSE",
+    )
+    axes[0, 1].text(-0.12, 1.05, "(b)", transform=axes[0, 1].transAxes, fontweight="bold", fontsize=11)
+
+    _signed_barh(
+        axes[1, 0],
+        labels,
+        pd.to_numeric(error_summary["corr_delta_tianji_minus_ifs"], errors="coerce").to_numpy(dtype=float),
+        "Correlation difference (Tianji - IFS)",
+        "Linear association with observations",
+    )
+    axes[1, 0].text(-0.12, 1.05, "(c)", transform=axes[1, 0].transAxes, fontweight="bold", fontsize=11)
+
+    ax = axes[1, 1]
+    hit_tj = pd.to_numeric(error_summary["extreme_hit_rate_tianji"], errors="coerce").to_numpy(dtype=float) * 100.0
+    hit_ifs = pd.to_numeric(error_summary["extreme_hit_rate_ifs"], errors="coerce").to_numpy(dtype=float) * 100.0
+    ok = np.isfinite(hit_tj) | np.isfinite(hit_ifs)
+    if ok.any():
+        yy = np.arange(int(ok.sum()))
+        ax.barh(yy - 0.18, hit_tj[ok], height=0.34, color=colors["tianji"], label="Tianji")
+        ax.barh(yy + 0.18, hit_ifs[ok], height=0.34, color=colors["ifs"], label="IFS")
+        ax.set_yticks(yy)
+        ax.set_yticklabels(np.asarray(labels, dtype=object)[ok])
+        ax.invert_yaxis()
+        ax.set_xlabel("Observed-extreme hit rate (%)")
+        ax.set_title("Extreme-state recovery")
+        ax.legend(frameon=False)
+    else:
+        ax.text(0.5, 0.5, "No observed extremes", ha="center", va="center", transform=ax.transAxes)
+        ax.set_axis_off()
+    ax.text(-0.12, 1.05, "(d)", transform=ax.transAxes, fontweight="bold", fontsize=11)
+
+    fig.tight_layout()
+    for ext in ("png", "pdf", "svg", "tiff"):
+        path = out_dir / f"fig_key_variable_observation_error_tianji_vs_ifs.{ext}"
+        fig.savefig(path, dpi=600 if ext in {"png", "tiff"} else 300, bbox_inches="tight")
+        print(f"[figure] {path}", flush=True)
+    plt.close(fig)
+
+
 def main() -> None:
     args = parse_args()
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     metrics, dist_metrics, sample, tz_diag, diag = make_quality_tables(args)
+    error_summary = build_observation_error_summary(metrics)
     metrics_path = out_dir / "key_variable_quality_metrics.csv"
     dist_path = out_dir / "key_variable_distribution_metrics.csv"
+    error_path = out_dir / "key_variable_observation_error_summary.csv"
     sample_path = out_dir / "key_variable_quality_samples.csv"
     tz_path = out_dir / "observation_time_alignment_diagnostics.csv"
     metrics.to_csv(metrics_path, index=False, float_format="%.6f")
     dist_metrics.to_csv(dist_path, index=False, float_format="%.6f")
+    error_summary.to_csv(error_path, index=False, float_format="%.6f")
     sample.to_csv(sample_path, index=False, float_format="%.6f")
     tz_diag.to_csv(tz_path, index=False)
+    diag["observation_error_features"] = sorted(error_summary["feature"].dropna().astype(str).unique().tolist()) if not error_summary.empty else []
     with open(out_dir / "key_variable_quality_summary.json", "w", encoding="utf-8") as f:
         json.dump(diag, f, ensure_ascii=False, indent=2)
     print(f"[table] {metrics_path}", flush=True)
     print(f"[table] {dist_path}", flush=True)
+    print(f"[table] {error_path}", flush=True)
     print(f"[table] {sample_path}", flush=True)
     print(f"[time] {diag['obs_time_interpretation']} shift={diag['obs_time_shift_to_utc_hours']:+g} h", flush=True)
     plot_quality(metrics, dist_metrics, sample, out_dir)
+    plot_observation_error(error_summary, out_dir)
     print(f"[OK] key-variable quality outputs written to: {out_dir}", flush=True)
 
 

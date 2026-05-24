@@ -3354,6 +3354,7 @@ def run_key_variable_quality_subprocess(
         sources = [
             str(q_out / "key_variable_quality_metrics.csv"),
             str(q_out / "key_variable_distribution_metrics.csv"),
+            str(q_out / "key_variable_observation_error_summary.csv"),
             str(q_out / "key_variable_quality_samples.csv"),
             str(tianji_dir / "meta_test.csv"),
             str(ifs_dir / "meta_test.csv"),
@@ -3361,6 +3362,7 @@ def run_key_variable_quality_subprocess(
         for fig_path in (
             q_out / "fig_key_variable_quality_tianji_vs_ifs.png",
             q_out / "fig_rh2m_tail_tianji_vs_ifs.png",
+            q_out / "fig_key_variable_observation_error_tianji_vs_ifs.png",
         ):
             if not fig_path.exists():
                 continue
