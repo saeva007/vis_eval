@@ -349,7 +349,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--quality_tianji_data_dir", default="ifs_baseline/ml_dataset_overlap_tianji_12h_pm10_pm25_baseline")
     ap.add_argument("--quality_ifs_data_dir", default="ifs_baseline/ml_dataset_overlap_ifs_12h_pm10_pm25_baseline")
     ap.add_argument("--quality_out_dir", default="", help="Optional output dir for forecast-variable quality analysis.")
-    ap.add_argument("--quality_features", default="RH2M,T2M,WSPD10,MSLP,PRECIP", help="Comma/semicolon key variables for forecast-quality analysis.")
+    ap.add_argument("--quality_features", default="RH2M,Q_1000,DP_1000,RH_925,PRECIP", help="Comma/semicolon key variables for forecast-quality analysis.")
     ap.add_argument(
         "--local_time_offset_hours",
         type=int,
@@ -3187,7 +3187,7 @@ def run_key_variable_quality_subprocess(
         "--out_dir",
         str(q_out),
         "--features",
-        str(getattr(args, "quality_features", "RH2M,T2M,WSPD10,MSLP,PRECIP")),
+        str(getattr(args, "quality_features", "RH2M,Q_1000,DP_1000,RH_925,PRECIP")),
         "--window",
         str(getattr(args, "window_size", 12)),
         "--limit_samples",
@@ -3202,16 +3202,21 @@ def run_key_variable_quality_subprocess(
     if manifest is not None:
         sources = [
             str(q_out / "key_variable_quality_metrics.csv"),
+            str(q_out / "key_variable_distribution_metrics.csv"),
             str(q_out / "key_variable_quality_samples.csv"),
             str(tianji_dir / "meta_test.csv"),
             str(ifs_dir / "meta_test.csv"),
         ]
-        fig_path = q_out / "fig_key_variable_quality_tianji_vs_ifs.png"
-        if fig_path.exists():
+        for fig_path in (
+            q_out / "fig_key_variable_quality_tianji_vs_ifs.png",
+            q_out / "fig_rh2m_tail_tianji_vs_ifs.png",
+        ):
+            if not fig_path.exists():
+                continue
             manifest.add(
                 fig_path.name,
                 sources,
-                notes="Key meteorological-variable forecast quality against station observations; observation time zone is auto-selected by match coverage.",
+                notes="Key overlap-variable quality and RH2M long-tail recovery; station-observation anchoring is used when available and observation time zone is auto-selected by match coverage.",
             )
     return q_out
 

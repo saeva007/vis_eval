@@ -246,7 +246,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--quality_tianji_data_dir", default="ifs_baseline/ml_dataset_overlap_tianji_12h_pm10_pm25_baseline")
     p.add_argument("--quality_ifs_data_dir", default="ifs_baseline/ml_dataset_overlap_ifs_12h_pm10_pm25_baseline")
     p.add_argument("--quality_out_dir", default="")
-    p.add_argument("--quality_features", default="RH2M,T2M,WSPD10,MSLP,PRECIP")
+    p.add_argument("--quality_features", default="RH2M,Q_1000,DP_1000,RH_925,PRECIP")
     p.add_argument("--run_overlap_source_comparison", action="store_true", help="Run paired Tianji-vs-IFS overlap source comparison for the main target.")
     p.add_argument("--overlap_script", default="")
     p.add_argument("--overlap_out_dir", default="")

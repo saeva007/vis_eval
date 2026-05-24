@@ -33,13 +33,93 @@ if str(VIS_EVAL_DIR) not in sys.path:
 from feature_catalog_pm10_pm25 import dynamic_features_for_count
 
 
-OBS_VAR_MAP = {
-    "RH2M": {"obs": "rhu", "label": "2 m RH", "unit": "%", "extreme": "high", "threshold": 90.0, "valid": (0.0, 100.0)},
-    "T2M": {"obs": "tem", "label": "2 m temperature", "unit": "degC", "extreme": "low", "threshold": None, "valid": (-80.0, 60.0)},
-    "WSPD10": {"obs": "win_s_avg_10mi", "label": "10 m wind speed", "unit": "m s-1", "extreme": "high", "threshold": None, "valid": (0.0, 80.0)},
-    "MSLP": {"obs": "prs_sea", "label": "Sea-level pressure", "unit": "hPa", "extreme": "high", "threshold": None, "valid": (800.0, 1100.0)},
-    "PRECIP": {"obs": "pre_1h", "label": "Hourly precipitation", "unit": "mm h-1", "extreme": "high", "threshold": 0.1, "valid": (0.0, 500.0)},
+DEFAULT_QUALITY_FEATURES = "RH2M,Q_1000,DP_1000,RH_925,PRECIP"
+
+FEATURE_ALIASES = {
+    "RH2M": "RH2M",
+    "RH_2M": "RH2M",
+    "RH2": "RH2M",
+    "Q1000": "Q_1000",
+    "Q_1000": "Q_1000",
+    "DP1000": "DP_1000",
+    "DPT1000": "DP_1000",
+    "DP_1000": "DP_1000",
+    "RH925": "RH_925",
+    "R925": "RH_925",
+    "RH_925": "RH_925",
+    "PRECIP": "PRECIP",
+    "PRATE": "PRECIP",
+    "PRATE_SFC": "PRECIP",
 }
+
+FEATURE_META = {
+    "RH2M": {
+        "obs": "rhu",
+        "label": "2 m RH",
+        "unit": "%",
+        "extreme": "high",
+        "threshold": 90.0,
+        "valid": (0.0, 100.0),
+    },
+    "Q_1000": {
+        "obs": None,
+        "label": "1000 hPa specific humidity",
+        "unit": "g kg$^{-1}$",
+        "extreme": "high",
+        "threshold": None,
+        "valid": (0.0, 40.0),
+    },
+    "DP_1000": {
+        "obs": None,
+        "label": "1000 hPa dew point",
+        "unit": "degC",
+        "extreme": "high",
+        "threshold": None,
+        "valid": (-90.0, 60.0),
+    },
+    "RH_925": {
+        "obs": None,
+        "label": "925 hPa RH",
+        "unit": "%",
+        "extreme": "high",
+        "threshold": 90.0,
+        "valid": (0.0, 100.0),
+    },
+    "T2M": {
+        "obs": "tem",
+        "label": "2 m temperature",
+        "unit": "degC",
+        "extreme": "low",
+        "threshold": None,
+        "valid": (-80.0, 60.0),
+    },
+    "WSPD10": {
+        "obs": "win_s_avg_10mi",
+        "label": "10 m wind speed",
+        "unit": "m s$^{-1}$",
+        "extreme": "high",
+        "threshold": None,
+        "valid": (0.0, 80.0),
+    },
+    "MSLP": {
+        "obs": "prs_sea",
+        "label": "Sea-level pressure",
+        "unit": "hPa",
+        "extreme": "high",
+        "threshold": None,
+        "valid": (800.0, 1100.0),
+    },
+    "PRECIP": {
+        "obs": "pre_1h",
+        "label": "Hourly precipitation",
+        "unit": "mm h$^{-1}$",
+        "extreme": "high",
+        "threshold": 0.1,
+        "valid": (0.0, 500.0),
+    },
+}
+
+OBS_VAR_MAP = {k: v for k, v in FEATURE_META.items() if v.get("obs")}
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,7 +128,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--ifs_data_dir", required=True)
     ap.add_argument("--obs_root", required=True)
     ap.add_argument("--out_dir", required=True)
-    ap.add_argument("--features", default="RH2M,T2M,WSPD10,MSLP,PRECIP")
+    ap.add_argument("--features", default=DEFAULT_QUALITY_FEATURES)
     ap.add_argument("--window", type=int, default=12)
     ap.add_argument("--dyn_vars_count", type=int, default=27)
     ap.add_argument("--limit_samples", type=int, default=0)
@@ -58,7 +138,31 @@ def parse_args() -> argparse.Namespace:
 
 
 def split_list(value: str) -> List[str]:
-    return [x.strip() for chunk in str(value or "").split(";") for x in chunk.split(",") if x.strip()]
+    out: List[str] = []
+    for chunk in str(value or "").split(";"):
+        for raw in chunk.split(","):
+            name = raw.strip()
+            if not name:
+                continue
+            key = name.upper().replace("-", "_").replace(" ", "_")
+            canon = FEATURE_ALIASES.get(key, name)
+            if canon not in out:
+                out.append(canon)
+    return out
+
+
+def feature_info(feature: str) -> Dict[str, object]:
+    return FEATURE_META.get(
+        feature,
+        {
+            "obs": None,
+            "label": feature,
+            "unit": "",
+            "extreme": "high",
+            "threshold": None,
+            "valid": None,
+        },
+    )
 
 
 def read_build_config(data_dir: Path) -> Dict[str, object]:
@@ -89,7 +193,7 @@ def clean_physical_values(feature: str, values: np.ndarray) -> np.ndarray:
     arr = np.asarray(values, dtype=np.float64).copy()
     arr[~np.isfinite(arr)] = np.nan
     arr[np.abs(arr) >= 1e5] = np.nan
-    valid = OBS_VAR_MAP.get(feature, {}).get("valid")
+    valid = feature_info(feature).get("valid")
     if valid is not None:
         lo, hi = valid
         arr[(arr < float(lo)) | (arr > float(hi))] = np.nan
@@ -165,7 +269,7 @@ def read_one_obs_file(path: Path, obs_time_shift_to_utc_hours: float, needed_sta
         raw_time = pd.to_datetime(path.stem, format="%Y%m%d%H", errors="coerce")
         raw_time = pd.Series(raw_time, index=df.index)
     df["time"] = raw_time + pd.to_timedelta(float(obs_time_shift_to_utc_hours), unit="h")
-    keep_cols = ["time", "station_key"] + [c for c in sorted({v["obs"] for v in OBS_VAR_MAP.values()}) if c in df]
+    keep_cols = ["time", "station_key"] + [c for c in sorted({v["obs"] for v in OBS_VAR_MAP.values() if v.get("obs")}) if c in df]
     return df[keep_cols]
 
 
@@ -222,13 +326,17 @@ def choose_obs_time_shift(obs_root: Path, meta: pd.DataFrame, probe_files: int) 
 
 def convert_forecast_units(feature: str, values: np.ndarray) -> np.ndarray:
     arr = np.asarray(values, dtype=np.float64)
-    if feature in {"T2M", "T_925"} and np.nanmedian(arr) > 150:
+    finite = arr[np.isfinite(arr)]
+    med = float(np.nanmedian(finite)) if finite.size else math.nan
+    if feature in {"T2M", "T_925", "DP_1000", "DP_925"} and math.isfinite(med) and med > 150:
         arr = arr - 273.15
-    if feature in {"MSLP"} and np.nanmedian(np.abs(arr)) > 2000:
+    if feature in {"Q_1000", "Q_925"} and math.isfinite(med) and med < 0.2:
+        arr = arr * 1000.0
+    if feature in {"MSLP"} and math.isfinite(med) and np.nanmedian(np.abs(finite)) > 2000:
         arr = arr / 100.0
     if feature == "PRECIP":
         arr = np.maximum(arr, 0.0)
-    if feature == "RH2M":
+    if feature in {"RH2M", "RH_925"}:
         arr = np.clip(arr, 0.0, 100.0)
     return clean_physical_values(feature, arr)
 
@@ -271,7 +379,75 @@ def metric_row(feature: str, source: str, pred: np.ndarray, obs: np.ndarray, ext
     }
 
 
-def make_quality_tables(args: argparse.Namespace) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, object]]:
+def tail_threshold(feature: str, tianji: np.ndarray, ifs: np.ndarray, obs: Optional[np.ndarray] = None) -> Tuple[float, str]:
+    info = feature_info(feature)
+    fixed = info.get("threshold")
+    if fixed is not None:
+        return float(fixed), "fixed_physical_threshold"
+    reference = obs if obs is not None and np.isfinite(obs).sum() >= 100 else None
+    basis = "observation_p90"
+    if reference is None:
+        reference = np.concatenate([tianji[np.isfinite(tianji)], ifs[np.isfinite(ifs)]])
+        basis = "paired_forecast_p90"
+    if reference.size == 0:
+        return math.nan, basis
+    return float(np.nanpercentile(reference, 90.0)), basis
+
+
+def paired_distribution_row(
+    feature: str,
+    tianji: np.ndarray,
+    ifs: np.ndarray,
+    obs: Optional[np.ndarray] = None,
+) -> Dict[str, object]:
+    tianji = np.asarray(tianji, dtype=np.float64)
+    ifs = np.asarray(ifs, dtype=np.float64)
+    obs_arr = np.asarray(obs, dtype=np.float64) if obs is not None else None
+    mask = np.isfinite(tianji) & np.isfinite(ifs)
+    if obs_arr is not None:
+        obs_arr = obs_arr[mask]
+    tj = tianji[mask]
+    ii = ifs[mask]
+    if tj.size == 0:
+        return {"feature": feature, "n_pair": 0}
+    diff = ii - tj
+    q_grid = np.array([50, 75, 90, 95, 97, 99], dtype=float)
+    threshold, threshold_basis = tail_threshold(feature, tj, ii, obs_arr)
+    direction = str(feature_info(feature).get("extreme", "high"))
+
+    def tail_rate(values: np.ndarray) -> float:
+        if not math.isfinite(threshold):
+            return math.nan
+        return float(np.mean(values <= threshold) if direction == "low" else np.mean(values >= threshold))
+
+    row: Dict[str, object] = {
+        "feature": feature,
+        "label": feature_info(feature).get("label", feature),
+        "unit": feature_info(feature).get("unit", ""),
+        "n_pair": int(tj.size),
+        "paired_bias_ifs_minus_tianji": float(np.nanmean(diff)),
+        "paired_mae_ifs_minus_tianji": float(np.nanmean(np.abs(diff))),
+        "paired_corr": float(np.corrcoef(tj, ii)[0, 1]) if tj.size >= 3 and np.nanstd(tj) > 0 and np.nanstd(ii) > 0 else math.nan,
+        "threshold": threshold,
+        "threshold_basis": threshold_basis,
+        "extreme_type": direction,
+        "tail_rate_tianji": tail_rate(tj),
+        "tail_rate_ifs": tail_rate(ii),
+        "tail_rate_ratio_ifs_over_tianji": float(tail_rate(ii) / tail_rate(tj)) if tail_rate(tj) and math.isfinite(tail_rate(tj)) else math.nan,
+    }
+    if obs_arr is not None and np.isfinite(obs_arr).sum() > 0:
+        oo = obs_arr[np.isfinite(obs_arr)]
+        row["tail_rate_obs"] = tail_rate(oo)
+    for q in q_grid:
+        row[f"tianji_p{int(q)}"] = float(np.nanpercentile(tj, q))
+        row[f"ifs_p{int(q)}"] = float(np.nanpercentile(ii, q))
+        row[f"ifs_minus_tianji_p{int(q)}"] = float(np.nanpercentile(ii, q) - np.nanpercentile(tj, q))
+        if obs_arr is not None and np.isfinite(obs_arr).sum() > 0:
+            row[f"obs_p{int(q)}"] = float(np.nanpercentile(obs_arr[np.isfinite(obs_arr)], q))
+    return row
+
+
+def make_quality_tables(args: argparse.Namespace) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, object]]:
     tianji_dir = Path(args.tianji_data_dir)
     ifs_dir = Path(args.ifs_data_dir)
     obs_root = Path(args.obs_root)
@@ -280,7 +456,8 @@ def make_quality_tables(args: argparse.Namespace) -> Tuple[pd.DataFrame, pd.Data
     idx_t, idx_i, meta = align_meta(t_meta, i_meta)
     best_shift, obs, tz_diag = choose_obs_time_shift(obs_root, meta, args.timezone_probe_files)
     merged = meta.merge(obs, on=["time", "station_key"], how="left", suffixes=("", "_obs"))
-    matched_obs = int(merged[[v["obs"] for v in OBS_VAR_MAP.values() if v["obs"] in merged]].notna().any(axis=1).sum())
+    obs_columns = [v["obs"] for v in OBS_VAR_MAP.values() if v.get("obs") in merged]
+    matched_obs = int(merged[obs_columns].notna().any(axis=1).sum()) if obs_columns else 0
 
     feature_lookup = {item["feature"]: i for i, item in enumerate(dynamic_features_for_count(args.dyn_vars_count))}
     features = split_list(args.features)
@@ -289,12 +466,13 @@ def make_quality_tables(args: argparse.Namespace) -> Tuple[pd.DataFrame, pd.Data
     x_t = np.load(tianji_dir / "X_test.npy", mmap_mode="r")
     x_i = np.load(ifs_dir / "X_test.npy", mmap_mode="r")
     rows = []
+    dist_rows = []
     skipped_features = []
     sample = merged[["time", "station_key", "idx_tianji", "idx_ifs"]].copy()
     for feature in features:
-        if feature not in feature_lookup or feature not in OBS_VAR_MAP:
-            print(f"[skip] feature={feature} lacks dynamic index or obs mapping.", flush=True)
-            skipped_features.append({"feature": feature, "reason": "missing_index_or_obs_mapping"})
+        if feature not in feature_lookup:
+            print(f"[skip] feature={feature} lacks dynamic index.", flush=True)
+            skipped_features.append({"feature": feature, "reason": "missing_dynamic_index"})
             continue
         missing_sources = [name for name, available in (("tianji", t_available), ("ifs", i_available)) if feature not in available]
         if missing_sources:
@@ -304,24 +482,26 @@ def make_quality_tables(args: argparse.Namespace) -> Tuple[pd.DataFrame, pd.Data
             )
             skipped_features.append({"feature": feature, "reason": "not_populated", "sources": missing_sources})
             continue
-        obs_col = OBS_VAR_MAP[feature]["obs"]
-        if obs_col not in merged:
-            print(f"[skip] obs column {obs_col!r} missing for feature={feature}", flush=True)
-            skipped_features.append({"feature": feature, "reason": f"missing_obs_column:{obs_col}"})
-            continue
         col = (int(args.window) - 1) * int(args.dyn_vars_count) + int(feature_lookup[feature])
-        obs_vals = clean_physical_values(feature, pd.to_numeric(merged[obs_col], errors="coerce").to_numpy(dtype=float))
         tj_vals = convert_forecast_units(feature, np.asarray(x_t[idx_t, col], dtype=np.float64))
         ifs_vals = convert_forecast_units(feature, np.asarray(x_i[idx_i, col], dtype=np.float64))
-        if feature == "PRECIP":
-            obs_vals = np.maximum(obs_vals, 0.0)
-        info = OBS_VAR_MAP[feature]
-        rows.append(metric_row(feature, "tianji", tj_vals, obs_vals, info["extreme"], info["threshold"]))
-        rows.append(metric_row(feature, "ifs", ifs_vals, obs_vals, info["extreme"], info["threshold"]))
-        sample[f"obs_{feature}"] = obs_vals
         sample[f"tianji_{feature}"] = tj_vals
         sample[f"ifs_{feature}"] = ifs_vals
+        obs_vals: Optional[np.ndarray] = None
+        info = feature_info(feature)
+        obs_col = info.get("obs")
+        if obs_col and obs_col in merged:
+            obs_vals = clean_physical_values(feature, pd.to_numeric(merged[str(obs_col)], errors="coerce").to_numpy(dtype=float))
+            if feature == "PRECIP":
+                obs_vals = np.maximum(obs_vals, 0.0)
+            rows.append(metric_row(feature, "tianji", tj_vals, obs_vals, str(info["extreme"]), info.get("threshold")))
+            rows.append(metric_row(feature, "ifs", ifs_vals, obs_vals, str(info["extreme"]), info.get("threshold")))
+            sample[f"obs_{feature}"] = obs_vals
+        elif obs_col:
+            print(f"[obs-skip] obs column {obs_col!r} missing for feature={feature}; keeping paired source distribution.", flush=True)
+        dist_rows.append(paired_distribution_row(feature, tj_vals, ifs_vals, obs_vals))
     metrics = pd.DataFrame(rows)
+    dist_metrics = pd.DataFrame(dist_rows)
     diag = {
         "paired_rows": int(len(meta)),
         "matched_obs_any_variable": matched_obs,
@@ -329,13 +509,32 @@ def make_quality_tables(args: argparse.Namespace) -> Tuple[pd.DataFrame, pd.Data
         "obs_time_interpretation": "raw_obs_time_is_bjt" if best_shift == -8.0 else "raw_obs_time_is_utc",
         "features": features,
         "evaluated_features": sorted(metrics["feature"].dropna().unique().tolist()) if not metrics.empty else [],
+        "distribution_features": sorted(dist_metrics["feature"].dropna().unique().tolist()) if not dist_metrics.empty else [],
         "skipped_features": skipped_features,
+        "precipitation_note": "Tianji PRECIP is expected to have been converted from accumulated amount to hourly increments during dataset building; IFS PRECIP is treated as an hourly amount/rate.",
+        "primary_tail_feature": "RH2M",
     }
-    return metrics, sample, tz_diag, diag
+    return metrics, dist_metrics, sample, tz_diag, diag
 
 
-def plot_quality(metrics: pd.DataFrame, sample: pd.DataFrame, out_dir: Path) -> None:
-    if metrics.empty:
+def _tail_curve(values: np.ndarray, thresholds: np.ndarray, direction: str) -> np.ndarray:
+    vals = np.asarray(values, dtype=np.float64)
+    vals = vals[np.isfinite(vals)]
+    if vals.size == 0:
+        return np.full(len(thresholds), np.nan, dtype=float)
+    if direction == "low":
+        return np.asarray([100.0 * np.mean(vals <= th) for th in thresholds], dtype=float)
+    return np.asarray([100.0 * np.mean(vals >= th) for th in thresholds], dtype=float)
+
+
+def _column_values(sample: pd.DataFrame, column: str) -> np.ndarray:
+    if column not in sample:
+        return np.asarray([], dtype=float)
+    return pd.to_numeric(sample[column], errors="coerce").to_numpy(dtype=float)
+
+
+def plot_quality(metrics: pd.DataFrame, dist_metrics: pd.DataFrame, sample: pd.DataFrame, out_dir: Path) -> None:
+    if dist_metrics.empty:
         return
     plt.rcParams.update(
         {
@@ -343,7 +542,7 @@ def plot_quality(metrics: pd.DataFrame, sample: pd.DataFrame, out_dir: Path) -> 
             "font.sans-serif": ["Arial", "DejaVu Sans", "Liberation Sans"],
             "svg.fonttype": "none",
             "pdf.fonttype": 42,
-            "font.size": 8.5,
+            "font.size": 8.0,
             "axes.spines.top": False,
             "axes.spines.right": False,
             "axes.grid": True,
@@ -351,145 +550,145 @@ def plot_quality(metrics: pd.DataFrame, sample: pd.DataFrame, out_dir: Path) -> 
             "axes.axisbelow": True,
         }
     )
-    label_map = {k: v["label"] for k, v in OBS_VAR_MAP.items()}
-    colors = {"tianji": "#2E5A87", "ifs": "#7A7A7A"}
-    features = [f for f in split_list(",".join(metrics["feature"].dropna().astype(str).unique())) if f in set(metrics["feature"])]
-    fig, axes = plt.subplots(2, 2, figsize=(11.6, 7.4), gridspec_kw={"height_ratios": [1.0, 1.05]})
+    label_map = {k: str(v["label"]) for k, v in FEATURE_META.items()}
+    unit_map = {k: str(v.get("unit", "")) for k, v in FEATURE_META.items()}
+    colors = {"obs": "#111111", "tianji": "#1F5A7A", "ifs": "#8A8A8A"}
+    features = [str(f) for f in dist_metrics["feature"].dropna().astype(str).tolist()]
+    width = 0.34
+
+    fig, axes = plt.subplots(2, 2, figsize=(11.8, 7.3), gridspec_kw={"height_ratios": [1.05, 1.0]})
+
+    # Hero evidence: can the forecast source recover the near-saturated RH2M tail?
+    rh_feature = "RH2M" if "RH2M" in features else features[0]
+    info = feature_info(rh_feature)
+    direction = str(info.get("extreme", "high"))
+    thresholds = np.arange(60, 101, 2, dtype=float) if rh_feature == "RH2M" else np.linspace(
+        float(dist_metrics.loc[dist_metrics["feature"] == rh_feature, "tianji_p50"].iloc[0]),
+        float(dist_metrics.loc[dist_metrics["feature"] == rh_feature, "tianji_p99"].iloc[0]),
+        24,
+    )
+    tail_rows = pd.DataFrame({"threshold": thresholds})
     ax = axes[0, 0]
-    x = np.arange(len(features))
-    width = 0.36
-    for j, source in enumerate(["tianji", "ifs"]):
-        vals = []
-        for feature in features:
-            row = metrics[(metrics["feature"] == feature) & (metrics["source"] == source)]
-            vals.append(float(row["mae"].iloc[0]) if not row.empty else np.nan)
-        ax.bar(x + (j - 0.5) * width, vals, width * 0.92, color=colors[source], label=source.capitalize())
-    ax.set_xticks(x)
-    ax.set_xticklabels([label_map.get(f, f) for f in features], rotation=25, ha="right")
-    ax.set_ylabel("MAE (native units)")
-    ax.set_title("Absolute forecast error")
+    for key, label, ls, lw in [
+        ("obs", "Observed", "-", 2.2),
+        ("tianji", "Tianji", "-", 2.0),
+        ("ifs", "IFS", "--", 2.0),
+    ]:
+        vals = _column_values(sample, f"{key}_{rh_feature}")
+        if vals.size == 0:
+            continue
+        curve = _tail_curve(vals, thresholds, direction)
+        tail_rows[label.lower()] = curve
+        ax.plot(thresholds, curve, color=colors[key], ls=ls, lw=lw, label=label)
+    tail_rows.to_csv(out_dir / f"{rh_feature.lower()}_tail_curve.csv", index=False, float_format="%.6f")
+    relation = "below" if direction == "low" else "above"
+    ax.set_xlabel(f"{label_map.get(rh_feature, rh_feature)} threshold ({unit_map.get(rh_feature, '')})")
+    ax.set_ylabel(f"Samples {relation} threshold (%)")
+    ax.set_title(f"{label_map.get(rh_feature, rh_feature)} long-tail recovery")
     ax.legend(frameon=False)
-    ax.text(-0.12, 1.04, "(a)", transform=ax.transAxes, fontweight="bold", fontsize=11)
+    ax.text(-0.12, 1.05, "(a)", transform=ax.transAxes, fontweight="bold", fontsize=11)
 
     ax = axes[0, 1]
-    delta_rows = []
-    for feature in features:
-        tj = metrics[(metrics["feature"] == feature) & (metrics["source"] == "tianji")]
-        ii = metrics[(metrics["feature"] == feature) & (metrics["source"] == "ifs")]
-        if tj.empty or ii.empty:
+    quantiles = np.arange(50, 100, 2, dtype=float)
+    quant_rows = pd.DataFrame({"percentile": quantiles})
+    for key, label, ls, lw in [
+        ("obs", "Observed", "-", 2.2),
+        ("tianji", "Tianji", "-", 2.0),
+        ("ifs", "IFS", "--", 2.0),
+    ]:
+        vals = _column_values(sample, f"{key}_{rh_feature}")
+        vals = vals[np.isfinite(vals)]
+        if vals.size == 0:
             continue
-        delta_rows.append((feature, float(ii["mae"].iloc[0]) - float(tj["mae"].iloc[0])))
-    ax.barh(
-        np.arange(len(delta_rows)),
-        [v for _, v in delta_rows],
-        color=["#18864B" if v > 0 else "#B45B43" for _, v in delta_rows],
-    )
-    ax.axvline(0, color="#222222", lw=0.8)
-    ax.set_yticks(np.arange(len(delta_rows)))
-    ax.set_yticklabels([label_map.get(f, f) for f, _ in delta_rows])
-    ax.set_xlabel("MAE advantage (IFS - Tianji)")
-    ax.set_title("Positive values favor Tianji")
-    ax.text(-0.12, 1.04, "(b)", transform=ax.transAxes, fontweight="bold", fontsize=11)
+        qv = np.nanpercentile(vals, quantiles)
+        quant_rows[label.lower()] = qv
+        ax.plot(quantiles, qv, color=colors[key], ls=ls, lw=lw, label=label)
+    quant_rows.to_csv(out_dir / f"{rh_feature.lower()}_upper_quantiles.csv", index=False, float_format="%.6f")
+    ax.axvspan(90, 99, color="#CBD5E1", alpha=0.22, lw=0)
+    ax.set_xlabel("Percentile")
+    ax.set_ylabel(f"{label_map.get(rh_feature, rh_feature)} ({unit_map.get(rh_feature, '')})")
+    ax.set_title("Upper-quantile structure")
+    ax.legend(frameon=False)
+    ax.text(-0.12, 1.05, "(b)", transform=ax.transAxes, fontweight="bold", fontsize=11)
 
     ax = axes[1, 0]
-    tail_feature = ""
-    if "obs_RH2M" in sample and sample["obs_RH2M"].notna().sum() > 0:
-        tail_feature = "RH2M"
-        thresholds = np.arange(60, 101, 2, dtype=float)
-    else:
-        for candidate in features:
-            if OBS_VAR_MAP.get(candidate, {}).get("threshold") is not None and f"obs_{candidate}" in sample:
-                tail_feature = candidate
-                break
-        if tail_feature == "PRECIP":
-            thresholds = np.asarray([0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0], dtype=float)
-        elif tail_feature:
-            vals = pd.to_numeric(sample[f"obs_{tail_feature}"], errors="coerce").to_numpy(dtype=float)
-            vals = vals[np.isfinite(vals)]
-            thresholds = np.linspace(np.nanpercentile(vals, 50), np.nanpercentile(vals, 99), 24) if vals.size else np.asarray([])
-        else:
-            thresholds = np.asarray([])
-    if tail_feature and thresholds.size:
-        info = OBS_VAR_MAP[tail_feature]
-        direction = info["extreme"]
-        for col, label, color, ls in [
-            (f"obs_{tail_feature}", "Observed", "#111111", "-"),
-            (f"tianji_{tail_feature}", "Tianji", colors["tianji"], "-"),
-            (f"ifs_{tail_feature}", "IFS", colors["ifs"], "--"),
-        ]:
-            if col not in sample:
-                continue
-            vals = pd.to_numeric(sample[col], errors="coerce").to_numpy(dtype=float)
-            vals = vals[np.isfinite(vals)]
-            if vals.size:
-                if direction == "low":
-                    yvals = [100.0 * np.mean(vals <= th) for th in thresholds]
-                else:
-                    yvals = [100.0 * np.mean(vals >= th) for th in thresholds]
-                ax.plot(thresholds, yvals, color=color, lw=2.0, ls=ls, label=label)
-        unit = info["unit"]
-        relation = "below" if direction == "low" else "above"
-        ax.set_xlabel(f"{label_map.get(tail_feature, tail_feature)} threshold ({unit})")
-        ax.set_ylabel(f"Samples {relation} threshold (%)")
-        ax.set_title(f"{label_map.get(tail_feature, tail_feature)} tail capture")
-        if tail_feature == "PRECIP":
-            ax.set_xscale("log")
-        ax.legend(frameon=False)
-    else:
-        ax.text(
-            0.5,
-            0.5,
-            "No threshold-based shared variable",
-            transform=ax.transAxes,
-            ha="center",
-            va="center",
-        )
-        ax.set_axis_off()
-    ax.text(-0.12, 1.04, "(c)", transform=ax.transAxes, fontweight="bold", fontsize=11)
+    x = np.arange(len(features))
+    for j, (source, label) in enumerate([("tianji", "Tianji"), ("ifs", "IFS")]):
+        vals = pd.to_numeric(dist_metrics[f"tail_rate_{source}"], errors="coerce").to_numpy(dtype=float) * 100.0
+        ax.bar(x + (j - 0.5) * width, vals, width * 0.92, color=colors[source], label=label)
+    if "tail_rate_obs" in dist_metrics:
+        obs_vals = pd.to_numeric(dist_metrics["tail_rate_obs"], errors="coerce").to_numpy(dtype=float) * 100.0
+        ok = np.isfinite(obs_vals)
+        ax.scatter(x[ok], obs_vals[ok], s=26, color=colors["obs"], zorder=5, label="Observed")
+    ax.set_xticks(x)
+    ax.set_xticklabels([label_map.get(f, f) for f in features], rotation=24, ha="right")
+    ax.set_ylabel("Tail frequency (%)")
+    ax.set_title("Critical-tail frequency across shared variables")
+    ax.legend(frameon=False, ncol=3)
+    ax.text(-0.12, 1.05, "(c)", transform=ax.transAxes, fontweight="bold", fontsize=11)
 
     ax = axes[1, 1]
-    extreme = metrics[np.isfinite(pd.to_numeric(metrics.get("extreme_hit_rate", np.nan), errors="coerce"))].copy()
-    extreme_features = [f for f in features if f in set(extreme["feature"])]
-    x2 = np.arange(len(extreme_features))
-    for j, source in enumerate(["tianji", "ifs"]):
-        vals = []
-        for feature in extreme_features:
-            row = extreme[(extreme["feature"] == feature) & (extreme["source"] == source)]
-            vals.append(float(row["extreme_hit_rate"].iloc[0]) if not row.empty else np.nan)
-        ax.bar(x2 + (j - 0.5) * width, vals, width * 0.92, color=colors[source], label=source.capitalize())
-    ax.set_xticks(x2)
-    ax.set_xticklabels([label_map.get(f, f) for f in extreme_features], rotation=25, ha="right")
-    ax.set_ylim(0, 1.0)
-    ax.set_ylabel("Extreme-event hit rate")
-    ax.set_title("Can the source reproduce critical tails?")
-    ax.legend(frameon=False)
-    ax.text(-0.12, 1.04, "(d)", transform=ax.transAxes, fontweight="bold", fontsize=11)
+    delta = pd.to_numeric(dist_metrics.get("ifs_minus_tianji_p90", np.nan), errors="coerce").to_numpy(dtype=float)
+    y = np.arange(len(features))
+    ax.barh(y, delta, color=["#B85C48" if v < 0 else "#2F855A" for v in delta])
+    ax.axvline(0, color="#222222", lw=0.9)
+    ax.set_yticks(y)
+    ax.set_yticklabels([label_map.get(f, f) for f in features])
+    ax.invert_yaxis()
+    ax.set_xlabel("IFS - Tianji at P90 (native units)")
+    ax.set_title("High-quantile displacement")
+    ax.text(-0.12, 1.05, "(d)", transform=ax.transAxes, fontweight="bold", fontsize=11)
 
     fig.tight_layout()
-    for ext in ("png", "pdf", "svg"):
+    for ext in ("png", "pdf", "svg", "tiff"):
         path = out_dir / f"fig_key_variable_quality_tianji_vs_ifs.{ext}"
-        fig.savefig(path, dpi=300, bbox_inches="tight")
+        fig.savefig(path, dpi=600 if ext in {"png", "tiff"} else 300, bbox_inches="tight")
         print(f"[figure] {path}", flush=True)
     plt.close(fig)
+
+    if rh_feature == "RH2M":
+        fig2, ax2 = plt.subplots(figsize=(5.2, 3.8))
+        for key, label, ls, lw in [
+            ("obs", "Observed", "-", 2.4),
+            ("tianji", "Tianji", "-", 2.2),
+            ("ifs", "IFS", "--", 2.2),
+        ]:
+            vals = _column_values(sample, f"{key}_{rh_feature}")
+            if vals.size:
+                ax2.plot(thresholds, _tail_curve(vals, thresholds, "high"), color=colors[key], ls=ls, lw=lw, label=label)
+        ax2.axvline(90, color="#475569", lw=0.9, ls=":")
+        ax2.set_xlabel("RH2M threshold (%)")
+        ax2.set_ylabel("Samples >= threshold (%)")
+        ax2.set_title("Near-saturation tail")
+        ax2.legend(frameon=False)
+        fig2.tight_layout()
+        for ext in ("png", "pdf", "svg", "tiff"):
+            path = out_dir / f"fig_rh2m_tail_tianji_vs_ifs.{ext}"
+            fig2.savefig(path, dpi=600 if ext in {"png", "tiff"} else 300, bbox_inches="tight")
+            print(f"[figure] {path}", flush=True)
+        plt.close(fig2)
 
 
 def main() -> None:
     args = parse_args()
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    metrics, sample, tz_diag, diag = make_quality_tables(args)
+    metrics, dist_metrics, sample, tz_diag, diag = make_quality_tables(args)
     metrics_path = out_dir / "key_variable_quality_metrics.csv"
+    dist_path = out_dir / "key_variable_distribution_metrics.csv"
     sample_path = out_dir / "key_variable_quality_samples.csv"
     tz_path = out_dir / "observation_time_alignment_diagnostics.csv"
     metrics.to_csv(metrics_path, index=False, float_format="%.6f")
+    dist_metrics.to_csv(dist_path, index=False, float_format="%.6f")
     sample.to_csv(sample_path, index=False, float_format="%.6f")
     tz_diag.to_csv(tz_path, index=False)
     with open(out_dir / "key_variable_quality_summary.json", "w", encoding="utf-8") as f:
         json.dump(diag, f, ensure_ascii=False, indent=2)
     print(f"[table] {metrics_path}", flush=True)
+    print(f"[table] {dist_path}", flush=True)
     print(f"[table] {sample_path}", flush=True)
     print(f"[time] {diag['obs_time_interpretation']} shift={diag['obs_time_shift_to_utc_hours']:+g} h", flush=True)
-    plot_quality(metrics, sample, out_dir)
+    plot_quality(metrics, dist_metrics, sample, out_dir)
     print(f"[OK] key-variable quality outputs written to: {out_dir}", flush=True)
 
 
