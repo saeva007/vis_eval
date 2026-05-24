@@ -85,6 +85,7 @@ try:
         plot_event_footprint,
         plot_event_peak_grid,
         plot_fig11_48h_model_vs_ifs,
+        plot_fig11_48h_model_vs_ifs_delta_heatmap,
         plot_fig11_lead_init,
         plot_ifs_visibility_bias,
         plot_region_detail,
@@ -852,6 +853,12 @@ def run_static_48h_optional(
             cmp_display_path = out_dir / "model_vs_ifs_metrics_by_display_lead_hour_48h.csv"
             cmp_display.to_csv(cmp_display_path, index=False, float_format="%.6f")
             plot_fig11_48h_model_vs_ifs(
+                cmp_display,
+                out_dir,
+                manifest,
+                [str(x_path), str(data_48h / "meta_test.csv"), str(ifs_48h_nc), str(cmp_display_path)],
+            )
+            plot_fig11_48h_model_vs_ifs_delta_heatmap(
                 cmp_display,
                 out_dir,
                 manifest,

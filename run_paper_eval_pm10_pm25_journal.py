@@ -1996,6 +1996,20 @@ def _gaussian_density_curve(values: np.ndarray, grid: np.ndarray) -> np.ndarray:
     return np.exp(-0.5 * z * z).mean(axis=1) / (bw * math.sqrt(2.0 * math.pi))
 
 
+def _pmst_ifs_delta_cmap() -> LinearSegmentedColormap:
+    return LinearSegmentedColormap.from_list(
+        "pmst_ifs_recall_delta",
+        [
+            (0.00, "#9E1F36"),
+            (0.24, "#D6604D"),
+            (0.50, "#FFFFFF"),
+            (0.76, "#67A9CF"),
+            (1.00, "#08306B"),
+        ],
+        N=256,
+    )
+
+
 def plot_station_recall_delta_map(
     station_delta_df: pd.DataFrame,
     out_dir: Path,
@@ -2035,17 +2049,7 @@ def plot_station_recall_delta_map(
     vals = df[metric].to_numpy(dtype=float)
     lim = _nice_delta_limit(vals)
     hist_lo, hist_hi = _nice_hist_limits(vals, lim)
-    cmap = LinearSegmentedColormap.from_list(
-        "pmst_ifs_recall_delta",
-        [
-            (0.00, "#9E1F36"),
-            (0.24, "#D6604D"),
-            (0.50, "#FFFFFF"),
-            (0.76, "#67A9CF"),
-            (1.00, "#08306B"),
-        ],
-        N=256,
-    )
+    cmap = _pmst_ifs_delta_cmap()
     norm = TwoSlopeNorm(vmin=-lim, vcenter=0.0, vmax=lim)
 
     fig, ax = plt.subplots(figsize=(8.0, 6.0))
@@ -2876,6 +2880,153 @@ def plot_fig11_48h_model_vs_ifs(
         sources,
         notes="48h lead diagnostics on exact UTC valid-time, station, and lead-hour matches between PMST samples and IFS 0-48h visibility.",
         n=n_val,
+    )
+
+
+def _lead_center_edges(values: np.ndarray) -> np.ndarray:
+    vals = np.asarray(values, dtype=float)
+    if vals.size == 1:
+        return np.array([vals[0] - 0.5, vals[0] + 0.5], dtype=float)
+    mids = (vals[:-1] + vals[1:]) / 2.0
+    first = vals[0] - (mids[0] - vals[0])
+    last = vals[-1] + (vals[-1] - mids[-1])
+    return np.concatenate([[first], mids, [last]]).astype(float)
+
+
+def plot_fig11_48h_model_vs_ifs_delta_heatmap(
+    cmp_df: pd.DataFrame,
+    out_dir: Path,
+    manifest: Manifest,
+    sources: Sequence[str],
+) -> None:
+    """Lead-time heat map of PMST-minus-IFS score differences."""
+
+    if cmp_df is None or cmp_df.empty:
+        print("  [WARN] Empty 48h model-vs-IFS lead table; skip delta heatmap.", flush=True)
+        return
+    setup_journal_style()
+    specs = [
+        ("Fog_CSI", "Fog CSI"),
+        ("Fog_R", "Fog recall"),
+        ("Mist_CSI", "Mist CSI"),
+        ("Mist_R", "Mist recall"),
+        ("low_vis_csi", "Low-vis CSI"),
+        ("low_vis_recall", "Low-vis recall"),
+    ]
+    lead_col = "display_lead_hour" if "display_lead_hour" in cmp_df else "lead_hour"
+    df = cmp_df.copy()
+    df[lead_col] = pd.to_numeric(df[lead_col], errors="coerce")
+    df = df[np.isfinite(df[lead_col])].sort_values(lead_col)
+    if df.empty:
+        print("  [WARN] 48h heatmap has no finite lead times.", flush=True)
+        return
+    leads = np.asarray(sorted(df[lead_col].dropna().unique()), dtype=float)
+    if leads.size == 0:
+        print("  [WARN] 48h heatmap has no lead-time columns.", flush=True)
+        return
+
+    matrix = np.full((len(specs), len(leads)), np.nan, dtype=float)
+    grouped = df.groupby(lead_col, as_index=True).mean(numeric_only=True)
+    for row_idx, (metric, _) in enumerate(specs):
+        diff_col = f"{metric}_diff_model_minus_ifs"
+        model_col = f"{metric}_model"
+        ifs_col = f"{metric}_ifs"
+        if diff_col not in grouped and model_col in grouped and ifs_col in grouped:
+            grouped[diff_col] = grouped[model_col] - grouped[ifs_col]
+        if diff_col not in grouped:
+            continue
+        for col_idx, lead in enumerate(leads):
+            if lead in grouped.index:
+                matrix[row_idx, col_idx] = float(grouped.loc[lead, diff_col])
+
+    finite_vals = matrix[np.isfinite(matrix)]
+    if finite_vals.size == 0:
+        print("  [WARN] 48h heatmap has no finite metric differences.", flush=True)
+        return
+
+    lim = _nice_delta_limit(finite_vals)
+    cmap = _pmst_ifs_delta_cmap()
+    cmap.set_bad("#ECEFF3")
+    norm = TwoSlopeNorm(vmin=-lim, vcenter=0.0, vmax=lim)
+
+    fig, ax = plt.subplots(figsize=(11.8, 4.6))
+    x_edges = _lead_center_edges(leads)
+    y_edges = np.arange(len(specs) + 1, dtype=float) - 0.5
+    mesh = ax.pcolormesh(
+        x_edges,
+        y_edges,
+        np.ma.masked_invalid(matrix),
+        cmap=cmap,
+        norm=norm,
+        shading="flat",
+        linewidth=0.15,
+        edgecolors="#F8FAFC",
+    )
+    ax.set_ylim(len(specs) - 0.5, -0.5)
+    ax.set_yticks(np.arange(len(specs)))
+    ax.set_yticklabels([label for _, label in specs])
+    major_ticks = [h for h in (0, 6, 12, 24, 36, 48) if leads.min() <= h <= leads.max()]
+    if major_ticks:
+        ax.set_xticks(major_ticks)
+    ax.set_xlabel("Display lead time (h)")
+    ax.set_title("48h lead-time skill difference", fontsize=11, fontweight="bold", pad=8)
+    for sep in (1.5, 3.5):
+        ax.axhline(sep, color="#334155", lw=0.7, alpha=0.75)
+    for lead_line in (12, 24, 36):
+        if leads.min() <= lead_line <= leads.max():
+            ax.axvline(lead_line, color="#334155", lw=0.55, alpha=0.38)
+    if leads.min() <= 12 <= leads.max():
+        ax.text(
+            6,
+            len(specs) + 0.08,
+            "0-12 h display-filled",
+            ha="center",
+            va="top",
+            fontsize=7.2,
+            color="#4B5563",
+            clip_on=False,
+        )
+    ax.tick_params(axis="both", labelsize=8)
+    ax.grid(False)
+    for spine in ax.spines.values():
+        spine.set_color("#111827")
+        spine.set_linewidth(0.75)
+
+    cb = fig.colorbar(mesh, ax=ax, orientation="horizontal", fraction=0.075, pad=0.20, extend="both")
+    cb.set_ticks(np.linspace(-lim, lim, 5))
+    cb.set_label("Score difference (PMST - IFS diagnostic VIS)", fontsize=8)
+    cb.ax.text(
+        0.0,
+        -1.38,
+        "IFS better",
+        transform=cb.ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=7.5,
+        color="#9E1F36",
+    )
+    cb.ax.text(
+        1.0,
+        -1.38,
+        "PMST better",
+        transform=cb.ax.transAxes,
+        ha="right",
+        va="top",
+        fontsize=7.5,
+        color="#08306B",
+    )
+    fig.tight_layout()
+    save_fig_pair(
+        fig,
+        out_dir,
+        "fig11_48h_model_vs_ifs_delta_heatmap",
+        manifest,
+        sources,
+        notes=(
+            "Heat map of 48h lead-time score differences; rows are CSI/recall metrics, "
+            "columns are display lead hours, and the diverging colorbar matches the "
+            "station-level PMST-minus-IFS recall-delta figure."
+        ),
     )
 
 
