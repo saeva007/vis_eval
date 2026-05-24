@@ -337,7 +337,11 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--overlap_ifs_scaler", default="", help="Optional IFS-source overlap scaler path.")
     ap.add_argument("--overlap_feature_importance_csv", default="", help="Optional feature-importance CSV used by overlap feature-replacement analysis.")
     ap.add_argument("--overlap_feature_swap_top_k", type=int, default=0, help="Run overlap feature replacement for top-K dynamic variables when >0.")
-    ap.add_argument("--overlap_feature_swap_features", default="", help="Comma/semicolon feature names for overlap feature replacement.")
+    ap.add_argument(
+        "--overlap_feature_swap_features",
+        default="RH2M,Q_1000,DP_1000,RH_925,PRECIP",
+        help="Comma/semicolon feature names for overlap feature replacement.",
+    )
     ap.add_argument("--skip_overlap_bootstrap", action="store_true")
     ap.add_argument("--run_variable_quality", action="store_true", help="Run Tianji-vs-IFS forecast-variable quality analysis when inputs exist.")
     ap.add_argument("--variable_quality_script", default="", help="Optional path to analyze_key_variable_quality.py.")

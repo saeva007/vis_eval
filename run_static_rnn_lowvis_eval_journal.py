@@ -44,6 +44,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.colors import Normalize
 
 
 SCRIPT_PATH = Path(__file__).resolve()
@@ -66,7 +67,12 @@ try:
         aggregate_station_metrics,
         build_display_lead_table,
         build_scenario_metrics,
+        CLASS_CMAP,
+        CLASS_NORM,
         classification_metrics,
+        classify_visibility_values,
+        draw_basemap,
+        draw_boundary,
         infer_init_cycle_hour,
         init_cycle_mask,
         lead_metrics_table,
@@ -209,6 +215,20 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--event_min_lon_span", type=float, default=10.0)
     p.add_argument("--event_min_lat_span", type=float, default=4.0)
     p.add_argument("--event_gap_hours", type=int, default=24)
+    p.add_argument("--event_env_source", choices=["grid", "none"], default="grid")
+    p.add_argument("--event_env_max_events", type=int, default=3)
+    p.add_argument("--event_env_rh2m_var", default="rh2m")
+    p.add_argument("--event_env_rh2m_vmin", type=float, default=40.0)
+    p.add_argument("--event_env_rh2m_vmax", type=float, default=100.0)
+    p.add_argument(
+        "--event_env_tianji_template",
+        default="/tj01/sd3op/userpp/pp_data/{init_yyyymmddhh}/stage26Q/multi_model_sources/{init_yyyymmddhh}/{variable}.nc",
+        help="Template for raw Tianji gridded input fields; supports {base}, {variable}, {init}, and {init_yyyymmddhh}.",
+    )
+    p.add_argument("--event_env_pm10_dir", default="pm10_data")
+    p.add_argument("--event_env_pm10_var", default="pm10")
+    p.add_argument("--event_env_pm10_vmin", type=float, default=0.0)
+    p.add_argument("--event_env_pm10_vmax", type=float, default=240.0)
     p.add_argument("--plots", choices=["none", "core", "all"], default="core")
     p.add_argument("--shp_path", default="/public/home/putianshu/中华人民共和国/中华人民共和国.shp", help="Optional China boundary shapefile for station/event maps when --plots all.")
     p.add_argument("--allow_missing", action="store_true", help="Skip missing matrix checkpoints instead of failing.")
@@ -237,7 +257,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--overlap_ifs_scaler", default="")
     p.add_argument("--overlap_feature_importance_csv", default="")
     p.add_argument("--overlap_feature_swap_top_k", type=int, default=0)
-    p.add_argument("--overlap_feature_swap_features", default="")
+    p.add_argument("--overlap_feature_swap_features", default="RH2M,Q_1000,DP_1000,RH_925,PRECIP")
     p.add_argument("--skip_overlap_bootstrap", action="store_true")
     return p.parse_args()
 
@@ -843,6 +863,420 @@ def run_static_48h_optional(
         print(f"[48h] skipped after error: {exc}", flush=True)
 
 
+@dataclass
+class EventGridField:
+    values: np.ndarray
+    lats: np.ndarray
+    lons: np.ndarray
+    source: str
+
+
+def _event_timestamp(value) -> pd.Timestamp:
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is not None:
+        ts = ts.tz_convert(None)
+    return ts.floor("h")
+
+
+def _datetime_index_from_values(values) -> pd.DatetimeIndex:
+    arr = np.asarray(values).reshape(-1)
+    if np.issubdtype(arr.dtype, np.datetime64):
+        return pd.DatetimeIndex(pd.to_datetime(arr, errors="coerce"))
+    if np.issubdtype(arr.dtype, np.number):
+        finite = arr[np.isfinite(arr)]
+        if finite.size and float(np.nanmedian(np.abs(finite))) > 1.0e8:
+            return pd.DatetimeIndex(pd.to_datetime(arr, unit="s", origin="unix", errors="coerce"))
+    return pd.DatetimeIndex(pd.to_datetime(arr, errors="coerce"))
+
+
+def _coord_name(obj, candidates: Sequence[str]) -> Optional[str]:
+    for name in candidates:
+        if name in obj.coords or name in obj.dims:
+            return name
+    low = {str(k).lower(): str(k) for k in list(obj.coords) + list(obj.dims)}
+    for name in candidates:
+        if name.lower() in low:
+            return low[name.lower()]
+    return None
+
+
+def _data_var_name(ds, preferred: str) -> str:
+    if preferred in ds.data_vars:
+        return preferred
+    preferred_low = preferred.lower()
+    for name in ds.data_vars:
+        if str(name).lower() == preferred_low:
+            return str(name)
+    if len(ds.data_vars) == 1:
+        return str(next(iter(ds.data_vars)))
+    raise KeyError(f"Variable {preferred!r} not found; available={list(ds.data_vars)}")
+
+
+def _crop_grid_field(da, bounds: Tuple[float, float, float, float] = (72.0, 136.0, 17.0, 54.0)):
+    lon_min, lon_max, lat_min, lat_max = bounds
+    lat_name = _coord_name(da, ("grid_yt", "latitude", "lat", "y"))
+    lon_name = _coord_name(da, ("grid_xt", "longitude", "lon", "x"))
+    if lat_name is None or lon_name is None:
+        raise KeyError(f"Cannot infer latitude/longitude coords from dims={da.dims}")
+
+    da = da.squeeze(drop=True)
+    lat_vals = np.asarray(da[lat_name].values)
+    lon_vals = np.asarray(da[lon_name].values)
+    if lat_vals.ndim == 1:
+        lat_slice = slice(lat_min, lat_max) if lat_vals[0] <= lat_vals[-1] else slice(lat_max, lat_min)
+        da = da.sel({lat_name: lat_slice})
+    if lon_vals.ndim == 1:
+        da = da.sel({lon_name: slice(lon_min, lon_max)})
+    da = da.squeeze(drop=True)
+
+    lat_vals = np.asarray(da[lat_name].values)
+    lon_vals = np.asarray(da[lon_name].values)
+    arr = np.asarray(da.values, dtype=np.float64)
+    while arr.ndim > 2:
+        arr = arr[0]
+    return arr, lat_vals, lon_vals
+
+
+def _tianji_candidate_init_times(valid_time: pd.Timestamp) -> List[pd.Timestamp]:
+    out: List[pd.Timestamp] = []
+    for lead in range(12, 25):
+        init = valid_time - pd.Timedelta(hours=lead)
+        if init.minute == 0 and init.second == 0 and init.hour in (0, 12):
+            out.append(init)
+    return out
+
+
+def _render_tianji_grid_path(base: Path, template: str, variable: str, init_time: pd.Timestamp) -> Path:
+    text = str(template).format(
+        base=str(base),
+        variable=variable,
+        init=init_time.to_pydatetime(),
+        init_yyyymmddhh=init_time.strftime("%Y%m%d%H"),
+    )
+    path = Path(text)
+    return path if path.is_absolute() else base / path
+
+
+def _nearest_time_position(times: pd.DatetimeIndex, target: pd.Timestamp, tolerance_minutes: float = 30.0) -> Optional[int]:
+    if len(times) == 0:
+        return None
+    if pd.isna(target):
+        return None
+    t_ns = times.asi8
+    finite = t_ns != pd.NaT.value
+    if not finite.any():
+        return None
+    delta = np.abs(t_ns[finite] - int(target.value))
+    finite_pos = np.flatnonzero(finite)
+    pos = int(finite_pos[int(np.argmin(delta))])
+    delta_min = float(delta.min()) / 1.0e9 / 60.0
+    return pos if delta_min <= float(tolerance_minutes) else None
+
+
+def load_tianji_event_grid_fields(
+    args: argparse.Namespace,
+    base: Path,
+    event_times: Sequence[pd.Timestamp],
+) -> Tuple[Dict[pd.Timestamp, EventGridField], List[str]]:
+    try:
+        import xarray as xr
+    except ImportError as exc:
+        print(f"[events] xarray not available; skip Tianji grid fields: {exc}", flush=True)
+        return {}, []
+
+    out: Dict[pd.Timestamp, EventGridField] = {}
+    sources: List[str] = []
+    ds_cache = {}
+    try:
+        for t in event_times:
+            target = _event_timestamp(t)
+            for init in _tianji_candidate_init_times(target):
+                path = _render_tianji_grid_path(base, args.event_env_tianji_template, args.event_env_rh2m_var, init)
+                if not path.exists():
+                    continue
+                key = str(path)
+                if key not in ds_cache:
+                    ds_cache[key] = xr.open_dataset(path)
+                ds = ds_cache[key]
+                try:
+                    var_name = _data_var_name(ds, args.event_env_rh2m_var)
+                    if "time" not in ds.coords and "time" not in ds.dims:
+                        continue
+                    times = _datetime_index_from_values(ds["time"].values)
+                    pos = _nearest_time_position(times, target)
+                    if pos is None:
+                        continue
+                    da = ds[var_name].isel({"time": pos})
+                    arr, lats, lons = _crop_grid_field(da)
+                    out[target] = EventGridField(arr, lats, lons, key)
+                    sources.append(key)
+                    break
+                except Exception as exc:
+                    print(f"[events] Tianji grid read failed for {path}: {exc}", flush=True)
+            if target not in out:
+                print(f"[events] Tianji RH2m grid missing for {target:%Y-%m-%d %H:00} UTC", flush=True)
+    finally:
+        for ds in ds_cache.values():
+            try:
+                ds.close()
+            except Exception:
+                pass
+    return out, sorted(set(sources))
+
+
+def _normalize_pm10_units(values: np.ndarray) -> np.ndarray:
+    arr = np.asarray(values, dtype=np.float64)
+    arr = np.where(np.isfinite(arr), arr, np.nan)
+    arr = np.maximum(arr, 0.0)
+    finite = arr[np.isfinite(arr)]
+    if finite.size and float(np.nanpercentile(finite, 95)) < 0.1:
+        arr = arr * 1.0e12
+    return arr
+
+
+def load_pm10_event_grid_fields(
+    args: argparse.Namespace,
+    base: Path,
+    event_times: Sequence[pd.Timestamp],
+) -> Tuple[Dict[pd.Timestamp, EventGridField], List[str]]:
+    try:
+        import xarray as xr
+    except ImportError as exc:
+        print(f"[events] xarray not available; skip PM10 grid fields: {exc}", flush=True)
+        return {}, []
+
+    pm10_dir = Path(args.event_env_pm10_dir)
+    if not pm10_dir.is_absolute():
+        pm10_dir = base / pm10_dir
+
+    out: Dict[pd.Timestamp, EventGridField] = {}
+    sources: List[str] = []
+    by_year: Dict[int, List[pd.Timestamp]] = {}
+    for t in event_times:
+        target = _event_timestamp(t)
+        by_year.setdefault(target.year, []).append(target)
+
+    for year, times_needed in sorted(by_year.items()):
+        path = pm10_dir / f"{year}.nc"
+        if not path.exists():
+            for target in times_needed:
+                print(f"[events] PM10 grid file missing for {target:%Y-%m-%d %H:00} UTC: {path}", flush=True)
+            continue
+        try:
+            ds = xr.open_dataset(path, decode_cf=False)
+        except Exception as exc:
+            print(f"[events] PM10 grid open failed for {path}: {exc}", flush=True)
+            continue
+        try:
+            var_name = _data_var_name(ds, args.event_env_pm10_var)
+            if "valid_time" not in ds:
+                raise KeyError(f"{path} has no valid_time coordinate/variable")
+            valid_values = np.asarray(ds["valid_time"].values)
+            valid_times = _datetime_index_from_values(valid_values)
+            valid_shape = valid_values.shape
+            valid_dims = tuple(ds["valid_time"].dims)
+            for target in times_needed:
+                pos = _nearest_time_position(valid_times, target)
+                if pos is None:
+                    print(f"[events] PM10 valid time missing for {target:%Y-%m-%d %H:00} UTC", flush=True)
+                    continue
+                selector = {}
+                if valid_dims and len(valid_shape) == len(valid_dims):
+                    unraveled = np.unravel_index(pos, valid_shape)
+                    selector = {dim: int(ix) for dim, ix in zip(valid_dims, unraveled)}
+                selector = {dim: ix for dim, ix in selector.items() if dim in ds[var_name].dims}
+                da = ds[var_name].isel(selector) if selector else ds[var_name].isel({ds[var_name].dims[0]: pos})
+                arr, lats, lons = _crop_grid_field(da)
+                out[target] = EventGridField(_normalize_pm10_units(arr), lats, lons, str(path))
+            sources.append(str(path))
+        except Exception as exc:
+            print(f"[events] PM10 grid read failed for {path}: {exc}", flush=True)
+        finally:
+            ds.close()
+    return out, sorted(set(sources))
+
+
+def _grid_lon_lat(lats: np.ndarray, lons: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    if lats.ndim == 1 and lons.ndim == 1:
+        lon2d, lat2d = np.meshgrid(lons, lats)
+        return lon2d, lat2d
+    return lons, lats
+
+
+def _draw_visibility_class_panel(ax, sub: pd.DataFrame, value_col: str, shp_gdf=None, valid_col: str = "") -> None:
+    draw_basemap(ax, shp_gdf, compact=True)
+    if sub.empty or value_col not in sub:
+        ax.text(0.5, 0.5, "No samples", transform=ax.transAxes, ha="center", va="center", color="#6B7280", fontsize=7)
+        return
+    plot_df = sub
+    if valid_col and valid_col in sub:
+        valid = sub[valid_col].astype(bool).to_numpy()
+        if (~valid).any():
+            ax.scatter(sub.loc[~valid, "lon"], sub.loc[~valid, "lat"], s=3.2, color="#D2D6DC", alpha=0.55, linewidths=0, zorder=2)
+        plot_df = sub.loc[valid]
+    if plot_df.empty:
+        ax.text(0.5, 0.5, "No matched IFS", transform=ax.transAxes, ha="center", va="center", color="#6B7280", fontsize=7)
+        return
+    if value_col.endswith("_m"):
+        vals = classify_visibility_values(plot_df[value_col].to_numpy(dtype=float))
+    else:
+        vals = pd.to_numeric(plot_df[value_col], errors="coerce").to_numpy(dtype=float)
+    valid_vals = np.isfinite(vals) & (vals >= 0)
+    if valid_vals.any():
+        ax.scatter(
+            plot_df.loc[valid_vals, "lon"],
+            plot_df.loc[valid_vals, "lat"],
+            c=vals[valid_vals].astype(int),
+            s=5.2,
+            cmap=CLASS_CMAP,
+            norm=CLASS_NORM,
+            linewidths=0,
+            alpha=0.93,
+            zorder=4,
+        )
+    draw_boundary(ax, shp_gdf, color="#1F2933", linewidth=0.45, zorder=7)
+
+
+def _draw_grid_panel(
+    ax,
+    field: Optional[EventGridField],
+    shp_gdf,
+    cmap: str,
+    norm: Normalize,
+    missing_label: str,
+) -> None:
+    draw_basemap(ax, shp_gdf, compact=True)
+    if field is None:
+        ax.text(0.5, 0.5, missing_label, transform=ax.transAxes, ha="center", va="center", color="#6B7280", fontsize=7)
+        return
+    lon2d, lat2d = _grid_lon_lat(field.lats, field.lons)
+    ax.pcolormesh(lon2d, lat2d, field.values, cmap=cmap, norm=norm, shading="auto", zorder=2)
+    draw_boundary(ax, shp_gdf, color="#1F2933", linewidth=0.50, zorder=7)
+
+
+def plot_event_environment_grid(
+    args: argparse.Namespace,
+    base: Path,
+    eval_df: pd.DataFrame,
+    event_row: pd.Series,
+    out_dir: Path,
+    manifest: Manifest,
+    sources: Sequence[str],
+    shp_gdf=None,
+) -> None:
+    if str(getattr(args, "event_env_source", "grid")).lower() == "none":
+        return
+
+    setup_journal_style()
+    center_time = _event_timestamp(event_row["peak_time"])
+    offsets = list(range(-int(args.event_window_hours), int(args.event_window_hours) + 1))
+    event_times = [center_time + pd.Timedelta(hours=h) for h in offsets]
+
+    rh_fields, rh_sources = load_tianji_event_grid_fields(args, base, event_times)
+    pm10_fields, pm10_sources = load_pm10_event_grid_fields(args, base, event_times)
+
+    df = eval_df.copy()
+    df["time"] = pd.to_datetime(df["time"], errors="coerce").dt.floor("h")
+
+    nrows = len(event_times)
+    fig_h = max(7.2, 1.18 * nrows + 1.25)
+    fig, axes = plt.subplots(nrows, 5, figsize=(12.4, fig_h), squeeze=False)
+    col_titles = ["Observed", "Model", "IFS diagnostic", "Tianji RH2m", "PM10"]
+    for j, title in enumerate(col_titles):
+        axes[0, j].set_title(title, fontsize=8.5, fontweight="bold", pad=4)
+
+    rh_norm = Normalize(vmin=float(args.event_env_rh2m_vmin), vmax=float(args.event_env_rh2m_vmax))
+    pm10_norm = Normalize(vmin=float(args.event_env_pm10_vmin), vmax=float(args.event_env_pm10_vmax))
+    for row_idx, (offset, valid_time) in enumerate(zip(offsets, event_times)):
+        sub = df[df["time"] == valid_time]
+        axes[row_idx, 0].set_ylabel(
+            f"{valid_time:%m-%d}\n{valid_time:%H:00}",
+            rotation=0,
+            labelpad=18,
+            fontsize=7.2,
+            va="center",
+            ha="right",
+        )
+        _draw_visibility_class_panel(axes[row_idx, 0], sub, "vis_raw_m", shp_gdf)
+        _draw_visibility_class_panel(axes[row_idx, 1], sub, "pmst_pred", shp_gdf)
+        _draw_visibility_class_panel(axes[row_idx, 2], sub, "ifs_diagnostic_vis_m", shp_gdf, valid_col="ifs_diagnostic_valid")
+        _draw_grid_panel(axes[row_idx, 3], rh_fields.get(valid_time), shp_gdf, "YlGnBu", rh_norm, "RH2m missing")
+        _draw_grid_panel(axes[row_idx, 4], pm10_fields.get(valid_time), shp_gdf, "YlOrRd", pm10_norm, "PM10 missing")
+        axes[row_idx, 0].text(
+            -0.31,
+            0.5,
+            f"{offset:+d} h",
+            transform=axes[row_idx, 0].transAxes,
+            ha="right",
+            va="center",
+            fontsize=7.0,
+            color="#4B5563",
+        )
+
+    class_sm = plt.cm.ScalarMappable(norm=CLASS_NORM, cmap=CLASS_CMAP)
+    class_sm.set_array([])
+    rh_sm = plt.cm.ScalarMappable(norm=rh_norm, cmap="YlGnBu")
+    rh_sm.set_array([])
+    pm10_sm = plt.cm.ScalarMappable(norm=pm10_norm, cmap="YlOrRd")
+    pm10_sm.set_array([])
+    cb1 = fig.colorbar(class_sm, ax=axes[:, :3].ravel().tolist(), orientation="horizontal", fraction=0.035, pad=0.025)
+    cb1.set_ticks([0, 1, 2])
+    cb1.set_ticklabels(["Fog\n<500", "Mist\n500-1000", "Clear\n>=1000"])
+    cb1.set_label("Visibility category (m)", fontsize=7.2)
+    cb2 = fig.colorbar(rh_sm, ax=axes[:, 3].ravel().tolist(), orientation="horizontal", fraction=0.035, pad=0.025)
+    cb2.set_label("RH2m (%)", fontsize=7.2)
+    cb3 = fig.colorbar(pm10_sm, ax=axes[:, 4].ravel().tolist(), orientation="horizontal", fraction=0.035, pad=0.025)
+    cb3.set_label(r"PM10 ($\mu$g m$^{-3}$)", fontsize=7.2)
+
+    rank = int(event_row.get("event_rank", 1))
+    actual_peak = event_row.get("actual_peak_time", "")
+    title = f"Event {rank}: {center_time:%Y-%m-%d %H:00 UTC}"
+    if "actual_peak_time" in event_row and pd.notna(actual_peak):
+        actual_ts = _event_timestamp(actual_peak)
+        if actual_ts != center_time:
+            title += f" window center; true peak {actual_ts:%Y-%m-%d %H:00 UTC}"
+    fig.suptitle(title, x=0.5, y=0.988, fontsize=9.8, fontweight="bold")
+    fig.subplots_adjust(left=0.075, right=0.992, top=0.94, bottom=0.10, wspace=0.035, hspace=0.035)
+
+    all_sources = list(sources) + rh_sources + pm10_sources
+    save_fig_pair(
+        fig,
+        out_dir,
+        f"fig9_event_{rank}_environment_grid",
+        manifest,
+        all_sources,
+        notes=(
+            "Rows are UTC hours around the selected widespread low-visibility event. "
+            "The first three columns use shared visibility categories; the model panel is categorical. "
+            "RH2m and PM10 are raw gridded forecast fields read only for the displayed valid times."
+        ),
+        n=int(len(eval_df)),
+    )
+
+
+def plot_event_environment_grids(
+    args: argparse.Namespace,
+    base: Path,
+    eval_df: pd.DataFrame,
+    event_df: pd.DataFrame,
+    out_dir: Path,
+    manifest: Manifest,
+    sources: Sequence[str],
+    shp_gdf=None,
+) -> None:
+    if event_df is None or event_df.empty:
+        return
+    max_events = max(0, int(getattr(args, "event_env_max_events", 3) or 0))
+    if max_events <= 0:
+        return
+    for _, event_row in event_df.head(max_events).iterrows():
+        try:
+            plot_event_environment_grid(args, base, eval_df, event_row, out_dir, manifest, sources, shp_gdf=shp_gdf)
+        except Exception as exc:
+            rank = event_row.get("event_rank", "?")
+            print(f"[events] environment grid failed for event {rank}: {exc}", flush=True)
+
+
 def run_event_plots(
     args: argparse.Namespace,
     base: Path,
@@ -923,6 +1357,16 @@ def run_event_plots(
                     notes="Observed visibility at the peak hour for the same three selected widespread fog events.",
                     n=int(len(y_cls)),
                 )
+        plot_event_environment_grids(
+            args,
+            base,
+            eval_df,
+            event_df,
+            out_dir,
+            manifest,
+            event_sources,
+            shp_gdf=shp_gdf,
+        )
     plot_event_peak_grid(
         eval_df,
         event_df,
@@ -1173,6 +1617,14 @@ def evaluate_target(
         "meta_time_shift_hours": float(getattr(args, "meta_time_shift_hours", 0.0) or 0.0),
         "run_feature_importance": bool(getattr(args, "run_feature_importance", False)),
         "run_variable_quality": bool(getattr(args, "run_variable_quality", False)),
+        "event_environment": {
+            "source": str(getattr(args, "event_env_source", "grid")),
+            "max_events": int(getattr(args, "event_env_max_events", 3) or 0),
+            "tianji_template": str(getattr(args, "event_env_tianji_template", "")),
+            "rh2m_var": str(getattr(args, "event_env_rh2m_var", "rh2m")),
+            "pm10_dir": str(getattr(args, "event_env_pm10_dir", "pm10_data")),
+            "pm10_var": str(getattr(args, "event_env_pm10_var", "pm10")),
+        },
         "data_dir": str(data_dir),
         "out_dir": str(out_dir),
         "checkpoint_metadata": ckpt_meta,

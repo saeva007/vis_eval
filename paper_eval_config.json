@@ -150,7 +150,17 @@
     "event_min_regions": 3,
     "event_min_lon_span": 10.0,
     "event_min_lat_span": 4.0,
-    "event_gap_hours": 24
+    "event_gap_hours": 24,
+    "event_env_source": "grid",
+    "event_env_max_events": 3,
+    "event_env_rh2m_var": "rh2m",
+    "event_env_tianji_template": "/tj01/sd3op/userpp/pp_data/{init_yyyymmddhh}/stage26Q/multi_model_sources/{init_yyyymmddhh}/{variable}.nc",
+    "event_env_pm10_dir": "pm10_data",
+    "event_env_pm10_var": "pm10",
+    "event_env_rh2m_vmin": 40.0,
+    "event_env_rh2m_vmax": 100.0,
+    "event_env_pm10_vmin": 0.0,
+    "event_env_pm10_vmax": 240.0
   },
   "lowvis_eval_suite": {
     "target": "main",
