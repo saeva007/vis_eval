@@ -2010,6 +2010,38 @@ def _pmst_ifs_delta_cmap() -> LinearSegmentedColormap:
     )
 
 
+def _pmst_ifs_gain_cmap() -> LinearSegmentedColormap:
+    return LinearSegmentedColormap.from_list(
+        "pmst_ifs_relative_gain",
+        [
+            (0.00, "#F8FAFC"),
+            (0.35, "#C6DBEF"),
+            (0.70, "#4292C6"),
+            (1.00, "#08306B"),
+        ],
+        N=256,
+    )
+
+
+def _relative_gain_percent(model_value: float, ifs_value: float, denom_floor: float = 0.02) -> float:
+    if not np.isfinite(model_value) or not np.isfinite(ifs_value):
+        return math.nan
+    denom = max(abs(float(ifs_value)), float(denom_floor))
+    return 100.0 * (float(model_value) - float(ifs_value)) / denom
+
+
+def _nice_percent_limit(values: np.ndarray, quantile: float = 90.0) -> float:
+    vals = np.asarray(values, dtype=float)
+    vals = vals[np.isfinite(vals)]
+    if vals.size == 0:
+        return 100.0
+    raw = float(np.nanpercentile(np.abs(vals), quantile))
+    if not np.isfinite(raw) or raw <= 0:
+        raw = float(np.nanmax(np.abs(vals))) if vals.size else 100.0
+    step = 25.0 if raw <= 200.0 else 50.0 if raw <= 500.0 else 100.0
+    return min(1000.0, max(50.0, math.ceil(raw / step) * step))
+
+
 def plot_station_recall_delta_map(
     station_delta_df: pd.DataFrame,
     out_dir: Path,
@@ -2899,7 +2931,7 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
     manifest: Manifest,
     sources: Sequence[str],
 ) -> None:
-    """Lead-time heat map of PMST-minus-IFS score differences."""
+    """Lead-time heat map of relative PMST skill gain over IFS."""
 
     if cmp_df is None or cmp_df.empty:
         print("  [WARN] Empty 48h model-vs-IFS lead table; skip delta heatmap.", flush=True)
@@ -2925,9 +2957,11 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
         print("  [WARN] 48h heatmap has no lead-time columns.", flush=True)
         return
 
+    denom_floor = 0.02
     matrix = np.full((len(specs), len(leads)), np.nan, dtype=float)
+    source_rows: List[Dict[str, object]] = []
     grouped = df.groupby(lead_col, as_index=True).mean(numeric_only=True)
-    for row_idx, (metric, _) in enumerate(specs):
+    for row_idx, (metric, label) in enumerate(specs):
         diff_col = f"{metric}_diff_model_minus_ifs"
         model_col = f"{metric}_model"
         ifs_col = f"{metric}_ifs"
@@ -2937,17 +2971,43 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
             continue
         for col_idx, lead in enumerate(leads):
             if lead in grouped.index:
-                matrix[row_idx, col_idx] = float(grouped.loc[lead, diff_col])
+                model_value = float(grouped.loc[lead, model_col]) if model_col in grouped else math.nan
+                ifs_value = float(grouped.loc[lead, ifs_col]) if ifs_col in grouped else math.nan
+                diff_value = float(grouped.loc[lead, diff_col])
+                gain_value = _relative_gain_percent(model_value, ifs_value, denom_floor=denom_floor)
+                matrix[row_idx, col_idx] = gain_value
+                source_rows.append(
+                    {
+                        "metric": metric,
+                        "metric_label": label,
+                        "display_lead_hour": float(lead),
+                        "model_value": model_value,
+                        "ifs_value": ifs_value,
+                        "absolute_diff_model_minus_ifs": diff_value,
+                        "relative_gain_vs_ifs_pct": gain_value,
+                        "relative_gain_denominator": max(abs(ifs_value), denom_floor) if np.isfinite(ifs_value) else math.nan,
+                        "relative_gain_denominator_floor": denom_floor,
+                    }
+                )
 
     finite_vals = matrix[np.isfinite(matrix)]
     if finite_vals.size == 0:
-        print("  [WARN] 48h heatmap has no finite metric differences.", flush=True)
+        print("  [WARN] 48h heatmap has no finite relative gains.", flush=True)
         return
 
-    lim = _nice_delta_limit(finite_vals)
-    cmap = _pmst_ifs_delta_cmap()
+    source_path = out_dir / "fig11_48h_model_vs_ifs_delta_heatmap_source.csv"
+    pd.DataFrame(source_rows).to_csv(source_path, index=False, float_format="%.6f")
+
+    lim = _nice_percent_limit(finite_vals)
+    if float(np.nanmin(finite_vals)) >= 0:
+        cmap = _pmst_ifs_gain_cmap()
+        norm = Normalize(vmin=0.0, vmax=lim)
+        extend = "max"
+    else:
+        cmap = _pmst_ifs_delta_cmap()
+        norm = TwoSlopeNorm(vmin=-lim, vcenter=0.0, vmax=lim)
+        extend = "both"
     cmap.set_bad("#ECEFF3")
-    norm = TwoSlopeNorm(vmin=-lim, vcenter=0.0, vmax=lim)
 
     fig, ax = plt.subplots(figsize=(11.8, 4.6))
     x_edges = _lead_center_edges(leads)
@@ -2969,7 +3029,7 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
     if major_ticks:
         ax.set_xticks(major_ticks)
     ax.set_xlabel("Display lead time (h)")
-    ax.set_title("48h lead-time skill difference", fontsize=11, fontweight="bold", pad=8)
+    ax.set_title("48h lead-time relative skill gain over IFS", fontsize=11, fontweight="bold", pad=8)
     for sep in (1.5, 3.5):
         ax.axhline(sep, color="#334155", lw=0.7, alpha=0.75)
     for lead_line in (12, 24, 36):
@@ -2992,28 +3052,50 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
         spine.set_color("#111827")
         spine.set_linewidth(0.75)
 
-    cb = fig.colorbar(mesh, ax=ax, orientation="horizontal", fraction=0.075, pad=0.20, extend="both")
-    cb.set_ticks(np.linspace(-lim, lim, 5))
-    cb.set_label("Score difference (PMST - IFS diagnostic VIS)", fontsize=8)
-    cb.ax.text(
-        0.0,
-        -1.38,
-        "IFS better",
-        transform=cb.ax.transAxes,
-        ha="left",
-        va="top",
-        fontsize=7.5,
-        color="#9E1F36",
-    )
-    cb.ax.text(
-        1.0,
-        -1.38,
-        "PMST better",
-        transform=cb.ax.transAxes,
+    cb = fig.colorbar(mesh, ax=ax, orientation="horizontal", fraction=0.075, pad=0.20, extend=extend)
+    if float(np.nanmin(finite_vals)) >= 0:
+        cb.set_ticks(np.linspace(0, lim, 5))
+        cb.ax.text(
+            1.0,
+            -1.38,
+            "Larger PMST gain",
+            transform=cb.ax.transAxes,
+            ha="right",
+            va="top",
+            fontsize=7.5,
+            color="#08306B",
+        )
+    else:
+        cb.set_ticks(np.linspace(-lim, lim, 5))
+        cb.ax.text(
+            0.0,
+            -1.38,
+            "IFS better",
+            transform=cb.ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=7.5,
+            color="#9E1F36",
+        )
+        cb.ax.text(
+            1.0,
+            -1.38,
+            "PMST better",
+            transform=cb.ax.transAxes,
+            ha="right",
+            va="top",
+            fontsize=7.5,
+            color="#08306B",
+        )
+    cb.set_label("Relative gain vs IFS diagnostic VIS (%)", fontsize=8)
+    fig.text(
+        0.995,
+        0.01,
+        f"Relative gain = 100 x (PMST - IFS) / max(IFS, {denom_floor:.2f}).",
         ha="right",
-        va="top",
-        fontsize=7.5,
-        color="#08306B",
+        va="bottom",
+        fontsize=7.1,
+        color="#475569",
     )
     fig.tight_layout()
     save_fig_pair(
@@ -3021,11 +3103,12 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
         out_dir,
         "fig11_48h_model_vs_ifs_delta_heatmap",
         manifest,
-        sources,
+        [*sources, str(source_path)],
         notes=(
-            "Heat map of 48h lead-time score differences; rows are CSI/recall metrics, "
-            "columns are display lead hours, and the diverging colorbar matches the "
-            "station-level PMST-minus-IFS recall-delta figure."
+            "Heat map of 48h lead-time relative skill gain over IFS diagnostic VIS; "
+            "rows are CSI/recall metrics, columns are display lead hours, and the "
+            "relative-gain denominator is floored at 0.02 to avoid near-zero IFS "
+            "metrics dominating the color scale."
         ),
     )
 
