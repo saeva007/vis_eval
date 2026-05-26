@@ -1031,13 +1031,16 @@ def load_tianji_event_grid_fields(
     return out, sorted(set(sources))
 
 
-def _normalize_pm10_units(values: np.ndarray) -> np.ndarray:
+def _normalize_pm10_units(values: np.ndarray, units: str = "") -> np.ndarray:
     arr = np.asarray(values, dtype=np.float64)
     arr = np.where(np.isfinite(arr), arr, np.nan)
     arr = np.maximum(arr, 0.0)
     finite = arr[np.isfinite(arr)]
-    if finite.size and float(np.nanpercentile(finite, 95)) < 0.1:
-        arr = arr * 1.0e12
+    unit_text = str(units or "").lower().replace(" ", "")
+    if "kg" in unit_text and ("m**-3" in unit_text or "m^-3" in unit_text or "m-3" in unit_text):
+        arr = arr * 1.0e9
+    elif finite.size and float(np.nanpercentile(finite, 95)) < 1.0e-5:
+        arr = arr * 1.0e9
     return arr
 
 
@@ -1094,7 +1097,8 @@ def load_pm10_event_grid_fields(
                 selector = {dim: ix for dim, ix in selector.items() if dim in ds[var_name].dims}
                 da = ds[var_name].isel(selector) if selector else ds[var_name].isel({ds[var_name].dims[0]: pos})
                 arr, lats, lons = _crop_grid_field(da)
-                out[target] = EventGridField(_normalize_pm10_units(arr), lats, lons, str(path))
+                units = str(da.attrs.get("units", da.attrs.get("GRIB_units", "")))
+                out[target] = EventGridField(_normalize_pm10_units(arr, units=units), lats, lons, str(path))
             sources.append(str(path))
         except Exception as exc:
             print(f"[events] PM10 grid read failed for {path}: {exc}", flush=True)
@@ -1157,7 +1161,7 @@ def _draw_grid_panel(
         ax.text(0.5, 0.5, missing_label, transform=ax.transAxes, ha="center", va="center", color="#6B7280", fontsize=7)
         return
     lon2d, lat2d = _grid_lon_lat(field.lats, field.lons)
-    ax.pcolormesh(lon2d, lat2d, field.values, cmap=cmap, norm=norm, shading="auto", zorder=2)
+    ax.pcolormesh(lon2d, lat2d, field.values, cmap=cmap, norm=norm, shading="auto", zorder=2, rasterized=True)
     draw_boundary(ax, shp_gdf, color="#1F2933", linewidth=0.50, zorder=7)
 
 
@@ -1226,15 +1230,6 @@ def plot_event_environment_grid(
     rh_sm.set_array([])
     pm10_sm = plt.cm.ScalarMappable(norm=pm10_norm, cmap="YlOrRd")
     pm10_sm.set_array([])
-    cb1 = fig.colorbar(class_sm, ax=axes[:, :3].ravel().tolist(), orientation="horizontal", fraction=0.035, pad=0.025)
-    cb1.set_ticks([0, 1, 2])
-    cb1.set_ticklabels(["Fog\n<500", "Mist\n500-1000", "Clear\n>=1000"])
-    cb1.set_label("Visibility category (m)", fontsize=7.2)
-    cb2 = fig.colorbar(rh_sm, ax=axes[:, 3].ravel().tolist(), orientation="horizontal", fraction=0.035, pad=0.025)
-    cb2.set_label("RH2m (%)", fontsize=7.2)
-    cb3 = fig.colorbar(pm10_sm, ax=axes[:, 4].ravel().tolist(), orientation="horizontal", fraction=0.035, pad=0.025)
-    cb3.set_label(r"PM10 ($\mu$g m$^{-3}$)", fontsize=7.2)
-
     rank = int(event_row.get("event_rank", 1))
     actual_peak = event_row.get("actual_peak_time", "")
     title = f"Event {rank}: {center_time:%Y-%m-%d %H:00 UTC}"
@@ -1243,7 +1238,25 @@ def plot_event_environment_grid(
         if actual_ts != center_time:
             title += f" window center; true peak {actual_ts:%Y-%m-%d %H:00 UTC}"
     fig.suptitle(title, x=0.5, y=0.988, fontsize=9.8, fontweight="bold")
-    fig.subplots_adjust(left=0.075, right=0.992, top=0.94, bottom=0.10, wspace=0.035, hspace=0.035)
+    fig.subplots_adjust(left=0.075, right=0.992, top=0.94, bottom=0.18, wspace=0.035, hspace=0.035)
+    fig.canvas.draw()
+
+    cbar_y = 0.065
+    cbar_h = 0.014
+
+    def cbar_span(col0: int, col1: int) -> List[float]:
+        left = axes[-1, col0].get_position().x0
+        right = axes[-1, col1].get_position().x1
+        return [left, cbar_y, right - left, cbar_h]
+
+    cb1 = fig.colorbar(class_sm, cax=fig.add_axes(cbar_span(0, 2)), orientation="horizontal")
+    cb1.set_ticks([0, 1, 2])
+    cb1.set_ticklabels(["Fog\n<500", "Mist\n500-1000", "Clear\n>=1000"])
+    cb1.set_label("Visibility category (m)", fontsize=7.2)
+    cb2 = fig.colorbar(rh_sm, cax=fig.add_axes(cbar_span(3, 3)), orientation="horizontal")
+    cb2.set_label("RH2m (%)", fontsize=7.2)
+    cb3 = fig.colorbar(pm10_sm, cax=fig.add_axes(cbar_span(4, 4)), orientation="horizontal", extend="max")
+    cb3.set_label(r"PM10 ($\mu$g m$^{-3}$)", fontsize=7.2)
 
     all_sources = list(sources) + rh_sources + pm10_sources
     save_fig_pair(
