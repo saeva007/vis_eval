@@ -40,13 +40,17 @@ CONFIG_JSON="${CONFIG_JSON:-/public/home/putianshu/vis_mlp/paper_eval/paper_eval
 MODE="${MODE:-main}"
 BASE="${BASE:-/public/home/putianshu/vis_mlp}"
 TRAIN_DIR="${TRAIN_DIR:-/public/home/putianshu/vis_mlp/train}"
+DATA_DIR="${DATA_DIR:-}"
+CKPT_DIR="${CKPT_DIR:-}"
 OUT_DIR="${OUT_DIR:-}"
 MAIN_RUN_ID="${MAIN_RUN_ID:-}"
 MAIN_CKPT="${MAIN_CKPT:-}"
 MATRIX_RUN_PREFIX="${MATRIX_RUN_PREFIX:-}"
 MATRIX_EXPERIMENTS="${MATRIX_EXPERIMENTS:-}"
 CKPT_PATH="${CKPT_PATH:-}"
+RUN_ID="${RUN_ID:-}"
 VARIANT_ID="${VARIANT_ID:-}"
+STAGE_TAG="${STAGE_TAG:-}"
 DEVICE="${DEVICE:-auto}"
 LIMIT_SAMPLES="${LIMIT_SAMPLES:-}"
 PLOTS="${PLOTS:-all}"
@@ -62,8 +66,17 @@ CMD=(
     --plots "${PLOTS}"
 )
 
+if [[ -n "${DATA_DIR}" ]]; then
+    CMD+=(--data_dir "${DATA_DIR}")
+fi
+if [[ -n "${CKPT_DIR}" ]]; then
+    CMD+=(--ckpt_dir "${CKPT_DIR}")
+fi
 if [[ -n "${OUT_DIR}" ]]; then
     CMD+=(--out_dir "${OUT_DIR}")
+fi
+if [[ -n "${STAGE_TAG}" ]]; then
+    CMD+=(--stage_tag "${STAGE_TAG}")
 fi
 if [[ -n "${MAIN_RUN_ID}" ]]; then
     CMD+=(--main_run_id "${MAIN_RUN_ID}")
@@ -79,6 +92,9 @@ if [[ -n "${MATRIX_EXPERIMENTS}" ]]; then
 fi
 if [[ -n "${CKPT_PATH}" ]]; then
     CMD+=(--ckpt_path "${CKPT_PATH}")
+fi
+if [[ -n "${RUN_ID}" ]]; then
+    CMD+=(--run_id "${RUN_ID}")
 fi
 if [[ -n "${VARIANT_ID}" ]]; then
     CMD+=(--variant_id "${VARIANT_ID}")
