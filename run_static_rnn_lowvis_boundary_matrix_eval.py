@@ -204,6 +204,15 @@ def confusion_rows(label: str, run_id: str, experiment_id: int, cm: np.ndarray) 
     return rows
 
 
+def confusion_counts(y_true: np.ndarray, pred: np.ndarray) -> np.ndarray:
+    y_true = np.asarray(y_true, dtype=np.int64)
+    pred = np.asarray(pred, dtype=np.int64)
+    valid = (y_true >= 0) & (y_true <= 2) & (pred >= 0) & (pred <= 2)
+    cm = np.zeros((3, 3), dtype=np.int64)
+    np.add.at(cm, (y_true[valid], pred[valid]), 1)
+    return cm
+
+
 def simple_markdown_table(df: pd.DataFrame, columns: Sequence[str]) -> str:
     cols = [c for c in columns if c in df.columns]
     if not cols:
@@ -262,7 +271,7 @@ def evaluate_target(
     )
     pred, decision_meta = journal.predict_from_probs(args, probs, ckpt_meta)
     metrics = journal.classification_metrics(y_cls, pred, probs=probs)
-    cm = journal.confusion_counts(y_cls, pred)
+    cm = confusion_counts(y_cls, pred)
 
     if args.save_probs:
         np.save(out_dir / f"{experiment_id}_{target.label}_probs.npy", probs.astype(np.float32))
