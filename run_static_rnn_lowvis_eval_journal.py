@@ -45,6 +45,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
+from matplotlib.patches import Rectangle
 
 
 SCRIPT_PATH = Path(__file__).resolve()
@@ -1114,8 +1115,122 @@ def _grid_lon_lat(lats: np.ndarray, lons: np.ndarray) -> Tuple[np.ndarray, np.nd
     return lons, lats
 
 
-def _draw_visibility_class_panel(ax, sub: pd.DataFrame, value_col: str, shp_gdf=None, valid_col: str = "") -> None:
+def _apply_event_map_extent(ax, extent: Optional[Tuple[float, float, float, float]]) -> None:
+    if extent is None:
+        return
+    lon_min, lon_max, lat_min, lat_max = extent
+    ax.set_xlim(lon_min, lon_max)
+    ax.set_ylim(lat_min, lat_max)
+    ax.set_aspect("equal", adjustable="box")
+
+
+def _event_focus_extent(
+    df: pd.DataFrame,
+    event_times: Sequence[pd.Timestamp],
+    bounds: Tuple[float, float, float, float] = (72.0, 136.0, 17.0, 54.0),
+) -> Optional[Tuple[float, float, float, float]]:
+    if df.empty or "time" not in df or "lon" not in df or "lat" not in df:
+        return None
+    event_set = set(pd.DatetimeIndex(event_times))
+    sub = df[df["time"].isin(event_set)].copy()
+    if sub.empty:
+        return None
+    if "vis_raw_m" in sub:
+        vis = pd.to_numeric(sub["vis_raw_m"], errors="coerce")
+        focus = sub[vis < 1000.0]
+        if len(focus) >= 8:
+            sub = focus
+    lon = pd.to_numeric(sub["lon"], errors="coerce").to_numpy(dtype=float)
+    lat = pd.to_numeric(sub["lat"], errors="coerce").to_numpy(dtype=float)
+    ok = np.isfinite(lon) & np.isfinite(lat)
+    lon = lon[ok]
+    lat = lat[ok]
+    if lon.size == 0:
+        return None
+    if lon.size >= 40:
+        lon_min, lon_max = np.nanpercentile(lon, [2, 98])
+        lat_min, lat_max = np.nanpercentile(lat, [2, 98])
+    else:
+        lon_min, lon_max = float(np.nanmin(lon)), float(np.nanmax(lon))
+        lat_min, lat_max = float(np.nanmin(lat)), float(np.nanmax(lat))
+    lon_pad = max(2.2, 0.12 * max(lon_max - lon_min, 1.0))
+    lat_pad = max(1.8, 0.14 * max(lat_max - lat_min, 1.0))
+    lon_min -= lon_pad
+    lon_max += lon_pad
+    lat_min -= lat_pad
+    lat_max += lat_pad
+
+    min_width = 18.0
+    min_height = 12.0
+    width = lon_max - lon_min
+    height = lat_max - lat_min
+    if width < min_width:
+        mid = 0.5 * (lon_min + lon_max)
+        lon_min, lon_max = mid - min_width / 2.0, mid + min_width / 2.0
+    if height < min_height:
+        mid = 0.5 * (lat_min + lat_max)
+        lat_min, lat_max = mid - min_height / 2.0, mid + min_height / 2.0
+
+    target_ratio = 1.55
+    width = lon_max - lon_min
+    height = lat_max - lat_min
+    if width / max(height, 1.0e-6) < target_ratio:
+        mid = 0.5 * (lon_min + lon_max)
+        width = height * target_ratio
+        lon_min, lon_max = mid - width / 2.0, mid + width / 2.0
+
+    b_lon_min, b_lon_max, b_lat_min, b_lat_max = bounds
+    if lon_max - lon_min >= b_lon_max - b_lon_min:
+        lon_min, lon_max = b_lon_min, b_lon_max
+    else:
+        shift = max(b_lon_min - lon_min, 0.0) - max(lon_max - b_lon_max, 0.0)
+        lon_min += shift
+        lon_max += shift
+    if lat_max - lat_min >= b_lat_max - b_lat_min:
+        lat_min, lat_max = b_lat_min, b_lat_max
+    else:
+        shift = max(b_lat_min - lat_min, 0.0) - max(lat_max - b_lat_max, 0.0)
+        lat_min += shift
+        lat_max += shift
+    return (
+        max(b_lon_min, float(lon_min)),
+        min(b_lon_max, float(lon_max)),
+        max(b_lat_min, float(lat_min)),
+        min(b_lat_max, float(lat_max)),
+    )
+
+
+def _draw_visibility_category_legend(ax) -> None:
+    ax.set_axis_off()
+    ax.text(0.0, 0.92, "Visibility category (m)", ha="left", va="top", fontsize=7.2)
+    labels = [("Fog", "<500"), ("Mist", "500-1000"), ("Clear", ">=1000")]
+    for i, (name, threshold) in enumerate(labels):
+        x0 = i / 3.0 + 0.018
+        width = 0.27
+        ax.add_patch(
+            Rectangle(
+                (x0, 0.36),
+                width,
+                0.28,
+                transform=ax.transAxes,
+                facecolor=CLASS_CMAP(i),
+                edgecolor="#2F3437",
+                linewidth=0.45,
+            )
+        )
+        ax.text(x0 + width / 2.0, 0.12, f"{name}\n{threshold}", transform=ax.transAxes, ha="center", va="center", fontsize=6.8)
+
+
+def _draw_visibility_class_panel(
+    ax,
+    sub: pd.DataFrame,
+    value_col: str,
+    shp_gdf=None,
+    valid_col: str = "",
+    extent: Optional[Tuple[float, float, float, float]] = None,
+) -> None:
     draw_basemap(ax, shp_gdf, compact=True)
+    _apply_event_map_extent(ax, extent)
     if sub.empty or value_col not in sub:
         ax.text(0.5, 0.5, "No samples", transform=ax.transAxes, ha="center", va="center", color="#6B7280", fontsize=7)
         return
@@ -1155,8 +1270,10 @@ def _draw_grid_panel(
     cmap: str,
     norm: Normalize,
     missing_label: str,
+    extent: Optional[Tuple[float, float, float, float]] = None,
 ) -> None:
     draw_basemap(ax, shp_gdf, compact=True)
+    _apply_event_map_extent(ax, extent)
     if field is None:
         ax.text(0.5, 0.5, missing_label, transform=ax.transAxes, ha="center", va="center", color="#6B7280", fontsize=7)
         return
@@ -1188,6 +1305,7 @@ def plot_event_environment_grid(
 
     df = eval_df.copy()
     df["time"] = pd.to_datetime(df["time"], errors="coerce").dt.floor("h")
+    focus_extent = _event_focus_extent(df, event_times)
 
     nrows = len(event_times)
     fig_h = max(7.2, 1.18 * nrows + 1.25)
@@ -1208,11 +1326,18 @@ def plot_event_environment_grid(
             va="center",
             ha="right",
         )
-        _draw_visibility_class_panel(axes[row_idx, 0], sub, "vis_raw_m", shp_gdf)
-        _draw_visibility_class_panel(axes[row_idx, 1], sub, "pmst_pred", shp_gdf)
-        _draw_visibility_class_panel(axes[row_idx, 2], sub, "ifs_diagnostic_vis_m", shp_gdf, valid_col="ifs_diagnostic_valid")
-        _draw_grid_panel(axes[row_idx, 3], rh_fields.get(valid_time), shp_gdf, "YlGnBu", rh_norm, "RH2m missing")
-        _draw_grid_panel(axes[row_idx, 4], pm10_fields.get(valid_time), shp_gdf, "YlOrRd", pm10_norm, "PM10 missing")
+        _draw_visibility_class_panel(axes[row_idx, 0], sub, "vis_raw_m", shp_gdf, extent=focus_extent)
+        _draw_visibility_class_panel(axes[row_idx, 1], sub, "pmst_pred", shp_gdf, extent=focus_extent)
+        _draw_visibility_class_panel(
+            axes[row_idx, 2],
+            sub,
+            "ifs_diagnostic_vis_m",
+            shp_gdf,
+            valid_col="ifs_diagnostic_valid",
+            extent=focus_extent,
+        )
+        _draw_grid_panel(axes[row_idx, 3], rh_fields.get(valid_time), shp_gdf, "YlGnBu", rh_norm, "RH2m missing", focus_extent)
+        _draw_grid_panel(axes[row_idx, 4], pm10_fields.get(valid_time), shp_gdf, "YlOrRd", pm10_norm, "PM10 missing", focus_extent)
         axes[row_idx, 0].text(
             -0.31,
             0.5,
@@ -1224,8 +1349,6 @@ def plot_event_environment_grid(
             color="#4B5563",
         )
 
-    class_sm = plt.cm.ScalarMappable(norm=CLASS_NORM, cmap=CLASS_CMAP)
-    class_sm.set_array([])
     rh_sm = plt.cm.ScalarMappable(norm=rh_norm, cmap="YlGnBu")
     rh_sm.set_array([])
     pm10_sm = plt.cm.ScalarMappable(norm=pm10_norm, cmap="YlOrRd")
@@ -1244,15 +1367,12 @@ def plot_event_environment_grid(
     cbar_y = 0.065
     cbar_h = 0.014
 
-    def cbar_span(col0: int, col1: int) -> List[float]:
+    def cbar_span(col0: int, col1: int, y: float = cbar_y, height: float = cbar_h) -> List[float]:
         left = axes[-1, col0].get_position().x0
         right = axes[-1, col1].get_position().x1
-        return [left, cbar_y, right - left, cbar_h]
+        return [left, y, right - left, height]
 
-    cb1 = fig.colorbar(class_sm, cax=fig.add_axes(cbar_span(0, 2)), orientation="horizontal")
-    cb1.set_ticks([0, 1, 2])
-    cb1.set_ticklabels(["Fog\n<500", "Mist\n500-1000", "Clear\n>=1000"])
-    cb1.set_label("Visibility category (m)", fontsize=7.2)
+    _draw_visibility_category_legend(fig.add_axes(cbar_span(0, 2, y=0.035, height=0.092)))
     cb2 = fig.colorbar(rh_sm, cax=fig.add_axes(cbar_span(3, 3)), orientation="horizontal")
     cb2.set_label("RH2m (%)", fontsize=7.2)
     cb3 = fig.colorbar(pm10_sm, cax=fig.add_axes(cbar_span(4, 4)), orientation="horizontal", extend="max")
