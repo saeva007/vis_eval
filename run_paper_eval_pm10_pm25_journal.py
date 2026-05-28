@@ -331,10 +331,17 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--overlap_script", default="")
     ap.add_argument("--overlap_out_dir", default="")
     ap.add_argument("--overlap_extra_args", default="", help="Extra args passed verbatim to overlap evaluator.")
+    ap.add_argument("--overlap_tianji_data_dir", default="", help="Optional Tianji-source overlap dataset path.")
+    ap.add_argument("--overlap_ifs_data_dir", default="", help="Optional IFS-source overlap dataset path.")
     ap.add_argument("--overlap_tianji_ckpt", default="", help="Optional Tianji-source overlap checkpoint path.")
     ap.add_argument("--overlap_ifs_ckpt", default="", help="Optional IFS-source overlap checkpoint path.")
     ap.add_argument("--overlap_tianji_scaler", default="", help="Optional Tianji-source overlap scaler path.")
     ap.add_argument("--overlap_ifs_scaler", default="", help="Optional IFS-source overlap scaler path.")
+    ap.add_argument(
+        "--overlap_extra_sources",
+        default="",
+        help="Extra overlap sources as tag=data_dir|ckpt_path|scaler_path[|label]; semicolon-separated.",
+    )
     ap.add_argument("--overlap_feature_importance_csv", default="", help="Optional feature-importance CSV used by overlap feature-replacement analysis.")
     ap.add_argument("--overlap_feature_swap_top_k", type=int, default=0, help="Run overlap feature replacement for top-K dynamic variables when >0.")
     ap.add_argument(
@@ -2351,18 +2358,42 @@ def plot_overlap_fig10(overlap_out: Path, out_dir: Path, manifest: Manifest) -> 
         return min(1.0, max(step * 3, math.ceil(padded / step) * step))
 
     setup_journal_style()
-    source_order = [s for s in ("tianji", "ifs", "ifs_diagnostic") if s in set(df["source"].astype(str))]
+    available_sources = list(dict.fromkeys(df["source"].astype(str).tolist()))
+    preferred = ["tianji", "ifs", "T2ND_rh2m_common_core", "pangu2021_common_core", "era5_2025_common_core", "ifs_diagnostic"]
+    source_order = [s for s in preferred if s in set(available_sources)]
+    source_order.extend([s for s in available_sources if s not in set(source_order)])
     if not source_order:
         return
-    labels = {"tianji": "Tianji-input PMST", "ifs": "IFS-input PMST", "ifs_diagnostic": "IFS diagnostic VIS"}
-    colors = {"tianji": PMST_COLOR, "ifs": IFS_PMST_COLOR, "ifs_diagnostic": IFS_DIAG_COLOR}
+    labels = {
+        "tianji": "Tianji-input PMST",
+        "ifs": "IFS-input PMST",
+        "T2ND_rh2m_common_core": "T2ND RH2M",
+        "pangu2021_common_core": "Pangu-2021",
+        "era5_2025_common_core": "ERA5-2025",
+        "ifs_diagnostic": "IFS diagnostic VIS",
+    }
+    for _, row in df.iterrows():
+        src = str(row.get("source", ""))
+        label = str(row.get("source_label", "") or "").strip()
+        if src and label and label != src:
+            labels[src] = label
+    colors = {
+        "tianji": PMST_COLOR,
+        "ifs": IFS_PMST_COLOR,
+        "T2ND_rh2m_common_core": "#1B9E77",
+        "pangu2021_common_core": "#8E6BBE",
+        "era5_2025_common_core": "#D95F02",
+        "ifs_diagnostic": IFS_DIAG_COLOR,
+    }
+    fallback_colors = ["#4C78A8", "#59A14F", "#B07AA1", "#F28E2B", "#76B7B2", "#E15759"]
     panels = [
         ("Fog", [("fog_csi", "CSI"), ("fog_pod", "Recall")]),
         ("Mist", [("mist_csi", "CSI"), ("mist_pod", "Recall")]),
         ("Low visibility", [("low_vis_csi", "CSI"), ("low_vis_recall", "Recall")]),
     ]
     row_by_src = {str(r["source"]): r for _, r in df.iterrows()}
-    fig, axes = plt.subplots(1, 3, figsize=(13.0, 3.9), sharey=False)
+    fig_w = max(13.0, 10.8 + 0.78 * max(0, len(source_order) - 3))
+    fig, axes = plt.subplots(1, 3, figsize=(fig_w, 4.05), sharey=False)
     for ax_idx, (ax, (title, metric_specs)) in enumerate(zip(axes, panels)):
         x = np.arange(len(metric_specs))
         width = min(0.28, 0.80 / max(len(source_order), 1))
@@ -2375,7 +2406,7 @@ def plot_overlap_fig10(overlap_out: Path, out_dir: Path, manifest: Manifest) -> 
                 x + (si - (len(source_order) - 1) / 2) * width,
                 vals_plot,
                 width * 0.92,
-                color=colors.get(src, "#777777"),
+                color=colors.get(src, fallback_colors[si % len(fallback_colors)]),
                 label=labels.get(src, src) if ax_idx == 0 else None,
                 edgecolor="white",
                 linewidth=0.4,
@@ -2387,7 +2418,7 @@ def plot_overlap_fig10(overlap_out: Path, out_dir: Path, manifest: Manifest) -> 
         ax.set_ylabel("Score")
         add_panel_label(ax, chr(ord("a") + ax_idx))
     handles, leg_labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, leg_labels, loc="upper center", ncol=3, frameon=False, bbox_to_anchor=(0.5, 1.12))
+    fig.legend(handles, leg_labels, loc="upper center", ncol=min(len(handles), 4), frameon=False, bbox_to_anchor=(0.5, 1.14))
     fig.tight_layout()
     save_fig_pair(
         fig,
@@ -2607,6 +2638,7 @@ def _plot_lead_metric_series(
     lw: float,
     zorder: int,
     linestyle: str = "-",
+    distinguish_fill: bool = True,
 ) -> bool:
     if df is None or df.empty or metric not in df:
         return False
@@ -2617,6 +2649,9 @@ def _plot_lead_metric_series(
     d = d[np.isfinite(d["_x"]) & np.isfinite(d["_y"])].sort_values("_x")
     if d.empty:
         return False
+    if not distinguish_fill:
+        ax.plot(d["_x"], d["_y"], color=color, lw=lw, ls=linestyle, marker=marker, ms=3.0, label=label, zorder=zorder)
+        return True
     fill_col = d["lead_fill_source"].astype(str) if "lead_fill_source" in d else pd.Series("native_12_48h", index=d.index)
     native = d[fill_col == "native_12_48h"]
     front = d[fill_col != "native_12_48h"]
@@ -2832,6 +2867,7 @@ def plot_fig11_48h_model_vs_ifs(
     out_dir: Path,
     manifest: Manifest,
     sources: Sequence[str],
+    mark_filled_segment: bool = True,
 ) -> None:
     if cmp_df.empty:
         print("  [WARN] Empty 48h model-vs-IFS lead table; skip figure.", flush=True)
@@ -2869,11 +2905,32 @@ def plot_fig11_48h_model_vs_ifs(
         if model_col in cmp_df:
             y_model = cmp_df[model_col].to_numpy(dtype=float)
             panel_values.extend(y_model.tolist())
-            plotted = _plot_lead_metric_series(ax, cmp_df, model_col, PMST_COLOR, "PMST", "o", 2.2, 4) or plotted
+            plotted = _plot_lead_metric_series(
+                ax,
+                cmp_df,
+                model_col,
+                PMST_COLOR,
+                "PMST",
+                "o",
+                2.2,
+                4,
+                distinguish_fill=mark_filled_segment,
+            ) or plotted
         if ifs_col in cmp_df:
             y_ifs = cmp_df[ifs_col].to_numpy(dtype=float)
             panel_values.extend(y_ifs.tolist())
-            plotted = _plot_lead_metric_series(ax, cmp_df, ifs_col, IFS_DIAG_COLOR, "IFS diagnostic", "s", 1.9, 4, linestyle="--") or plotted
+            plotted = _plot_lead_metric_series(
+                ax,
+                cmp_df,
+                ifs_col,
+                IFS_DIAG_COLOR,
+                "IFS diagnostic",
+                "s",
+                1.9,
+                4,
+                linestyle="--",
+                distinguish_fill=mark_filled_segment,
+            ) or plotted
         if not plotted:
             ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center", color="#6B7280")
         ax.set_title(title)
@@ -2881,7 +2938,8 @@ def plot_fig11_48h_model_vs_ifs(
         ax.set_ylabel("Score")
         ax.set_ylim(-0.02, _adaptive_ylim(panel_values))
         ax.set_xlim(-0.5, 48.5)
-        ax.axvspan(-0.5, 12.0, color="#EEF7F0", alpha=0.55, zorder=-10)
+        if mark_filled_segment:
+            ax.axvspan(-0.5, 12.0, color="#EEF7F0", alpha=0.55, zorder=-10)
         ax.axhline(0, color="#D1D5DB", lw=0.8, zorder=1)
         ax.grid(axis="y", alpha=0.25)
         ax.grid(axis="x", alpha=0.10)
@@ -2893,15 +2951,16 @@ def plot_fig11_48h_model_vs_ifs(
             break
     if handles:
         fig.legend(handles, labels, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.03))
-    fig.text(
-        0.995,
-        0.01,
-        "Dotted 0-12 h segment is filled from the previous initialization's 12-24 h verification window.",
-        ha="right",
-        va="bottom",
-        fontsize=7.5,
-        color="#3F4A3F",
-    )
+    if mark_filled_segment:
+        fig.text(
+            0.995,
+            0.01,
+            "Dotted 0-12 h segment is filled from the previous initialization's 12-24 h verification window.",
+            ha="right",
+            va="bottom",
+            fontsize=7.5,
+            color="#3F4A3F",
+        )
     fig.tight_layout()
     n_val = int(cmp_df["n_ifs"].sum()) if "n_ifs" in cmp_df else None
     save_fig_pair(
@@ -2931,7 +2990,7 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
     manifest: Manifest,
     sources: Sequence[str],
 ) -> None:
-    """Lead-time heat map of relative PMST skill gain over IFS."""
+    """Lead-time heat map of PMST skill gain over IFS in percentage points."""
 
     if cmp_df is None or cmp_df.empty:
         print("  [WARN] Empty 48h model-vs-IFS lead table; skip delta heatmap.", flush=True)
@@ -2957,7 +3016,6 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
         print("  [WARN] 48h heatmap has no lead-time columns.", flush=True)
         return
 
-    denom_floor = 0.02
     matrix = np.full((len(specs), len(leads)), np.nan, dtype=float)
     source_rows: List[Dict[str, object]] = []
     grouped = df.groupby(lead_col, as_index=True).mean(numeric_only=True)
@@ -2974,8 +3032,9 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
                 model_value = float(grouped.loc[lead, model_col]) if model_col in grouped else math.nan
                 ifs_value = float(grouped.loc[lead, ifs_col]) if ifs_col in grouped else math.nan
                 diff_value = float(grouped.loc[lead, diff_col])
-                gain_value = _relative_gain_percent(model_value, ifs_value, denom_floor=denom_floor)
-                matrix[row_idx, col_idx] = gain_value
+                skill_delta_pp = 100.0 * diff_value if np.isfinite(diff_value) else math.nan
+                relative_gain = _relative_gain_percent(model_value, ifs_value, denom_floor=0.02)
+                matrix[row_idx, col_idx] = skill_delta_pp
                 source_rows.append(
                     {
                         "metric": metric,
@@ -2984,29 +3043,27 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
                         "model_value": model_value,
                         "ifs_value": ifs_value,
                         "absolute_diff_model_minus_ifs": diff_value,
-                        "relative_gain_vs_ifs_pct": gain_value,
-                        "relative_gain_denominator": max(abs(ifs_value), denom_floor) if np.isfinite(ifs_value) else math.nan,
-                        "relative_gain_denominator_floor": denom_floor,
+                        "skill_delta_percentage_points": skill_delta_pp,
+                        "relative_gain_vs_ifs_pct": relative_gain,
                     }
                 )
 
     finite_vals = matrix[np.isfinite(matrix)]
     if finite_vals.size == 0:
-        print("  [WARN] 48h heatmap has no finite relative gains.", flush=True)
+        print("  [WARN] 48h heatmap has no finite skill deltas.", flush=True)
         return
 
     source_path = out_dir / "fig11_48h_model_vs_ifs_delta_heatmap_source.csv"
     pd.DataFrame(source_rows).to_csv(source_path, index=False, float_format="%.6f")
 
-    lim = _nice_percent_limit(finite_vals)
-    if float(np.nanmin(finite_vals)) >= 0:
-        cmap = _pmst_ifs_gain_cmap()
-        norm = Normalize(vmin=0.0, vmax=lim)
-        extend = "max"
-    else:
-        cmap = _pmst_ifs_delta_cmap()
-        norm = TwoSlopeNorm(vmin=-lim, vcenter=0.0, vmax=lim)
-        extend = "both"
+    raw_lim = float(np.nanpercentile(np.abs(finite_vals), 92.0))
+    if not np.isfinite(raw_lim) or raw_lim <= 0:
+        raw_lim = float(np.nanmax(np.abs(finite_vals))) if finite_vals.size else 5.0
+    step = 2.5 if raw_lim <= 15.0 else 5.0 if raw_lim <= 40.0 else 10.0
+    lim = min(100.0, max(5.0, math.ceil(raw_lim / step) * step))
+    cmap = _pmst_ifs_delta_cmap()
+    norm = TwoSlopeNorm(vmin=-lim, vcenter=0.0, vmax=lim)
+    extend = "both"
     cmap.set_bad("#ECEFF3")
 
     fig, ax = plt.subplots(figsize=(11.8, 4.6))
@@ -3029,23 +3086,12 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
     if major_ticks:
         ax.set_xticks(major_ticks)
     ax.set_xlabel("Display lead time (h)")
-    ax.set_title("48h lead-time relative skill gain over IFS", fontsize=11, fontweight="bold", pad=8)
+    ax.set_title("48h lead-time skill gain over IFS", fontsize=11, fontweight="bold", pad=8)
     for sep in (1.5, 3.5):
         ax.axhline(sep, color="#334155", lw=0.7, alpha=0.75)
     for lead_line in (12, 24, 36):
         if leads.min() <= lead_line <= leads.max():
             ax.axvline(lead_line, color="#334155", lw=0.55, alpha=0.38)
-    if leads.min() <= 12 <= leads.max():
-        ax.text(
-            6,
-            len(specs) + 0.08,
-            "0-12 h display-filled",
-            ha="center",
-            va="top",
-            fontsize=7.2,
-            color="#4B5563",
-            clip_on=False,
-        )
     ax.tick_params(axis="both", labelsize=8)
     ax.grid(False)
     for spine in ax.spines.values():
@@ -3053,45 +3099,32 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
         spine.set_linewidth(0.75)
 
     cb = fig.colorbar(mesh, ax=ax, orientation="horizontal", fraction=0.075, pad=0.20, extend=extend)
-    if float(np.nanmin(finite_vals)) >= 0:
-        cb.set_ticks(np.linspace(0, lim, 5))
-        cb.ax.text(
-            1.0,
-            -1.38,
-            "Larger PMST gain",
-            transform=cb.ax.transAxes,
-            ha="right",
-            va="top",
-            fontsize=7.5,
-            color="#08306B",
-        )
-    else:
-        cb.set_ticks(np.linspace(-lim, lim, 5))
-        cb.ax.text(
-            0.0,
-            -1.38,
-            "IFS better",
-            transform=cb.ax.transAxes,
-            ha="left",
-            va="top",
-            fontsize=7.5,
-            color="#9E1F36",
-        )
-        cb.ax.text(
-            1.0,
-            -1.38,
-            "PMST better",
-            transform=cb.ax.transAxes,
-            ha="right",
-            va="top",
-            fontsize=7.5,
-            color="#08306B",
-        )
-    cb.set_label("Relative gain vs IFS diagnostic VIS (%)", fontsize=8)
+    cb.set_ticks(np.linspace(-lim, lim, 5))
+    cb.ax.text(
+        0.0,
+        -1.38,
+        "IFS better",
+        transform=cb.ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=7.5,
+        color="#9E1F36",
+    )
+    cb.ax.text(
+        1.0,
+        -1.38,
+        "PMST better",
+        transform=cb.ax.transAxes,
+        ha="right",
+        va="top",
+        fontsize=7.5,
+        color="#08306B",
+    )
+    cb.set_label("PMST - IFS diagnostic VIS (percentage points)", fontsize=8)
     fig.text(
         0.995,
         0.01,
-        f"Relative gain = 100 x (PMST - IFS) / max(IFS, {denom_floor:.2f}).",
+        f"Color scale is centered at zero and clipped at +/-{lim:g} percentage points to preserve lead-time contrast.",
         ha="right",
         va="bottom",
         fontsize=7.1,
@@ -3105,10 +3138,10 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
         manifest,
         [*sources, str(source_path)],
         notes=(
-            "Heat map of 48h lead-time relative skill gain over IFS diagnostic VIS; "
+            "Heat map of 48h lead-time PMST minus IFS diagnostic VIS skill gain; "
             "rows are CSI/recall metrics, columns are display lead hours, and the "
-            "relative-gain denominator is floored at 0.02 to avoid near-zero IFS "
-            "metrics dominating the color scale."
+            "diverging color scale is clipped robustly in percentage points to keep "
+            "near-zero IFS metrics from dominating the visual contrast."
         ),
     )
 
@@ -3322,12 +3355,14 @@ def run_overlap_subprocess(args: argparse.Namespace, base: Path, out_dir: Path, 
     ]
     supported = _probe_overlap_cli_options(
         overlap_script,
-        ["--feature_importance_csv", "--feature_swap_top_k", "--feature_swap_features"],
+        ["--feature_importance_csv", "--feature_swap_top_k", "--feature_swap_features", "--extra_sources"],
     )
     if args.limit_samples and args.limit_samples > 0:
         cmd.extend(["--limit_samples", str(args.limit_samples)])
         cmd.extend(["--bootstrap", "50", "--bootstrap_size", str(min(args.limit_samples, 20000))])
     for arg_name, cli_name in (
+        ("overlap_tianji_data_dir", "--tianji_data_dir"),
+        ("overlap_ifs_data_dir", "--ifs_data_dir"),
         ("overlap_tianji_ckpt", "--tianji_ckpt"),
         ("overlap_ifs_ckpt", "--ifs_ckpt"),
         ("overlap_tianji_scaler", "--tianji_scaler"),
@@ -3336,6 +3371,11 @@ def run_overlap_subprocess(args: argparse.Namespace, base: Path, out_dir: Path, 
         value = str(getattr(args, arg_name, "") or "").strip()
         if value:
             cmd.extend([cli_name, str(abs_under_base(base, value))])
+    if str(getattr(args, "overlap_extra_sources", "") or "").strip():
+        if supported.get("--extra_sources", True):
+            cmd.extend(["--extra_sources", str(args.overlap_extra_sources)])
+        else:
+            print("[overlap] target evaluator lacks --extra_sources; skip additional source models.", flush=True)
     if str(getattr(args, "overlap_feature_importance_csv", "") or "").strip():
         if supported.get("--feature_importance_csv", True):
             cmd.extend(

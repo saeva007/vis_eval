@@ -54,6 +54,7 @@ STAGE_TAG="${STAGE_TAG:-}"
 DEVICE="${DEVICE:-auto}"
 LIMIT_SAMPLES="${LIMIT_SAMPLES:-}"
 PLOTS="${PLOTS:-all}"
+REUSE_INFERENCE_DIR="${REUSE_INFERENCE_DIR:-}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 CMD=(
@@ -101,6 +102,9 @@ if [[ -n "${VARIANT_ID}" ]]; then
 fi
 if [[ -n "${LIMIT_SAMPLES}" ]]; then
     CMD+=(--limit_samples "${LIMIT_SAMPLES}")
+fi
+if [[ -n "${REUSE_INFERENCE_DIR}" ]]; then
+    CMD+=(--reuse_inference_dir "${REUSE_INFERENCE_DIR}")
 fi
 if [[ -n "${EXTRA_ARGS}" ]]; then
     # shellcheck disable=SC2206

@@ -235,6 +235,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--shp_path", default="/public/home/putianshu/中华人民共和国/中华人民共和国.shp", help="Optional China boundary shapefile for station/event maps when --plots all.")
     p.add_argument("--allow_missing", action="store_true", help="Skip missing matrix checkpoints instead of failing.")
     p.add_argument("--run_feature_importance", action="store_true", help="Run grouped permutation feature importance for each evaluated target.")
+    p.add_argument("--skip_feature_importance", "--skip-feature-importance", action="store_true", help="Force-disable feature importance even when enabled by JSON config.")
     p.add_argument("--importance_repeats", type=int, default=3)
     p.add_argument("--importance_seed", type=int, default=42)
     p.add_argument("--importance_max_fog", type=int, default=8000)
@@ -243,6 +244,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--importance_max_groups", type=int, default=0)
     p.add_argument("--importance_sort_metric", default="low_vis_recall")
     p.add_argument("--run_variable_quality", action="store_true", help="Run Tianji-vs-IFS forecast-variable quality analysis when overlap data and observations exist.")
+    p.add_argument("--skip_variable_quality", "--skip-variable-quality", action="store_true", help="Force-disable variable quality subprocess even when enabled by JSON config.")
     p.add_argument("--variable_quality_script", default="")
     p.add_argument("--obs_root", default="/public/home/putianshu/vis_mlp/auto_station")
     p.add_argument("--quality_tianji_data_dir", default="ifs_baseline/ml_dataset_overlap_tianji_12h_pm10_pm25_baseline")
@@ -250,17 +252,33 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--quality_out_dir", default="")
     p.add_argument("--quality_features", default="RH2M,Q_1000,DP_1000,RH_925,PRECIP")
     p.add_argument("--run_overlap_source_comparison", action="store_true", help="Run paired Tianji-vs-IFS overlap source comparison for the main target.")
+    p.add_argument("--skip_overlap_source_comparison", "--skip-overlap-source-comparison", action="store_true", help="Force-disable overlap source comparison even when enabled by JSON config.")
     p.add_argument("--overlap_script", default="")
     p.add_argument("--overlap_out_dir", default="")
     p.add_argument("--overlap_extra_args", default="--model_arch static_rnn")
+    p.add_argument("--overlap_tianji_data_dir", default="")
+    p.add_argument("--overlap_ifs_data_dir", default="")
     p.add_argument("--overlap_tianji_ckpt", default="")
     p.add_argument("--overlap_ifs_ckpt", default="")
     p.add_argument("--overlap_tianji_scaler", default="")
     p.add_argument("--overlap_ifs_scaler", default="")
+    p.add_argument(
+        "--overlap_extra_sources",
+        default="",
+        help="Extra overlap sources as tag=data_dir|ckpt_path|scaler_path[|label]; semicolon-separated.",
+    )
     p.add_argument("--overlap_feature_importance_csv", default="")
     p.add_argument("--overlap_feature_swap_top_k", type=int, default=0)
     p.add_argument("--overlap_feature_swap_features", default="RH2M,Q_1000,DP_1000,RH_925,PRECIP")
     p.add_argument("--skip_overlap_bootstrap", action="store_true")
+    p.add_argument("--skip_event_plots", "--skip-event-plots", action="store_true", help="Skip widespread-event and event-environment plots.")
+    p.add_argument("--skip_static_48h", "--skip-static-48h", action="store_true", help="Skip the optional 48 h lead-time evaluation figures.")
+    p.add_argument(
+        "--reuse_inference_dir",
+        "--reuse-inference-dir",
+        default="",
+        help="Existing target output directory containing probs.npy; skips main test inference when shape matches.",
+    )
     return p.parse_args()
 
 
@@ -277,6 +295,48 @@ def unique_dir(path: Path) -> Path:
         if not cand.exists():
             return cand
     raise RuntimeError(f"Could not allocate non-overwriting output directory near {path}")
+
+
+def apply_skip_switches(args: argparse.Namespace) -> argparse.Namespace:
+    if bool(getattr(args, "skip_feature_importance", False)):
+        args.run_feature_importance = False
+    if bool(getattr(args, "skip_variable_quality", False)):
+        args.run_variable_quality = False
+    if bool(getattr(args, "skip_overlap_source_comparison", False)):
+        args.run_overlap_source_comparison = False
+    return args
+
+
+def reusable_inference_probs(args: argparse.Namespace, base: Path, target: EvalTarget, n_rows: int) -> Optional[np.ndarray]:
+    reuse_value = str(getattr(args, "reuse_inference_dir", "") or "").strip()
+    if not reuse_value:
+        return None
+    reuse_dir = as_abs_under(base, reuse_value)
+    prob_path = reuse_dir / "probs.npy"
+    config_path = reuse_dir / "run_config.json"
+    if not prob_path.is_file():
+        raise FileNotFoundError(f"--reuse_inference_dir has no probs.npy: {prob_path}")
+    probs = np.load(prob_path, mmap_mode="r")
+    if probs.shape != (int(n_rows), 3):
+        raise ValueError(
+            f"Reusable probs shape mismatch for {target.run_id}: "
+            f"got {probs.shape}, expected ({int(n_rows)}, 3)."
+        )
+    if config_path.is_file():
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                old_cfg = json.load(f)
+            old_ckpt = str(old_cfg.get("checkpoint", ""))
+            if old_ckpt and Path(old_ckpt).name != Path(target.checkpoint).name:
+                print(
+                    "[reuse] warning: reusable run_config checkpoint differs from current target: "
+                    f"{old_ckpt} vs {target.checkpoint}",
+                    flush=True,
+                )
+        except Exception as exc:
+            print(f"[reuse] warning: cannot inspect {config_path}: {exc}", flush=True)
+    print(f"[reuse] loaded main test probabilities from {prob_path}", flush=True)
+    return np.asarray(probs, dtype=np.float32)
 
 
 def parse_id_list(value: str) -> List[int]:
@@ -736,8 +796,8 @@ def run_static_48h_optional(
     mod,
     decision_meta: Dict[str, object],
 ) -> None:
-    if args.skip_48h:
-        print("[48h] skipped by --skip_48h", flush=True)
+    if args.skip_48h or bool(getattr(args, "skip_static_48h", False)):
+        print("[48h] skipped by --skip_48h/--skip_static_48h", flush=True)
         return
     data_48h = as_abs_under(base, args.data_48h_dir)
     if not data_48h.is_dir():
@@ -858,6 +918,7 @@ def run_static_48h_optional(
                 out_dir,
                 manifest,
                 [str(x_path), str(data_48h / "meta_test.csv"), str(ifs_48h_nc), str(cmp_display_path)],
+                mark_filled_segment=False,
             )
             plot_fig11_48h_model_vs_ifs_delta_heatmap(
                 cmp_display,
@@ -1171,7 +1232,7 @@ def _event_focus_extent(
         mid = 0.5 * (lat_min + lat_max)
         lat_min, lat_max = mid - min_height / 2.0, mid + min_height / 2.0
 
-    target_ratio = 1.55
+    target_ratio = 2.05
     width = lon_max - lon_min
     height = lat_max - lat_min
     if width / max(height, 1.0e-6) < target_ratio:
@@ -1228,9 +1289,20 @@ def _draw_visibility_class_panel(
     shp_gdf=None,
     valid_col: str = "",
     extent: Optional[Tuple[float, float, float, float]] = None,
+    context_df: Optional[pd.DataFrame] = None,
 ) -> None:
     draw_basemap(ax, shp_gdf, compact=True)
     _apply_event_map_extent(ax, extent)
+    if context_df is not None and not context_df.empty and {"lon", "lat"}.issubset(context_df.columns):
+        ax.scatter(
+            pd.to_numeric(context_df["lon"], errors="coerce"),
+            pd.to_numeric(context_df["lat"], errors="coerce"),
+            s=2.2,
+            color="#B8C0CC",
+            alpha=0.24,
+            linewidths=0,
+            zorder=2,
+        )
     if sub.empty or value_col not in sub:
         ax.text(0.5, 0.5, "No samples", transform=ax.transAxes, ha="center", va="center", color="#6B7280", fontsize=7)
         return
@@ -1306,10 +1378,17 @@ def plot_event_environment_grid(
     df = eval_df.copy()
     df["time"] = pd.to_datetime(df["time"], errors="coerce").dt.floor("h")
     focus_extent = _event_focus_extent(df, event_times)
+    station_context = df[df["time"].isin(set(pd.DatetimeIndex(event_times)))].copy()
+    if not station_context.empty:
+        context_cols = [c for c in ("station_id", "lon", "lat") if c in station_context]
+        if "station_id" in context_cols:
+            station_context = station_context.drop_duplicates("station_id")
+        else:
+            station_context = station_context.drop_duplicates(["lon", "lat"])
 
     nrows = len(event_times)
     fig_h = max(7.2, 1.18 * nrows + 1.25)
-    fig, axes = plt.subplots(nrows, 5, figsize=(12.4, fig_h), squeeze=False)
+    fig, axes = plt.subplots(nrows, 5, figsize=(11.2, fig_h), squeeze=False)
     col_titles = ["Observed", "Model", "IFS diagnostic", "Tianji RH2m", "PM10"]
     for j, title in enumerate(col_titles):
         axes[0, j].set_title(title, fontsize=8.5, fontweight="bold", pad=4)
@@ -1318,16 +1397,22 @@ def plot_event_environment_grid(
     pm10_norm = Normalize(vmin=float(args.event_env_pm10_vmin), vmax=float(args.event_env_pm10_vmax))
     for row_idx, (offset, valid_time) in enumerate(zip(offsets, event_times)):
         sub = df[df["time"] == valid_time]
-        axes[row_idx, 0].set_ylabel(
-            f"{valid_time:%m-%d}\n{valid_time:%H:00}",
-            rotation=0,
-            labelpad=18,
-            fontsize=7.2,
-            va="center",
+        time_label = f"{offset:+d} h\n{valid_time:%m-%d %H:00}"
+        if offset == 0:
+            time_label = f"Peak\n{valid_time:%m-%d %H:00}"
+        axes[row_idx, 0].text(
+            -0.075,
+            0.5,
+            time_label,
+            transform=axes[row_idx, 0].transAxes,
             ha="right",
+            va="center",
+            fontsize=6.8,
+            color="#364152",
+            linespacing=1.08,
         )
-        _draw_visibility_class_panel(axes[row_idx, 0], sub, "vis_raw_m", shp_gdf, extent=focus_extent)
-        _draw_visibility_class_panel(axes[row_idx, 1], sub, "pmst_pred", shp_gdf, extent=focus_extent)
+        _draw_visibility_class_panel(axes[row_idx, 0], sub, "vis_raw_m", shp_gdf, extent=focus_extent, context_df=station_context)
+        _draw_visibility_class_panel(axes[row_idx, 1], sub, "pmst_pred", shp_gdf, extent=focus_extent, context_df=station_context)
         _draw_visibility_class_panel(
             axes[row_idx, 2],
             sub,
@@ -1335,19 +1420,10 @@ def plot_event_environment_grid(
             shp_gdf,
             valid_col="ifs_diagnostic_valid",
             extent=focus_extent,
+            context_df=station_context,
         )
         _draw_grid_panel(axes[row_idx, 3], rh_fields.get(valid_time), shp_gdf, "YlGnBu", rh_norm, "RH2m missing", focus_extent)
         _draw_grid_panel(axes[row_idx, 4], pm10_fields.get(valid_time), shp_gdf, "YlOrRd", pm10_norm, "PM10 missing", focus_extent)
-        axes[row_idx, 0].text(
-            -0.31,
-            0.5,
-            f"{offset:+d} h",
-            transform=axes[row_idx, 0].transAxes,
-            ha="right",
-            va="center",
-            fontsize=7.0,
-            color="#4B5563",
-        )
 
     rh_sm = plt.cm.ScalarMappable(norm=rh_norm, cmap="YlGnBu")
     rh_sm.set_array([])
@@ -1361,7 +1437,7 @@ def plot_event_environment_grid(
         if actual_ts != center_time:
             title += f" window center; true peak {actual_ts:%Y-%m-%d %H:00 UTC}"
     fig.suptitle(title, x=0.5, y=0.988, fontsize=9.8, fontweight="bold")
-    fig.subplots_adjust(left=0.075, right=0.992, top=0.94, bottom=0.18, wspace=0.035, hspace=0.035)
+    fig.subplots_adjust(left=0.088, right=0.994, top=0.94, bottom=0.18, wspace=0.012, hspace=0.035)
     fig.canvas.draw()
 
     cbar_y = 0.065
@@ -1549,17 +1625,19 @@ def evaluate_target(
     if unexpected:
         print(f"  [ckpt] unexpected keys: {len(unexpected)} first={unexpected[:5]}", flush=True)
 
-    probs = run_static_inference(
-        x_path,
-        scaler,
-        model,
-        device,
-        args.batch_size,
-        layout,
-        mod,
-        target.variant,
-        args.limit_samples,
-    )
+    probs = reusable_inference_probs(args, base, target, len(y_cls))
+    if probs is None:
+        probs = run_static_inference(
+            x_path,
+            scaler,
+            model,
+            device,
+            args.batch_size,
+            layout,
+            mod,
+            target.variant,
+            args.limit_samples,
+        )
     pred, decision_meta = predict_from_probs(args, probs, ckpt_meta)
     metrics = classification_metrics(y_cls, pred, probs=probs)
 
@@ -1726,20 +1804,23 @@ def evaluate_target(
                 vmin=0,
                 vmax=1,
             )
-            run_event_plots(
-                args,
-                base,
-                out_dir,
-                manifest,
-                meta,
-                y_cls,
-                y_raw,
-                pred,
-                eval_df,
-                ifs_nc,
-                ifs_valid,
-                shp,
-            )
+            if bool(getattr(args, "skip_event_plots", False)):
+                print("[events] skipped by --skip_event_plots.", flush=True)
+            else:
+                run_event_plots(
+                    args,
+                    base,
+                    out_dir,
+                    manifest,
+                    meta,
+                    y_cls,
+                    y_raw,
+                    pred,
+                    eval_df,
+                    ifs_nc,
+                    ifs_valid,
+                    shp,
+                )
             if target.label == "main":
                 run_key_variable_quality_subprocess(args, base, out_dir, manifest)
                 if bool(getattr(args, "run_overlap_source_comparison", False)):
@@ -1768,6 +1849,7 @@ def evaluate_target(
         "data_dir": str(data_dir),
         "out_dir": str(out_dir),
         "checkpoint_metadata": ckpt_meta,
+        "reuse_inference_dir": str(getattr(args, "reuse_inference_dir", "") or ""),
     }
     with open(out_dir / "run_config.json", "w", encoding="utf-8") as f:
         json.dump(run_config, f, ensure_ascii=False, indent=2)
@@ -1779,6 +1861,7 @@ def evaluate_target(
 def main() -> None:
     args = parse_args()
     args = apply_paper_eval_config(args, "static_rnn_eval", default_dir=VIS_EVAL_DIR)
+    args = apply_skip_switches(args)
 
     base = Path(args.base).expanduser()
     train_dir = Path(args.train_dir).expanduser()

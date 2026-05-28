@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Multi-source RH2M quality and extremeness analysis for overlap datasets."""
+"""Multi-source key-variable quality and extremeness analysis for overlap datasets."""
 
 from __future__ import annotations
 
@@ -28,15 +28,19 @@ from analyze_key_variable_quality import (  # noqa: E402
     choose_obs_time_shift,
     clean_physical_values,
     convert_forecast_units,
+    feature_info,
     metric_row,
     read_build_config,
     read_meta,
+    split_list,
 )
 from feature_catalog_pm10_pm25 import dynamic_features_for_count  # noqa: E402
 
+DEFAULT_KEY_FEATURES = "RH2M,Q_1000,DP_1000,RH_925,PRECIP"
+
 
 def parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser(description="Compare RH2M extremeness and station-observation accuracy across source datasets.")
+    ap = argparse.ArgumentParser(description="Compare key-variable extremeness and station-observation accuracy across source datasets.")
     ap.add_argument(
         "--sources",
         required=True,
@@ -48,6 +52,7 @@ def parse_args() -> argparse.Namespace:
     )
     ap.add_argument("--obs_root", required=True)
     ap.add_argument("--out_dir", required=True)
+    ap.add_argument("--features", default=DEFAULT_KEY_FEATURES)
     ap.add_argument("--window", type=int, default=12)
     ap.add_argument("--dyn_vars_count", type=int, default=27)
     ap.add_argument("--limit_samples", type=int, default=0)
@@ -86,11 +91,15 @@ def parse_sources(text: str) -> List[Dict[str, str]]:
     return rows
 
 
-def feature_column(window: int, dyn_vars_count: int) -> int:
+def feature_columns(features: List[str], window: int, dyn_vars_count: int) -> Dict[str, int]:
     lookup = {item["feature"]: i for i, item in enumerate(dynamic_features_for_count(dyn_vars_count))}
-    if "RH2M" not in lookup:
-        raise KeyError("RH2M not present in dynamic feature catalog.")
-    return (int(window) - 1) * int(dyn_vars_count) + int(lookup["RH2M"])
+    missing = [feature for feature in features if feature not in lookup]
+    if missing:
+        raise KeyError(f"Feature(s) not present in dynamic feature catalog: {missing}")
+    return {
+        feature: (int(window) - 1) * int(dyn_vars_count) + int(lookup[feature])
+        for feature in features
+    }
 
 
 def infer_group(data_dir: Path, meta: pd.DataFrame, explicit: str) -> str:
@@ -107,11 +116,13 @@ def infer_group(data_dir: Path, meta: pd.DataFrame, explicit: str) -> str:
     return "unknown"
 
 
-def tail_curve(values: np.ndarray, thresholds: np.ndarray) -> np.ndarray:
+def tail_curve(values: np.ndarray, thresholds: np.ndarray, direction: str = "high") -> np.ndarray:
     vals = np.asarray(values, dtype=np.float64)
     vals = vals[np.isfinite(vals)]
     if vals.size == 0:
         return np.full(len(thresholds), np.nan, dtype=float)
+    if direction == "low":
+        return np.asarray([100.0 * np.mean(vals <= th) for th in thresholds], dtype=float)
     return np.asarray([100.0 * np.mean(vals >= th) for th in thresholds], dtype=float)
 
 
@@ -127,96 +138,144 @@ def source_note(tag: str, cfg: Dict[str, object], explicit_note: str) -> str:
     return ""
 
 
-def load_source(entry: Dict[str, str], args: argparse.Namespace, rh_col: int, thresholds: List[float]) -> Tuple[pd.DataFrame, Dict[str, object], pd.DataFrame, pd.DataFrame]:
+def load_source(
+    entry: Dict[str, str],
+    args: argparse.Namespace,
+    columns: Dict[str, int],
+    features: List[str],
+    thresholds: List[float],
+) -> Tuple[pd.DataFrame, List[Dict[str, object]], pd.DataFrame, pd.DataFrame]:
     data_dir = Path(entry["path"]).expanduser()
     cfg = read_build_config(data_dir)
     meta = read_meta(data_dir, args.limit_samples)
     group = infer_group(data_dir, meta, entry.get("group", ""))
     X = np.load(data_dir / "X_test.npy", mmap_mode="r")
-    vals = convert_forecast_units("RH2M", np.asarray(X[meta["row_idx"].to_numpy(dtype=np.int64), rh_col], dtype=np.float64))
     best_shift, obs, tz_diag = choose_obs_time_shift(Path(args.obs_root), meta, args.timezone_probe_files)
     merged = meta.merge(obs, on=["time", "station_key"], how="left")
-    obs_vals = (
-        clean_physical_values("RH2M", pd.to_numeric(merged["rhu"], errors="coerce").to_numpy(dtype=float))
-        if "rhu" in merged
-        else np.full(len(merged), np.nan, dtype=float)
-    )
-    metrics = metric_row("RH2M", entry["tag"], vals, obs_vals, "high", 90.0)
-    finite = vals[np.isfinite(vals)]
-    obs_finite = obs_vals[np.isfinite(obs_vals)]
-    row: Dict[str, object] = {
-        **metrics,
-        "tag": entry["tag"],
-        "label": entry["label"],
-        "group": group,
-        "data_dir": str(data_dir),
-        "feature_set": cfg.get("feature_set", ""),
-        "source_kind": cfg.get("source_kind", ""),
-        "source_note": source_note(entry["tag"], cfg, entry.get("note", "")),
-        "obs_time_shift_to_utc_hours": float(best_shift),
-        "obs_time_interpretation": "raw_obs_time_is_bjt" if best_shift == -8.0 else "raw_obs_time_is_utc",
-        "n_forecast_finite": int(finite.size),
-    }
-    for q in (50, 75, 90, 95, 98, 99):
-        row[f"forecast_p{q}"] = float(np.nanpercentile(finite, q)) if finite.size else math.nan
-        row[f"obs_p{q}"] = float(np.nanpercentile(obs_finite, q)) if obs_finite.size else math.nan
-    for th in thresholds:
-        key = str(th).replace(".", "p")
-        row[f"forecast_tail_ge_{key}"] = float(np.mean(finite >= th)) if finite.size else math.nan
-        row[f"obs_tail_ge_{key}"] = float(np.mean(obs_finite >= th)) if obs_finite.size else math.nan
     sample = merged[["time", "station_key", "dup", "row_idx"]].copy()
     sample["tag"] = entry["tag"]
     sample["label"] = entry["label"]
     sample["group"] = group
-    sample["forecast_rh2m"] = vals
-    sample["obs_rh2m"] = obs_vals
-    return sample, row, tz_diag.assign(tag=entry["tag"], group=group), pd.DataFrame([cfg])
+    rows: List[Dict[str, object]] = []
+
+    for feature in features:
+        info = feature_info(feature)
+        vals = convert_forecast_units(
+            feature,
+            np.asarray(X[meta["row_idx"].to_numpy(dtype=np.int64), columns[feature]], dtype=np.float64),
+        )
+        obs_col = info.get("obs")
+        obs_vals = (
+            clean_physical_values(feature, pd.to_numeric(merged[str(obs_col)], errors="coerce").to_numpy(dtype=float))
+            if obs_col and str(obs_col) in merged
+            else np.full(len(merged), np.nan, dtype=float)
+        )
+        if feature == "PRECIP" and np.isfinite(obs_vals).any():
+            obs_vals = np.maximum(obs_vals, 0.0)
+        sample[f"forecast_{feature}"] = vals
+        sample[f"obs_{feature}"] = obs_vals
+        if feature == "RH2M":
+            sample["forecast_rh2m"] = vals
+            sample["obs_rh2m"] = obs_vals
+
+        finite = vals[np.isfinite(vals)]
+        obs_finite = obs_vals[np.isfinite(obs_vals)]
+        if obs_finite.size:
+            row = metric_row(feature, entry["tag"], vals, obs_vals, str(info.get("extreme", "high")), info.get("threshold"))
+        else:
+            row = {"feature": feature, "source": entry["tag"], "n": 0}
+        row.update(
+            {
+                "tag": entry["tag"],
+                "source_label": entry["label"],
+                "group": group,
+                "data_dir": str(data_dir),
+                "feature_set": cfg.get("feature_set", ""),
+                "source_kind": cfg.get("source_kind", ""),
+                "source_note": source_note(entry["tag"], cfg, entry.get("note", "")),
+                "obs_time_shift_to_utc_hours": float(best_shift),
+                "obs_time_interpretation": "raw_obs_time_is_bjt" if best_shift == -8.0 else "raw_obs_time_is_utc",
+                "n_forecast_finite": int(finite.size),
+                "feature_label": info.get("label", feature),
+                "feature_unit": info.get("unit", ""),
+            }
+        )
+        for q in (50, 75, 90, 95, 98, 99):
+            row[f"forecast_p{q}"] = float(np.nanpercentile(finite, q)) if finite.size else math.nan
+            row[f"obs_p{q}"] = float(np.nanpercentile(obs_finite, q)) if obs_finite.size else math.nan
+        if feature == "RH2M":
+            for th in thresholds:
+                key = str(th).replace(".", "p")
+                row[f"forecast_tail_ge_{key}"] = float(np.mean(finite >= th)) if finite.size else math.nan
+                row[f"obs_tail_ge_{key}"] = float(np.mean(obs_finite >= th)) if obs_finite.size else math.nan
+        rows.append(row)
+
+    return sample, rows, tz_diag.assign(tag=entry["tag"], group=group), pd.DataFrame([cfg])
 
 
-def pairwise_rows(samples: Dict[str, pd.DataFrame], meta_rows: pd.DataFrame, thresholds: List[float], min_pairs: int) -> pd.DataFrame:
+def pairwise_rows(samples: Dict[str, pd.DataFrame], meta_rows: pd.DataFrame, features: List[str], thresholds: List[float], min_pairs: int) -> pd.DataFrame:
     rows = []
     by_tag = {tag: df for tag, df in samples.items()}
     tags = list(by_tag)
-    labels = dict(zip(meta_rows["tag"], meta_rows["label"]))
-    groups = dict(zip(meta_rows["tag"], meta_rows["group"]))
+    unique_meta = meta_rows.drop_duplicates("tag", keep="first")
+    labels = dict(zip(unique_meta["tag"], unique_meta["source_label"]))
+    groups = dict(zip(unique_meta["tag"], unique_meta["group"]))
     for i, a in enumerate(tags):
         for b in tags[i + 1 :]:
             if groups.get(a) != groups.get(b):
                 continue
-            left = by_tag[a][["time", "station_key", "dup", "forecast_rh2m"]].rename(columns={"forecast_rh2m": "a"})
-            right = by_tag[b][["time", "station_key", "dup", "forecast_rh2m"]].rename(columns={"forecast_rh2m": "b"})
-            joined = left.merge(right, on=["time", "station_key", "dup"], how="inner")
-            aa = pd.to_numeric(joined["a"], errors="coerce").to_numpy(dtype=float)
-            bb = pd.to_numeric(joined["b"], errors="coerce").to_numpy(dtype=float)
-            mask = np.isfinite(aa) & np.isfinite(bb)
-            aa = aa[mask]
-            bb = bb[mask]
-            if aa.size < int(min_pairs):
-                continue
-            row = {
-                "group": groups.get(a),
-                "source_a": a,
-                "source_b": b,
-                "label_a": labels.get(a, a),
-                "label_b": labels.get(b, b),
-                "n_pair": int(aa.size),
-                "bias_b_minus_a": float(np.nanmean(bb - aa)),
-                "mae_b_minus_a": float(np.nanmean(np.abs(bb - aa))),
-                "corr": float(np.corrcoef(aa, bb)[0, 1]) if aa.size >= 3 and np.nanstd(aa) > 0 and np.nanstd(bb) > 0 else math.nan,
-            }
-            for q in (90, 95, 98, 99):
-                row[f"a_p{q}"] = float(np.nanpercentile(aa, q))
-                row[f"b_p{q}"] = float(np.nanpercentile(bb, q))
-                row[f"b_minus_a_p{q}"] = row[f"b_p{q}"] - row[f"a_p{q}"]
-            for th in thresholds:
-                key = str(th).replace(".", "p")
-                row[f"a_tail_ge_{key}"] = float(np.mean(aa >= th))
-                row[f"b_tail_ge_{key}"] = float(np.mean(bb >= th))
-            rows.append(row)
+            for feature in features:
+                col = f"forecast_{feature}"
+                if col not in by_tag[a] or col not in by_tag[b]:
+                    continue
+                left = by_tag[a][["time", "station_key", "dup", col]].rename(columns={col: "a"})
+                right = by_tag[b][["time", "station_key", "dup", col]].rename(columns={col: "b"})
+                joined = left.merge(right, on=["time", "station_key", "dup"], how="inner")
+                aa = pd.to_numeric(joined["a"], errors="coerce").to_numpy(dtype=float)
+                bb = pd.to_numeric(joined["b"], errors="coerce").to_numpy(dtype=float)
+                mask = np.isfinite(aa) & np.isfinite(bb)
+                aa = aa[mask]
+                bb = bb[mask]
+                if aa.size < int(min_pairs):
+                    continue
+                pooled = np.concatenate([aa, bb])
+                info = feature_info(feature)
+                direction = str(info.get("extreme", "high"))
+                fixed_threshold = info.get("threshold")
+                threshold = float(fixed_threshold) if fixed_threshold is not None else float(np.nanpercentile(pooled, 90.0))
+                row = {
+                    "feature": feature,
+                    "feature_label": info.get("label", feature),
+                    "feature_unit": info.get("unit", ""),
+                    "group": groups.get(a),
+                    "source_a": a,
+                    "source_b": b,
+                    "label_a": labels.get(a, a),
+                    "label_b": labels.get(b, b),
+                    "n_pair": int(aa.size),
+                    "bias_b_minus_a": float(np.nanmean(bb - aa)),
+                    "mae_b_minus_a": float(np.nanmean(np.abs(bb - aa))),
+                    "corr": float(np.corrcoef(aa, bb)[0, 1]) if aa.size >= 3 and np.nanstd(aa) > 0 and np.nanstd(bb) > 0 else math.nan,
+                    "tail_threshold": threshold,
+                    "tail_threshold_basis": "fixed_physical_threshold" if fixed_threshold is not None else "paired_forecast_p90",
+                    "extreme_type": direction,
+                    "a_tail_rate": float(np.mean(aa <= threshold) if direction == "low" else np.mean(aa >= threshold)),
+                    "b_tail_rate": float(np.mean(bb <= threshold) if direction == "low" else np.mean(bb >= threshold)),
+                }
+                for q in (50, 75, 90, 95, 98, 99):
+                    row[f"a_p{q}"] = float(np.nanpercentile(aa, q))
+                    row[f"b_p{q}"] = float(np.nanpercentile(bb, q))
+                    row[f"b_minus_a_p{q}"] = row[f"b_p{q}"] - row[f"a_p{q}"]
+                if feature == "RH2M":
+                    for th in thresholds:
+                        key = str(th).replace(".", "p")
+                        row[f"a_tail_ge_{key}"] = float(np.mean(aa >= th))
+                        row[f"b_tail_ge_{key}"] = float(np.mean(bb >= th))
+                rows.append(row)
     return pd.DataFrame(rows)
 
 
-def plot_tail_curves(samples: Dict[str, pd.DataFrame], meta_rows: pd.DataFrame, out_dir: Path) -> None:
+def plot_tail_curves(samples: Dict[str, pd.DataFrame], meta_rows: pd.DataFrame, out_dir: Path, features: List[str]) -> None:
     plt.rcParams.update(
         {
             "font.family": "sans-serif",
@@ -230,36 +289,80 @@ def plot_tail_curves(samples: Dict[str, pd.DataFrame], meta_rows: pd.DataFrame, 
             "grid.alpha": 0.22,
         }
     )
-    thresholds = np.linspace(50, 100, 101)
-    for group, group_meta in meta_rows.groupby("group", sort=False):
-        fig, ax = plt.subplots(figsize=(4.2, 3.0), dpi=240)
-        obs_plotted = False
-        tail_table = pd.DataFrame({"threshold": thresholds})
-        for _, row in group_meta.iterrows():
-            sample = samples[str(row["tag"])]
-            vals = pd.to_numeric(sample["forecast_rh2m"], errors="coerce").to_numpy(dtype=float)
-            curve = tail_curve(vals, thresholds)
-            ax.plot(thresholds, curve, lw=1.8, label=str(row["label"]))
-            tail_table[str(row["tag"])] = curve
-            if not obs_plotted:
-                obs = pd.to_numeric(sample["obs_rh2m"], errors="coerce").to_numpy(dtype=float)
-                if np.isfinite(obs).sum() > 0:
-                    obs_curve = tail_curve(obs, thresholds)
-                    ax.plot(thresholds, obs_curve, color="#111111", lw=2.2, ls="--", label="Observed RH")
-                    tail_table["observed"] = obs_curve
-                    obs_plotted = True
-        ax.set_xlabel("RH2M threshold (%)")
-        ax.set_ylabel("Frequency above threshold (%)")
-        ax.set_title(f"Near-saturation tail recovery ({group})")
-        ax.set_xlim(50, 100)
-        ax.set_ylim(bottom=0)
-        ax.legend(frameon=False, fontsize=7)
-        fig.tight_layout()
+    unique_meta = meta_rows.drop_duplicates("tag", keep="first")
+    for group, group_meta in unique_meta.groupby("group", sort=False):
         safe_group = str(group).replace("/", "_").replace(" ", "_")
-        tail_table.to_csv(out_dir / f"rh2m_tail_curve_{safe_group}.csv", index=False, float_format="%.6f")
-        for ext in ("png", "pdf"):
-            fig.savefig(out_dir / f"fig_rh2m_tail_multi_source_{safe_group}.{ext}", bbox_inches="tight")
-        plt.close(fig)
+        for feature in features:
+            info = feature_info(feature)
+            direction = str(info.get("extreme", "high"))
+            forecast_values: List[np.ndarray] = []
+            obs_values: List[np.ndarray] = []
+            for _, row in group_meta.iterrows():
+                sample = samples[str(row["tag"])]
+                col = f"forecast_{feature}"
+                if col in sample:
+                    vals = pd.to_numeric(sample[col], errors="coerce").to_numpy(dtype=float)
+                    vals = vals[np.isfinite(vals)]
+                    if vals.size:
+                        forecast_values.append(vals)
+                obs_col = f"obs_{feature}"
+                if obs_col in sample:
+                    obs = pd.to_numeric(sample[obs_col], errors="coerce").to_numpy(dtype=float)
+                    obs = obs[np.isfinite(obs)]
+                    if obs.size:
+                        obs_values.append(obs)
+            if not forecast_values:
+                continue
+            if feature == "RH2M":
+                thresholds = np.linspace(50, 100, 101)
+            else:
+                basis = np.concatenate(obs_values if obs_values else forecast_values)
+                lo = float(np.nanpercentile(basis, 50))
+                hi = float(np.nanpercentile(basis, 99))
+                if not math.isfinite(lo) or not math.isfinite(hi) or hi <= lo:
+                    continue
+                thresholds = np.linspace(lo, hi, 80)
+
+            fig, ax = plt.subplots(figsize=(4.4, 3.1), dpi=240)
+            tail_table = pd.DataFrame({"threshold": thresholds})
+            obs_plotted = False
+            for _, row in group_meta.iterrows():
+                sample = samples[str(row["tag"])]
+                col = f"forecast_{feature}"
+                if col not in sample:
+                    continue
+                vals = pd.to_numeric(sample[col], errors="coerce").to_numpy(dtype=float)
+                curve = tail_curve(vals, thresholds, direction)
+                ax.plot(thresholds, curve, lw=1.8, label=str(row["source_label"]))
+                tail_table[str(row["tag"])] = curve
+                obs_col = f"obs_{feature}"
+                if not obs_plotted and obs_col in sample:
+                    obs = pd.to_numeric(sample[obs_col], errors="coerce").to_numpy(dtype=float)
+                    if np.isfinite(obs).sum() > 0:
+                        obs_curve = tail_curve(obs, thresholds, direction)
+                        ax.plot(thresholds, obs_curve, color="#111111", lw=2.2, ls="--", label="Observed")
+                        tail_table["observed"] = obs_curve
+                        obs_plotted = True
+            relation = "below" if direction == "low" else "above"
+            label = str(info.get("label", feature))
+            unit = str(info.get("unit", ""))
+            ax.set_xlabel(f"{label} threshold" + (f" ({unit})" if unit else ""))
+            ax.set_ylabel(f"Frequency {relation} threshold (%)")
+            ax.set_title(f"{label} tail recovery ({group})")
+            if feature == "RH2M":
+                ax.set_xlim(50, 100)
+            ax.set_ylim(bottom=0)
+            ax.legend(frameon=False, fontsize=7)
+            fig.tight_layout()
+            safe_feature = feature.lower().replace("_", "")
+            tail_table.to_csv(out_dir / f"key_variable_tail_curve_{safe_feature}_{safe_group}.csv", index=False, float_format="%.6f")
+            for ext in ("png", "pdf"):
+                fig.savefig(out_dir / f"fig_key_variable_tail_{safe_feature}_{safe_group}.{ext}", bbox_inches="tight")
+            if feature == "RH2M":
+                tail_table.to_csv(out_dir / f"rh2m_tail_curve_{safe_group}.csv", index=False, float_format="%.6f")
+                for ext in ("png", "pdf"):
+                    fig.savefig(out_dir / f"fig_rh2m_tail_multi_source_{safe_group}.{ext}", bbox_inches="tight")
+            plt.close(fig)
 
 
 def main() -> None:
@@ -268,31 +371,48 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     thresholds = split_thresholds(args.thresholds)
     entries = parse_sources(args.sources)
-    rh_col = feature_column(args.window, args.dyn_vars_count)
+    features = split_list(args.features)
+    columns = feature_columns(features, args.window, args.dyn_vars_count)
     sample_by_tag: Dict[str, pd.DataFrame] = {}
     metric_rows = []
     tz_diags = []
     cfg_rows = []
     for entry in entries:
-        sample, row, tz_diag, cfg_df = load_source(entry, args, rh_col, thresholds)
+        sample, rows, tz_diag, cfg_df = load_source(entry, args, columns, features, thresholds)
         sample_by_tag[entry["tag"]] = sample
-        metric_rows.append(row)
+        metric_rows.extend(rows)
         tz_diags.append(tz_diag)
         cfg_df.insert(0, "tag", entry["tag"])
         cfg_rows.append(cfg_df)
-        sample.to_csv(out_dir / f"rh2m_quality_samples_{entry['tag']}.csv", index=False, float_format="%.6f")
+        sample.to_csv(out_dir / f"key_variable_quality_samples_{entry['tag']}.csv", index=False, float_format="%.6f")
+        if "RH2M" in features:
+            rh_cols = [c for c in sample.columns if c in {"time", "station_key", "dup", "row_idx", "tag", "label", "group", "forecast_rh2m", "obs_rh2m"}]
+            sample[rh_cols].to_csv(out_dir / f"rh2m_quality_samples_{entry['tag']}.csv", index=False, float_format="%.6f")
     metrics = pd.DataFrame(metric_rows)
-    metrics.to_csv(out_dir / "rh2m_source_quality_metrics.csv", index=False, float_format="%.6f")
-    pairwise = pairwise_rows(sample_by_tag, metrics, thresholds, args.min_pairs)
-    pairwise.to_csv(out_dir / "rh2m_source_pairwise_distribution.csv", index=False, float_format="%.6f")
+    metrics.to_csv(out_dir / "key_variable_source_quality_metrics.csv", index=False, float_format="%.6f")
+    if "feature" in metrics:
+        rh_metrics = metrics[metrics["feature"].astype(str) == "RH2M"].copy()
+        if not rh_metrics.empty:
+            rh_metrics.to_csv(out_dir / "rh2m_source_quality_metrics.csv", index=False, float_format="%.6f")
+    pairwise = pairwise_rows(sample_by_tag, metrics, features, thresholds, args.min_pairs)
+    pairwise.to_csv(out_dir / "key_variable_source_pairwise_distribution.csv", index=False, float_format="%.6f")
+    if "feature" in pairwise:
+        rh_pairwise = pairwise[pairwise["feature"].astype(str) == "RH2M"].copy()
+        if not rh_pairwise.empty:
+            rh_pairwise.to_csv(out_dir / "rh2m_source_pairwise_distribution.csv", index=False, float_format="%.6f")
     if tz_diags:
-        pd.concat(tz_diags, ignore_index=True).to_csv(out_dir / "rh2m_observation_time_alignment_diagnostics.csv", index=False)
+        tz_all = pd.concat(tz_diags, ignore_index=True)
+        tz_all.to_csv(out_dir / "key_variable_observation_time_alignment_diagnostics.csv", index=False)
+        tz_all.to_csv(out_dir / "rh2m_observation_time_alignment_diagnostics.csv", index=False)
     if cfg_rows:
-        pd.concat(cfg_rows, ignore_index=True, sort=False).to_csv(out_dir / "rh2m_source_dataset_configs.csv", index=False)
-    plot_tail_curves(sample_by_tag, metrics, out_dir)
+        cfg_all = pd.concat(cfg_rows, ignore_index=True, sort=False)
+        cfg_all.to_csv(out_dir / "key_variable_source_dataset_configs.csv", index=False)
+        cfg_all.to_csv(out_dir / "rh2m_source_dataset_configs.csv", index=False)
+    plot_tail_curves(sample_by_tag, metrics, out_dir, features)
     run_config = {
         "sources": entries,
         "obs_root": args.obs_root,
+        "features": features,
         "thresholds": thresholds,
         "window": args.window,
         "dyn_vars_count": args.dyn_vars_count,
@@ -300,7 +420,7 @@ def main() -> None:
     }
     with open(out_dir / "run_config.json", "w", encoding="utf-8") as f:
         json.dump(run_config, f, ensure_ascii=False, indent=2)
-    print(f"[OK] wrote RH2M multi-source quality outputs to {out_dir}", flush=True)
+    print(f"[OK] wrote key-variable multi-source quality outputs to {out_dir}", flush=True)
 
 
 if __name__ == "__main__":
