@@ -138,6 +138,11 @@ def source_note(tag: str, cfg: Dict[str, object], explicit_note: str) -> str:
     return ""
 
 
+def is_t2nd_rh2m_only_source(tag: str, label: str = "") -> bool:
+    text = f"{tag} {label}".lower()
+    return "t2nd" in text and "rh2m" in text
+
+
 def load_source(
     entry: Dict[str, str],
     args: argparse.Namespace,
@@ -325,16 +330,115 @@ def plot_tail_curves(samples: Dict[str, pd.DataFrame], meta_rows: pd.DataFrame, 
 
             fig, ax = plt.subplots(figsize=(4.4, 3.1), dpi=240)
             tail_table = pd.DataFrame({"threshold": thresholds})
+            status_rows: List[Dict[str, object]] = []
+            plotted_values: List[np.ndarray] = []
+            plotted_curves: List[Tuple[str, str, np.ndarray]] = []
+            missing_notes: List[str] = []
             obs_plotted = False
             for _, row in group_meta.iterrows():
                 sample = samples[str(row["tag"])]
                 col = f"forecast_{feature}"
+                source_tag = str(row["tag"])
+                source_label = str(row["source_label"])
+                if feature != "RH2M" and is_t2nd_rh2m_only_source(source_tag, source_label):
+                    status_rows.append(
+                        {
+                            "feature": feature,
+                            "group": group,
+                            "tag": source_tag,
+                            "source_label": source_label,
+                            "status": "same_as_tianji_for_non_rh2m",
+                            "threshold_min": float(thresholds[0]),
+                            "threshold_max": float(thresholds[-1]),
+                        }
+                    )
+                    continue
                 if col not in sample:
+                    status_rows.append(
+                        {
+                            "feature": feature,
+                            "group": group,
+                            "tag": source_tag,
+                            "source_label": source_label,
+                            "status": "missing_forecast_column",
+                            "threshold_min": float(thresholds[0]),
+                            "threshold_max": float(thresholds[-1]),
+                        }
+                    )
                     continue
                 vals = pd.to_numeric(sample[col], errors="coerce").to_numpy(dtype=float)
+                finite_vals = vals[np.isfinite(vals)]
                 curve = tail_curve(vals, thresholds, direction)
-                ax.plot(thresholds, curve, lw=1.8, label=str(row["source_label"]))
-                tail_table[str(row["tag"])] = curve
+                finite_curve = curve[np.isfinite(curve)]
+                tail_table[source_tag] = curve
+                curve_status = "ok"
+                line_label = source_label
+                duplicate_of_tag = ""
+                duplicate_of_label = ""
+                if finite_vals.size == 0 or finite_curve.size == 0:
+                    curve_status = "no_finite_forecast"
+                    missing_notes.append(f"{source_label}: no finite {feature}")
+                else:
+                    curve_max = float(np.nanmax(finite_curve))
+                    if curve_max <= 0.0:
+                        curve_status = "zero_tail_in_threshold_range"
+                        line_label = f"{source_label} (0 in range)"
+                        ax.plot(
+                            thresholds,
+                            curve,
+                            lw=1.5,
+                            ls=":",
+                            marker="o",
+                            ms=2.4,
+                            markevery=max(1, len(thresholds) // 8),
+                            zorder=5,
+                            label=line_label,
+                        )
+                    else:
+                        duplicate_match = None
+                        for prev_tag, prev_label, prev_curve in plotted_curves:
+                            same = np.isfinite(prev_curve) & np.isfinite(curve)
+                            if same.any() and np.allclose(prev_curve[same], curve[same], rtol=1e-5, atol=1e-6):
+                                duplicate_match = (prev_tag, prev_label)
+                                break
+                        if duplicate_match is not None:
+                            duplicate_of_tag, duplicate_of_label = duplicate_match
+                            curve_status = "duplicate_curve"
+                            line_label = f"{source_label} = {duplicate_of_label}"
+                            ax.plot(
+                                thresholds,
+                                curve,
+                                lw=1.45,
+                                ls=(0, (4, 2)),
+                                alpha=0.88,
+                                zorder=6,
+                                label=line_label,
+                            )
+                        else:
+                            ax.plot(thresholds, curve, lw=1.8, label=line_label)
+                        plotted_curves.append((source_tag, source_label, curve.copy()))
+                    plotted_values.append(finite_curve)
+                status_rows.append(
+                    {
+                        "feature": feature,
+                        "group": group,
+                        "tag": source_tag,
+                        "source_label": source_label,
+                        "status": curve_status,
+                        "n_forecast_finite": int(finite_vals.size),
+                        "forecast_min": float(np.nanmin(finite_vals)) if finite_vals.size else math.nan,
+                        "forecast_p50": float(np.nanpercentile(finite_vals, 50)) if finite_vals.size else math.nan,
+                        "forecast_p90": float(np.nanpercentile(finite_vals, 90)) if finite_vals.size else math.nan,
+                        "forecast_p99": float(np.nanpercentile(finite_vals, 99)) if finite_vals.size else math.nan,
+                        "forecast_max": float(np.nanmax(finite_vals)) if finite_vals.size else math.nan,
+                        "threshold_min": float(thresholds[0]),
+                        "threshold_max": float(thresholds[-1]),
+                        "curve_min": float(np.nanmin(finite_curve)) if finite_curve.size else math.nan,
+                        "curve_max": float(np.nanmax(finite_curve)) if finite_curve.size else math.nan,
+                        "duplicate_of_tag": duplicate_of_tag,
+                        "duplicate_of_label": duplicate_of_label,
+                    }
+                )
                 obs_col = f"obs_{feature}"
                 if not obs_plotted and obs_col in sample:
                     obs = pd.to_numeric(sample[obs_col], errors="coerce").to_numpy(dtype=float)
@@ -351,11 +455,34 @@ def plot_tail_curves(samples: Dict[str, pd.DataFrame], meta_rows: pd.DataFrame, 
             ax.set_title(f"{label} tail recovery ({group})")
             if feature == "RH2M":
                 ax.set_xlim(50, 100)
-            ax.set_ylim(bottom=0)
+            if plotted_values:
+                plotted = np.concatenate(plotted_values)
+                plotted = plotted[np.isfinite(plotted)]
+                y_top = float(np.nanmax(plotted)) if plotted.size else 0.0
+                ax.set_ylim(0, max(1.0, y_top * 1.08))
+            else:
+                ax.set_ylim(0, 1.0)
+            ax.spines["bottom"].set_position(("outward", 3))
+            if missing_notes:
+                ax.text(
+                    0.02,
+                    0.03,
+                    "\n".join(missing_notes[:3]),
+                    transform=ax.transAxes,
+                    ha="left",
+                    va="bottom",
+                    fontsize=6.5,
+                    color="#666666",
+                )
             ax.legend(frameon=False, fontsize=7)
             fig.tight_layout()
             safe_feature = feature.lower().replace("_", "")
             tail_table.to_csv(out_dir / f"key_variable_tail_curve_{safe_feature}_{safe_group}.csv", index=False, float_format="%.6f")
+            pd.DataFrame(status_rows).to_csv(
+                out_dir / f"key_variable_tail_curve_status_{safe_feature}_{safe_group}.csv",
+                index=False,
+                float_format="%.6f",
+            )
             for ext in ("png", "pdf"):
                 fig.savefig(out_dir / f"fig_key_variable_tail_{safe_feature}_{safe_group}.{ext}", bbox_inches="tight")
             if feature == "RH2M":
