@@ -1,0 +1,2 @@
+figure,source_data,source_csvs,notes
+fig_static_rnn_argmax_threshold_ifs_bars.png/pdf/svg,C:\vis_code\vis_eval\manual_metric_inputs\figures\fig_static_rnn_argmax_threshold_ifs_bars_source_data.csv,C:\vis_code\vis_eval\manual_metric_inputs\argmax_overall_metrics.csv;C:\vis_code\vis_eval\manual_metric_inputs\threshold_overall_metrics.csv,"IFS-matched test-set grouped bars for PMST argmax, PMST checkpoint-threshold, and IFS diagnostic."
