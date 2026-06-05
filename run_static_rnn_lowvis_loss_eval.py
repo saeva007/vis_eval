@@ -8,7 +8,8 @@ that compares:
 
 0. plain hard-label cross entropy,
 1. plain log-visibility regression,
-2. the proposed rare-event focal objective.
+2. the proposed rare-event focal objective,
+3. a plain hard-label focal-loss objective without additional rare-event tricks.
 """
 
 from __future__ import annotations
@@ -30,12 +31,14 @@ LOSS_EXPERIMENTS: Dict[int, str] = {
     0: "simple_ce_classification",
     1: "simple_logvis_regression",
     2: "proposed_rare_event_focal",
+    3: "plain_focal_loss",
 }
 
 LOSS_LABELS: Dict[str, str] = {
     "simple_ce_classification": "CE classification",
     "simple_logvis_regression": "MSE regression",
     "proposed_rare_event_focal": "Proposed focal",
+    "plain_focal_loss": "Plain focal",
 }
 
 CLASS_NAMES = ("Fog", "Mist", "Clear")

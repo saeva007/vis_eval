@@ -20,12 +20,14 @@ METHOD_LABELS: Dict[str, str] = {
     "simple_ce_classification": "CE classification",
     "simple_logvis_regression": "MSE regression",
     "proposed_rare_event_focal": "Proposed focal",
+    "plain_focal_loss": "Plain focal",
 }
 
 METHOD_COLORS: Dict[str, str] = {
     "CE classification": "#8A8F98",
     "MSE regression": "#D09A3A",
     "Proposed focal": "#2A9D8F",
+    "Plain focal": "#6C5CE7",
 }
 
 
