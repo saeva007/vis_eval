@@ -156,6 +156,52 @@ def panel_overall(ax, overall: pd.DataFrame, labels: Sequence[str]) -> None:
     ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.03), ncol=1, frameon=False)
 
 
+def panel_fog_mist_metrics(ax, per_class: pd.DataFrame, labels: Sequence[str]) -> None:
+    df = per_class.copy()
+    if "display_label" not in df.columns:
+        df["display_label"] = df.apply(display_label, axis=1)
+
+    groups = [
+        ("Fog", "csi", "Fog\nCSI"),
+        ("Fog", "recall", "Fog\nRecall"),
+        ("Fog", "precision", "Fog\nPrecision"),
+        ("Fog", "far", "Fog\nFAR"),
+        ("Mist", "csi", "Mist\nCSI"),
+        ("Mist", "recall", "Mist\nRecall"),
+        ("Mist", "precision", "Mist\nPrecision"),
+        ("Mist", "far", "Mist\nFAR"),
+    ]
+    x = np.arange(len(groups))
+    width = min(0.22, 0.72 / max(1, len(labels)))
+    offsets = np.linspace(-width, width, len(labels))
+
+    for offset, label in zip(offsets, labels):
+        vals = []
+        for class_name, metric, _ in groups:
+            sub = df[(df["class_name"] == class_name) & (df["display_label"] == label)]
+            value = sub.iloc[0][metric] if not sub.empty and metric in sub.columns else np.nan
+            vals.append(float(value) if pd.notna(value) else np.nan)
+        ax.bar(
+            x + offset,
+            vals,
+            width=width * 0.92,
+            color=METHOD_COLORS.get(label, "#999999"),
+            edgecolor="white",
+            linewidth=0.4,
+            label=label,
+        )
+
+    ax.axvline(3.5, color="#D1D5DB", lw=0.8)
+    ax.set_xticks(x)
+    ax.set_xticklabels([name for _, _, name in groups])
+    ax.set_ylabel("Score")
+    ax.set_ylim(0, 1.0)
+    ax.set_title("Fog and Mist skill by class")
+    ax.grid(axis="y", color="#E5E7EB", lw=0.6)
+    ax.text(3, 0.98, "FAR: lower is better", ha="center", va="top", fontsize=6.4, color="#555555")
+    ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.03), ncol=1, frameon=False)
+
+
 def panel_class_heatmap(ax, per_class: pd.DataFrame, labels: Sequence[str]) -> None:
     df = per_class.copy()
     if "display_label" not in df.columns:
@@ -221,7 +267,7 @@ def add_panel_label(ax, label: str) -> None:
     ax.text(-0.12, 1.08, label, transform=ax.transAxes, fontsize=10, fontweight="bold", va="top")
 
 
-def save_figure(fig, out_dir: Path, stem: str, sources: Sequence[Path]) -> None:
+def save_figure(fig, out_dir: Path, stem: str, sources: Sequence[Path], notes: str = "") -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     for ext in ("png", "pdf", "svg"):
         path = out_dir / f"{stem}.{ext}"
@@ -232,11 +278,77 @@ def save_figure(fig, out_dir: Path, stem: str, sources: Sequence[Path]) -> None:
             {
                 "figure": f"{stem}.png/pdf/svg",
                 "sources": ";".join(str(p) for p in sources),
-                "notes": "Static-RNN loss-function ablation: objective schematic, test-set skill, class CSI, and transition-band robustness.",
+                "notes": notes
+                or "Static-RNN loss-function ablation: objective schematic, test-set skill, class CSI, and transition-band robustness.",
             }
         ]
     )
     manifest.to_csv(out_dir / f"{stem}_source_manifest.csv", index=False)
+
+
+def save_split_figures(
+    out_dir: Path,
+    figure_stem: str,
+    overall: pd.DataFrame,
+    per_class: pd.DataFrame,
+    boundary: pd.DataFrame,
+    labels: Sequence[str],
+    sources: Sequence[Path],
+) -> None:
+    fig, ax = plt.subplots(figsize=(4.1, 3.0), constrained_layout=True)
+    panel_soft_targets(ax)
+    save_figure(
+        fig,
+        out_dir,
+        f"{figure_stem}_panel_a_soft_targets",
+        sources,
+        "Standalone panel a: visibility-aware targets used by the proposed focal objective.",
+    )
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(4.7, 3.15), constrained_layout=True)
+    panel_overall(ax, overall, labels)
+    save_figure(
+        fig,
+        out_dir,
+        f"{figure_stem}_panel_b_lowvis_metrics",
+        sources,
+        "Standalone panel b: aggregate low-visibility CSI, recall, precision and false-positive rate.",
+    )
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(5.8, 3.4), constrained_layout=True)
+    panel_fog_mist_metrics(ax, per_class, labels)
+    save_figure(
+        fig,
+        out_dir,
+        f"{figure_stem}_fog_mist_metrics",
+        sources,
+        "Fog and Mist per-class CSI, recall, precision and false-alarm ratio.",
+    )
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(3.8, 3.05), constrained_layout=True)
+    panel_class_heatmap(ax, per_class, labels)
+    save_figure(
+        fig,
+        out_dir,
+        f"{figure_stem}_panel_c_class_csi",
+        sources,
+        "Standalone panel c: class-wise CSI heatmap.",
+    )
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(4.45, 3.1), constrained_layout=True)
+    panel_boundary(ax, boundary, labels)
+    save_figure(
+        fig,
+        out_dir,
+        f"{figure_stem}_panel_d_boundary_robustness",
+        sources,
+        "Standalone panel d: accuracy inside the 500 m and 1000 m threshold-neighbour bands.",
+    )
+    plt.close(fig)
 
 
 def write_caption(out_dir: Path, stem: str) -> None:
@@ -244,6 +356,7 @@ def write_caption(out_dir: Path, stem: str) -> None:
         "Figure caption draft\n"
         "a, Visibility-aware soft targets used by the proposed rare-event focal objective around the 500 m and 1000 m operational thresholds. "
         "b, Test-set low-visibility CSI, recall, precision and clear-sky false-positive rate. "
+        "An additional standalone panel reports Fog and Mist CSI, recall, precision and false-alarm ratio separately, avoiding reliance on the aggregate low-visibility score alone. "
         "c, Class-wise critical success index for Fog, Mist and Clear. "
         "d, Accuracy inside the two threshold-neighbour visibility bands where hard classification and direct regression are expected to be most fragile.\n"
     )
@@ -286,8 +399,11 @@ def main() -> None:
     if args.title:
         fig.suptitle(args.title, y=1.02, fontsize=9.5)
 
-    save_figure(fig, out_dir, args.figure_stem, [overall_path, per_class_path, boundary_path])
+    sources = [overall_path, per_class_path, boundary_path]
+    save_figure(fig, out_dir, args.figure_stem, sources)
+    save_split_figures(out_dir, args.figure_stem, overall, per_class, boundary, labels, sources)
     write_caption(out_dir, args.figure_stem)
+    plt.close(fig)
 
 
 if __name__ == "__main__":
