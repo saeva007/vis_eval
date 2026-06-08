@@ -88,6 +88,13 @@ def metric_values(overall: pd.DataFrame, labels: Sequence[str], metric: str) -> 
     return vals
 
 
+def grouped_bar_geometry(n_labels: int, total_width: float = 0.78) -> Tuple[np.ndarray, float]:
+    n = max(int(n_labels), 1)
+    bar_slot = float(total_width) / n
+    offsets = (np.arange(n, dtype=float) - (n - 1) / 2.0) * bar_slot
+    return offsets, bar_slot * 0.88
+
+
 def proposed_soft_targets(x: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     fog = np.zeros_like(x, dtype=float)
     mist = np.zeros_like(x, dtype=float)
@@ -135,14 +142,13 @@ def panel_overall(ax, overall: pd.DataFrame, labels: Sequence[str]) -> None:
         ("false_positive_rate", "FPR"),
     ]
     x = np.arange(len(metrics))
-    width = 0.22
-    offsets = np.linspace(-width, width, len(labels))
+    offsets, bar_width = grouped_bar_geometry(len(labels))
     for offset, label in zip(offsets, labels):
         vals = [metric_values(overall, labels, m)[labels.index(label)] for m, _ in metrics]
         ax.bar(
             x + offset,
             vals,
-            width=width * 0.92,
+            width=bar_width,
             color=METHOD_COLORS.get(label, "#999999"),
             edgecolor="white",
             linewidth=0.4,
@@ -174,8 +180,7 @@ def panel_fog_mist_metrics(ax, per_class: pd.DataFrame, labels: Sequence[str]) -
         ("Mist", "far", "Mist\nFAR"),
     ]
     x = np.arange(len(groups))
-    width = min(0.22, 0.72 / max(1, len(labels)))
-    offsets = np.linspace(-width, width, len(labels))
+    offsets, bar_width = grouped_bar_geometry(len(labels), total_width=0.82)
 
     for offset, label in zip(offsets, labels):
         vals = []
@@ -186,7 +191,7 @@ def panel_fog_mist_metrics(ax, per_class: pd.DataFrame, labels: Sequence[str]) -
         ax.bar(
             x + offset,
             vals,
-            width=width * 0.92,
+            width=bar_width,
             color=METHOD_COLORS.get(label, "#999999"),
             edgecolor="white",
             linewidth=0.4,
@@ -241,8 +246,7 @@ def panel_boundary(ax, boundary: pd.DataFrame, labels: Sequence[str]) -> None:
         ("mist_clear_800_1200m", "800-1200 m"),
     ]
     x = np.arange(len(bands))
-    width = 0.22
-    offsets = np.linspace(-width, width, len(labels))
+    offsets, bar_width = grouped_bar_geometry(len(labels))
     for offset, label in zip(offsets, labels):
         vals = []
         for band_id, _ in bands:
@@ -251,7 +255,7 @@ def panel_boundary(ax, boundary: pd.DataFrame, labels: Sequence[str]) -> None:
         ax.bar(
             x + offset,
             vals,
-            width=width * 0.92,
+            width=bar_width,
             color=METHOD_COLORS.get(label, "#999999"),
             edgecolor="white",
             linewidth=0.4,
