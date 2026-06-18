@@ -35,10 +35,10 @@ LOSS_EXPERIMENTS: Dict[int, str] = {
 }
 
 LOSS_LABELS: Dict[str, str] = {
-    "simple_ce_classification": "CE classification",
-    "simple_logvis_regression": "MSE regression",
-    "proposed_rare_event_focal": "Proposed focal",
-    "plain_focal_loss": "Plain focal",
+    "simple_ce_classification": "CE",
+    "simple_logvis_regression": "Regression",
+    "proposed_rare_event_focal": "Ours",
+    "plain_focal_loss": "Focal loss",
 }
 
 CLASS_NAMES = ("Fog", "Mist", "Clear")
@@ -77,6 +77,17 @@ def parse_args() -> argparse.Namespace:
             "Optional per-experiment prefix overrides, e.g. "
             "'3=exp_20260609_plain_focal_mist_alpha'. "
             "Use this when one loss checkpoint was trained under a different run prefix."
+        ),
+    )
+    p.add_argument(
+        "--loss_ckpt_overrides",
+        "--matrix_ckpt_overrides",
+        dest="loss_ckpt_overrides",
+        default=os.environ.get("LOSS_CKPT_OVERRIDES", ""),
+        help=(
+            "Optional per-experiment checkpoint overrides, e.g. "
+            "'2=/public/home/.../exp_114287869_static_mlp_gru_main_S2_PhaseB_best_score.pt'. "
+            "The run_id is inferred by stripping _<stage_tag>_best_score.pt from the filename."
         ),
     )
     p.add_argument(
@@ -130,8 +141,37 @@ def parse_prefix_overrides(value: str) -> Dict[int, str]:
     return out
 
 
+def parse_checkpoint_overrides(value: str) -> Dict[int, str]:
+    out: Dict[int, str] = {}
+    for token in (value or "").replace(",", " ").replace(";", " ").split():
+        token = token.strip()
+        if not token:
+            continue
+        if "=" not in token:
+            raise ValueError(
+                f"Bad --loss_ckpt_overrides item {token!r}; expected EXP_ID=CHECKPOINT_PATH."
+            )
+        exp_raw, path = token.split("=", 1)
+        exp_id = int(exp_raw.strip())
+        path = path.strip()
+        if exp_id not in LOSS_EXPERIMENTS:
+            raise ValueError(f"Unknown loss experiment id={exp_id}; valid ids={sorted(LOSS_EXPERIMENTS)}")
+        if not path:
+            raise ValueError(f"Empty checkpoint override for loss experiment id={exp_id}.")
+        out[exp_id] = path
+    return out
+
+
 def checkpoint_suffix(exp_id: int, name: str, stage_tag: str) -> str:
     return f"_{exp_id}_{name}_{stage_tag}_best_score.pt"
+
+
+def infer_run_id_from_checkpoint(path: Path, stage_tag: str) -> str:
+    suffix = f"_{stage_tag}_best_score.pt"
+    name = path.name
+    if name.endswith(suffix):
+        return name[: -len(suffix)]
+    return path.stem
 
 
 def discover_latest_prefix(ckpt_dir: Path, stage_tag: str, exp_ids: Sequence[int]) -> Optional[str]:
@@ -155,6 +195,7 @@ def discover_latest_prefix(ckpt_dir: Path, stage_tag: str, exp_ids: Sequence[int
 def build_targets(
     loss_run_prefix: str,
     prefix_overrides: Dict[int, str],
+    checkpoint_overrides: Dict[int, str],
     ckpt_dir: Path,
     stage_tag: str,
     exp_ids: Sequence[int],
@@ -164,11 +205,16 @@ def build_targets(
     spec = journal.VARIANTS[0]
     for exp_id in exp_ids:
         name = LOSS_EXPERIMENTS[exp_id]
-        prefix = prefix_overrides.get(exp_id, loss_run_prefix)
-        if not prefix:
-            raise ValueError(f"No loss_run_prefix is available for experiment {exp_id} {name}.")
-        run_id = f"{prefix}_{exp_id}_{name}"
-        checkpoint = ckpt_dir / f"{run_id}_{stage_tag}_best_score.pt"
+        if exp_id in checkpoint_overrides:
+            raw_checkpoint = Path(checkpoint_overrides[exp_id]).expanduser()
+            checkpoint = raw_checkpoint if raw_checkpoint.is_absolute() else ckpt_dir / raw_checkpoint
+            run_id = infer_run_id_from_checkpoint(checkpoint, stage_tag)
+        else:
+            prefix = prefix_overrides.get(exp_id, loss_run_prefix)
+            if not prefix:
+                raise ValueError(f"No loss_run_prefix is available for experiment {exp_id} {name}.")
+            run_id = f"{prefix}_{exp_id}_{name}"
+            checkpoint = ckpt_dir / f"{run_id}_{stage_tag}_best_score.pt"
         if not checkpoint.exists():
             if allow_missing:
                 print(f"[skip] missing checkpoint: {checkpoint}", flush=True)
@@ -496,7 +542,10 @@ def main() -> None:
 
     exp_ids = parse_id_list(args.experiments)
     prefix_overrides = parse_prefix_overrides(args.loss_run_prefix_overrides)
-    exp_ids_needing_base_prefix = [exp_id for exp_id in exp_ids if exp_id not in prefix_overrides]
+    checkpoint_overrides = parse_checkpoint_overrides(args.loss_ckpt_overrides)
+    exp_ids_needing_base_prefix = [
+        exp_id for exp_id in exp_ids if exp_id not in prefix_overrides and exp_id not in checkpoint_overrides
+    ]
     if exp_ids_needing_base_prefix and not args.loss_run_prefix and not args.no_auto_latest:
         args.loss_run_prefix = discover_latest_prefix(ckpt_dir, args.stage_tag, exp_ids_needing_base_prefix) or ""
         if args.loss_run_prefix:
@@ -513,7 +562,15 @@ def main() -> None:
     mod = journal.load_static_rnn_module(train_dir)
     layout = mod.Layout(window_size=args.window_size, dyn_vars=dyn, fe_dim=fe)
     device = journal.resolve_device(args.device)
-    targets = build_targets(args.loss_run_prefix, prefix_overrides, ckpt_dir, args.stage_tag, exp_ids, args.allow_missing)
+    targets = build_targets(
+        args.loss_run_prefix,
+        prefix_overrides,
+        checkpoint_overrides,
+        ckpt_dir,
+        args.stage_tag,
+        exp_ids,
+        args.allow_missing,
+    )
     if not targets:
         raise FileNotFoundError("No loss-ablation checkpoints were selected for evaluation.")
 
@@ -527,6 +584,8 @@ def main() -> None:
     print(f"device    : {device}", flush=True)
     if prefix_overrides:
         print(f"prefix overrides: {prefix_overrides}", flush=True)
+    if checkpoint_overrides:
+        print(f"checkpoint overrides: {checkpoint_overrides}", flush=True)
     print(f"targets   : {[t.run_id for t in targets]}", flush=True)
 
     overall_rows: List[Dict[str, object]] = []
@@ -534,6 +593,7 @@ def main() -> None:
     cm_rows: List[Dict[str, object]] = []
     boundary_rows: List[Dict[str, object]] = []
     id_by_label = {name: exp_id for exp_id, name in LOSS_EXPERIMENTS.items()}
+    order_by_exp_id = {exp_id: order for order, exp_id in enumerate(exp_ids)}
     for target in targets:
         exp_id = id_by_label[target.label]
         overall, per_class, confusion, boundary = evaluate_target(
@@ -550,15 +610,22 @@ def main() -> None:
             layout,
             device,
         )
+        overall["order_rank"] = order_by_exp_id.get(exp_id, exp_id)
+        for row in per_class:
+            row["order_rank"] = order_by_exp_id.get(exp_id, exp_id)
+        for row in confusion:
+            row["order_rank"] = order_by_exp_id.get(exp_id, exp_id)
+        for row in boundary:
+            row["order_rank"] = order_by_exp_id.get(exp_id, exp_id)
         overall_rows.append(overall)
         class_rows.extend(per_class)
         cm_rows.extend(confusion)
         boundary_rows.extend(boundary)
 
-    overall_df = pd.DataFrame(overall_rows).sort_values("experiment_id")
-    per_class_df = pd.DataFrame(class_rows).sort_values(["experiment_id", "class_id"])
-    cm_df = pd.DataFrame(cm_rows).sort_values(["experiment_id", "true_class_id", "pred_class_id"])
-    boundary_df = pd.DataFrame(boundary_rows).sort_values(["experiment_id", "band_id"])
+    overall_df = pd.DataFrame(overall_rows).sort_values(["order_rank", "experiment_id"])
+    per_class_df = pd.DataFrame(class_rows).sort_values(["order_rank", "experiment_id", "class_id"])
+    cm_df = pd.DataFrame(cm_rows).sort_values(["order_rank", "experiment_id", "true_class_id", "pred_class_id"])
+    boundary_df = pd.DataFrame(boundary_rows).sort_values(["order_rank", "experiment_id", "band_id"])
 
     overall_path = out_dir / "loss_ablation_overall_metrics.csv"
     per_class_path = out_dir / "loss_ablation_per_class_metrics.csv"
@@ -573,6 +640,7 @@ def main() -> None:
     run_config = {
         "loss_run_prefix": args.loss_run_prefix,
         "loss_run_prefix_overrides": {str(k): v for k, v in sorted(prefix_overrides.items())},
+        "loss_ckpt_overrides": {str(k): v for k, v in sorted(checkpoint_overrides.items())},
         "experiments": {str(k): LOSS_EXPERIMENTS[k] for k in exp_ids},
         "labels": LOSS_LABELS,
         "base": str(base),

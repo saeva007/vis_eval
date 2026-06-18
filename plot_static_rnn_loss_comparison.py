@@ -17,17 +17,17 @@ import pandas as pd
 
 
 METHOD_LABELS: Dict[str, str] = {
-    "simple_ce_classification": "CE classification",
-    "simple_logvis_regression": "MSE regression",
-    "proposed_rare_event_focal": "Proposed focal",
-    "plain_focal_loss": "Plain focal",
+    "simple_ce_classification": "CE",
+    "simple_logvis_regression": "Regression",
+    "proposed_rare_event_focal": "Ours",
+    "plain_focal_loss": "Focal loss",
 }
 
 METHOD_COLORS: Dict[str, str] = {
-    "CE classification": "#8A8F98",
-    "MSE regression": "#D09A3A",
-    "Proposed focal": "#2A9D8F",
-    "Plain focal": "#6C5CE7",
+    "CE": "#8A8F98",
+    "Regression": "#D09A3A",
+    "Focal loss": "#6C5CE7",
+    "Ours": "#2A9D8F",
 }
 
 
@@ -67,14 +67,17 @@ def setup_style() -> None:
 
 def display_label(row: pd.Series) -> str:
     label = str(row.get("label", ""))
-    return str(row.get("display_label") or METHOD_LABELS.get(label, label))
+    if label in METHOD_LABELS:
+        return METHOD_LABELS[label]
+    return str(row.get("display_label") or label)
 
 
 def ordered_labels(overall: pd.DataFrame) -> List[str]:
     df = overall.copy()
-    if "display_label" not in df.columns:
-        df["display_label"] = df.apply(display_label, axis=1)
-    if "experiment_id" in df.columns:
+    df["display_label"] = df.apply(display_label, axis=1)
+    if "order_rank" in df.columns:
+        df = df.sort_values(["order_rank", "experiment_id"] if "experiment_id" in df.columns else ["order_rank"])
+    elif "experiment_id" in df.columns:
         df = df.sort_values("experiment_id")
     return [str(v) for v in df["display_label"].tolist()]
 
