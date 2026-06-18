@@ -41,6 +41,7 @@ BASE="${BASE:-/public/home/putianshu/vis_mlp}"
 TRAIN_DIR="${TRAIN_DIR:-/public/home/putianshu/vis_mlp/train}"
 OUT_DIR="${OUT_DIR:-static_rnn_loss_eval_results}"
 LOSS_RUN_PREFIX="${LOSS_RUN_PREFIX:-${LOWVIS_RNN_RUN_PREFIX:-}}"
+LOSS_RUN_PREFIX_OVERRIDES="${LOSS_RUN_PREFIX_OVERRIDES:-}"
 EXPERIMENTS="${EXPERIMENTS:-${LOWVIS_RNN_EXPERIMENTS:-0 1 2}}"
 DEVICE="${DEVICE:-cpu}"
 LIMIT_SAMPLES="${LIMIT_SAMPLES:-}"
@@ -60,6 +61,9 @@ CMD=(
 
 if [[ -n "${LOSS_RUN_PREFIX}" ]]; then
     CMD+=(--loss_run_prefix "${LOSS_RUN_PREFIX}")
+fi
+if [[ -n "${LOSS_RUN_PREFIX_OVERRIDES}" ]]; then
+    CMD+=(--loss_run_prefix_overrides "${LOSS_RUN_PREFIX_OVERRIDES}")
 fi
 if [[ -n "${LIMIT_SAMPLES}" ]]; then
     CMD+=(--limit_samples "${LIMIT_SAMPLES}")

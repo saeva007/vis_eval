@@ -69,6 +69,17 @@ def parse_args() -> argparse.Namespace:
 
     p.add_argument("--loss_run_prefix", "--matrix_run_prefix", dest="loss_run_prefix", default=os.environ.get("LOWVIS_RNN_RUN_PREFIX", ""))
     p.add_argument(
+        "--loss_run_prefix_overrides",
+        "--matrix_run_prefix_overrides",
+        dest="loss_run_prefix_overrides",
+        default=os.environ.get("LOSS_RUN_PREFIX_OVERRIDES", ""),
+        help=(
+            "Optional per-experiment prefix overrides, e.g. "
+            "'3=exp_20260609_plain_focal_mist_alpha'. "
+            "Use this when one loss checkpoint was trained under a different run prefix."
+        ),
+    )
+    p.add_argument(
         "--experiments",
         "--matrix_experiments",
         dest="experiments",
@@ -98,6 +109,27 @@ def parse_id_list(value: str) -> List[int]:
     return out or sorted(LOSS_EXPERIMENTS)
 
 
+def parse_prefix_overrides(value: str) -> Dict[int, str]:
+    out: Dict[int, str] = {}
+    for token in (value or "").replace(",", " ").replace(";", " ").split():
+        token = token.strip()
+        if not token:
+            continue
+        if "=" not in token:
+            raise ValueError(
+                f"Bad --loss_run_prefix_overrides item {token!r}; expected EXP_ID=PREFIX."
+            )
+        exp_raw, prefix = token.split("=", 1)
+        exp_id = int(exp_raw.strip())
+        prefix = prefix.strip()
+        if exp_id not in LOSS_EXPERIMENTS:
+            raise ValueError(f"Unknown loss experiment id={exp_id}; valid ids={sorted(LOSS_EXPERIMENTS)}")
+        if not prefix:
+            raise ValueError(f"Empty prefix override for loss experiment id={exp_id}.")
+        out[exp_id] = prefix
+    return out
+
+
 def checkpoint_suffix(exp_id: int, name: str, stage_tag: str) -> str:
     return f"_{exp_id}_{name}_{stage_tag}_best_score.pt"
 
@@ -122,6 +154,7 @@ def discover_latest_prefix(ckpt_dir: Path, stage_tag: str, exp_ids: Sequence[int
 
 def build_targets(
     loss_run_prefix: str,
+    prefix_overrides: Dict[int, str],
     ckpt_dir: Path,
     stage_tag: str,
     exp_ids: Sequence[int],
@@ -131,7 +164,10 @@ def build_targets(
     spec = journal.VARIANTS[0]
     for exp_id in exp_ids:
         name = LOSS_EXPERIMENTS[exp_id]
-        run_id = f"{loss_run_prefix}_{exp_id}_{name}"
+        prefix = prefix_overrides.get(exp_id, loss_run_prefix)
+        if not prefix:
+            raise ValueError(f"No loss_run_prefix is available for experiment {exp_id} {name}.")
+        run_id = f"{prefix}_{exp_id}_{name}"
         checkpoint = ckpt_dir / f"{run_id}_{stage_tag}_best_score.pt"
         if not checkpoint.exists():
             if allow_missing:
@@ -459,11 +495,13 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     exp_ids = parse_id_list(args.experiments)
-    if not args.loss_run_prefix and not args.no_auto_latest:
-        args.loss_run_prefix = discover_latest_prefix(ckpt_dir, args.stage_tag, exp_ids) or ""
+    prefix_overrides = parse_prefix_overrides(args.loss_run_prefix_overrides)
+    exp_ids_needing_base_prefix = [exp_id for exp_id in exp_ids if exp_id not in prefix_overrides]
+    if exp_ids_needing_base_prefix and not args.loss_run_prefix and not args.no_auto_latest:
+        args.loss_run_prefix = discover_latest_prefix(ckpt_dir, args.stage_tag, exp_ids_needing_base_prefix) or ""
         if args.loss_run_prefix:
             print(f"[auto] loss_run_prefix={args.loss_run_prefix}", flush=True)
-    if not args.loss_run_prefix:
+    if exp_ids_needing_base_prefix and not args.loss_run_prefix:
         raise ValueError("Pass --loss_run_prefix, or leave auto-detect enabled with matching checkpoints in --ckpt_dir.")
 
     x_path, y_cls, y_raw, _meta = journal.load_main_data(
@@ -475,7 +513,7 @@ def main() -> None:
     mod = journal.load_static_rnn_module(train_dir)
     layout = mod.Layout(window_size=args.window_size, dyn_vars=dyn, fe_dim=fe)
     device = journal.resolve_device(args.device)
-    targets = build_targets(args.loss_run_prefix, ckpt_dir, args.stage_tag, exp_ids, args.allow_missing)
+    targets = build_targets(args.loss_run_prefix, prefix_overrides, ckpt_dir, args.stage_tag, exp_ids, args.allow_missing)
     if not targets:
         raise FileNotFoundError("No loss-ablation checkpoints were selected for evaluation.")
 
@@ -487,6 +525,8 @@ def main() -> None:
     print(f"out_dir   : {out_dir}", flush=True)
     print(f"layout    : {layout}", flush=True)
     print(f"device    : {device}", flush=True)
+    if prefix_overrides:
+        print(f"prefix overrides: {prefix_overrides}", flush=True)
     print(f"targets   : {[t.run_id for t in targets]}", flush=True)
 
     overall_rows: List[Dict[str, object]] = []
@@ -532,6 +572,7 @@ def main() -> None:
 
     run_config = {
         "loss_run_prefix": args.loss_run_prefix,
+        "loss_run_prefix_overrides": {str(k): v for k, v in sorted(prefix_overrides.items())},
         "experiments": {str(k): LOSS_EXPERIMENTS[k] for k in exp_ids},
         "labels": LOSS_LABELS,
         "base": str(base),
