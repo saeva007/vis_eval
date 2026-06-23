@@ -113,8 +113,8 @@ PMST_COLOR = "#2E5A87"
 IFS_PMST_COLOR = "#2A9D8F"
 IFS_DIAG_COLOR = "#5B5B5B"
 CLASS_COLORS = [FOG_COLOR, MIST_COLOR, CLEAR_COLOR]
-CLASS_NAMES = ["Fog", "Mist", "Clear"]
-CLASS_LONG = ["Fog (0-500 m)", "Mist (500-1000 m)", "Clear (>=1000 m)"]
+CLASS_NAMES = ["Ultra-low", "Moderate-low", "Clear"]
+CLASS_LONG = ["Ultra-low (<500 m)", "Moderate-low (500-1000 m)", "Clear (>=1000 m)"]
 CLASS_CMAP = ListedColormap(CLASS_COLORS)
 CLASS_NORM = BoundaryNorm([-0.5, 0.5, 1.5, 2.5], CLASS_CMAP.N)
 LOCAL_TIME_OFFSET_HOURS = 8
@@ -466,7 +466,7 @@ def pred_from_probs_rule(probs: np.ndarray, fog_th: float, mist_th: float, rule:
 
 
 def binary_gate_pred(probs: np.ndarray, low_prob: np.ndarray, low_th: float) -> np.ndarray:
-    """Predict low visibility with the binary head, then split Fog/Mist by fine-head argmax."""
+    """Predict low visibility with the binary head, then split Ultra-low/Moderate-low by fine-head argmax."""
 
     if low_prob is None:
         raise ValueError("binary_gate decision requires low-visibility probabilities from the model.")
@@ -947,10 +947,10 @@ def write_report(path: Path, y_true: np.ndarray, pred: np.ndarray, metrics: Dict
     def _write_metric_block(f, title: str, values: Dict[str, float]) -> None:
         f.write(f"{title}\n")
         f.write("  class, support, predicted, CSI, recall, precision, FAR\n")
-        for cname in ("Fog", "Mist", "Clear"):
+        for cname, display_name in (("Fog", "Ultra-low"), ("Mist", "Moderate-low"), ("Clear", "Clear")):
             f.write(
                 "  "
-                f"{cname}, "
+                f"{display_name}, "
                 f"{values.get(f'{cname}_support', 0.0):.0f}, "
                 f"{values.get(f'pred_{cname.lower()}', 0.0):.0f}, "
                 f"{values.get(f'{cname}_CSI', np.nan):.6f}, "
@@ -1214,9 +1214,9 @@ def plot_csi_recall_pmst_vs_ifs(
 ) -> None:
     setup_journal_style()
     panels = [
-        ("Fog", [("Fog_CSI", "CSI"), ("Fog_R", "Recall")]),
-        ("Mist", [("Mist_CSI", "CSI"), ("Mist_R", "Recall")]),
-        ("Low visibility", [("low_vis_csi", "CSI"), ("low_vis_recall", "Recall")]),
+        ("Ultra-low", [("Fog_CSI", "CSI"), ("Fog_R", "Recall")]),
+        ("Moderate-low", [("Mist_CSI", "CSI"), ("Mist_R", "Recall")]),
+        ("Low-vis event", [("low_vis_csi", "CSI"), ("low_vis_recall", "Recall")]),
     ]
     fig, axes = plt.subplots(1, 3, figsize=(10.8, 3.6), sharey=False)
     for ax_idx, (ax, (group, sub)) in enumerate(zip(axes, panels)):
@@ -1246,7 +1246,7 @@ def plot_csi_recall_pmst_vs_ifs(
         "fig3_csi_recall_pmst_vs_ifs_diagnostic",
         manifest,
         sources,
-        notes="CSI and recall are shown as the primary rare-event metrics for Fog, Mist, and combined low visibility.",
+        notes="CSI and recall are shown as the primary rare-event metrics for Ultra-low, Moderate-low, and combined Low-vis event.",
         n=n,
         matched_ifs=matched_ifs,
     )
@@ -1279,7 +1279,7 @@ def plot_ifs_visibility_bias(
 
     data = []
     labels = []
-    for cls, label in [(0, "Fog obs"), (1, "Mist obs")]:
+    for cls, label in [(0, "Ultra-low obs"), (1, "Moderate-low obs")]:
         mm = m & (y_true == cls)
         if int(mm.sum()) > 0:
             data.append(np.clip(ifs_vis[mm], 0, 20000))
@@ -1330,12 +1330,12 @@ def plot_scenario_split(
         return
     df = pd.DataFrame(rows)
     metrics = [
-        ("Fog_CSI", "Fog CSI"),
-        ("Fog_R", "Fog recall"),
-        ("Mist_CSI", "Mist CSI"),
-        ("Mist_R", "Mist recall"),
-        ("low_vis_csi", "Low-vis CSI"),
-        ("low_vis_recall", "Low-vis recall"),
+        ("Fog_CSI", "Ultra-low CSI"),
+        ("Fog_R", "Ultra-low recall"),
+        ("Mist_CSI", "Moderate-low CSI"),
+        ("Mist_R", "Moderate-low recall"),
+        ("low_vis_csi", "Low-vis event CSI"),
+        ("low_vis_recall", "Low-vis event recall"),
     ]
     colors = [FOG_COLOR, "#6E91B5", MIST_COLOR, "#F0B84A", "#334155", "#64748B"]
     x = np.arange(len(df))
@@ -1417,8 +1417,8 @@ def plot_diurnal_time_detail(
         gridspec_kw={"height_ratios": [1.0, 1.15], "hspace": 0.15},
     )
     ax = axes[0]
-    ax.bar(x, fog_k, width=0.82, color=FOG_COLOR, label="Observed Fog")
-    ax.bar(x, mist_k, bottom=fog_k, width=0.82, color=MIST_COLOR, label="Observed Mist")
+    ax.bar(x, fog_k, width=0.82, color=FOG_COLOR, label="Observed Ultra-low")
+    ax.bar(x, mist_k, bottom=fog_k, width=0.82, color=MIST_COLOR, label="Observed Moderate-low")
     ax.set_ylabel("Samples (x1000)")
     ax.set_title(f"Diurnal low-visibility frequency and PMST skill ({LOCAL_TIME_LABEL})")
     ax.grid(axis="y", alpha=0.25)
@@ -1432,12 +1432,12 @@ def plot_diurnal_time_detail(
     add_panel_label(ax, "a")
 
     metric_specs = [
-        ("Fog_CSI", "Fog CSI", FOG_COLOR),
-        ("Fog_R", "Fog recall", "#6E91B5"),
-        ("Mist_CSI", "Mist CSI", MIST_COLOR),
-        ("Mist_R", "Mist recall", "#F0B84A"),
-        ("low_vis_csi", "Low-vis CSI", "#334155"),
-        ("low_vis_recall", "Low-vis recall", "#64748B"),
+        ("Fog_CSI", "Ultra-low CSI", FOG_COLOR),
+        ("Fog_R", "Ultra-low recall", "#6E91B5"),
+        ("Mist_CSI", "Moderate-low CSI", MIST_COLOR),
+        ("Mist_R", "Moderate-low recall", "#F0B84A"),
+        ("low_vis_csi", "Low-vis event CSI", "#334155"),
+        ("low_vis_recall", "Low-vis event recall", "#64748B"),
     ]
     ax = axes[1]
     for key, label, color in metric_specs:
@@ -1461,7 +1461,7 @@ def plot_diurnal_time_detail(
         "fig11_diurnal_bjt_performance_counts",
         manifest,
         list(sources) + [str(table_path)],
-        notes="Hourly PMST skill and observed Fog/Mist counts after converting UTC timestamps to UTC+8.",
+        notes="Hourly PMST skill and observed Ultra-low/Moderate-low counts after converting UTC timestamps to UTC+8.",
         n=int(table["n"].sum()),
     )
     return table_path
@@ -2064,9 +2064,9 @@ def plot_station_recall_delta_map(
         return
     setup_journal_style()
     metric_specs = [
-        ("delta_fog_recall", "Fog recall", "n_fog"),
-        ("delta_mist_recall", "Mist recall", "n_mist"),
-        ("delta_low_vis_recall", "Low-vis recall", "n_low_vis"),
+        ("delta_fog_recall", "Ultra-low recall", "n_fog"),
+        ("delta_mist_recall", "Moderate-low recall", "n_mist"),
+        ("delta_low_vis_recall", "Low-vis event recall", "n_low_vis"),
     ]
     available = [(m, label, count) for m, label, count in metric_specs if m in station_delta_df and count in station_delta_df]
     if not available:
@@ -2301,13 +2301,13 @@ def plot_event_footprint(
     fig, axes = plt.subplots(1, len(dfs), figsize=(4.3 * len(dfs), 3.7), sharey=True, squeeze=False)
     for i, (ax, df) in enumerate(zip(axes.ravel(), dfs), start=1):
         x = df["hour_offset"].to_numpy(dtype=float)
-        ax.plot(x, df["obs_fog_count"], color="#111111", marker="o", lw=1.9, label="Obs fog")
-        ax.plot(x, df["obs_low_vis_count"], color="#111111", marker="o", lw=1.2, ls="--", label="Obs low-vis")
-        ax.plot(x, df["pmst_fog_count"], color=PMST_COLOR, marker="s", lw=1.9, label="PMST fog")
-        ax.plot(x, df["pmst_low_vis_count"], color=PMST_COLOR, marker="s", lw=1.2, ls="--", label="PMST low-vis")
+        ax.plot(x, df["obs_fog_count"], color="#111111", marker="o", lw=1.9, label="Obs Ultra-low")
+        ax.plot(x, df["obs_low_vis_count"], color="#111111", marker="o", lw=1.2, ls="--", label="Obs Low-vis event")
+        ax.plot(x, df["pmst_fog_count"], color=PMST_COLOR, marker="s", lw=1.9, label="PMST Ultra-low")
+        ax.plot(x, df["pmst_low_vis_count"], color=PMST_COLOR, marker="s", lw=1.2, ls="--", label="PMST Low-vis event")
         if "ifs_fog_count" in df:
-            ax.plot(x, df["ifs_fog_count"], color=IFS_DIAG_COLOR, marker="^", lw=1.9, label="IFS fog")
-            ax.plot(x, df["ifs_low_vis_count"], color=IFS_DIAG_COLOR, marker="^", lw=1.2, ls="--", label="IFS low-vis")
+            ax.plot(x, df["ifs_fog_count"], color=IFS_DIAG_COLOR, marker="^", lw=1.9, label="IFS Ultra-low")
+            ax.plot(x, df["ifs_low_vis_count"], color=IFS_DIAG_COLOR, marker="^", lw=1.2, ls="--", label="IFS Low-vis event")
         ax.axvline(0, color="#333333", lw=1.0, ls=":")
         ax.set_title(f"Event {i}")
         ax.set_xlabel("Hour relative to peak")
@@ -2387,9 +2387,9 @@ def plot_overlap_fig10(overlap_out: Path, out_dir: Path, manifest: Manifest) -> 
     }
     fallback_colors = ["#4C78A8", "#59A14F", "#B07AA1", "#F28E2B", "#76B7B2", "#E15759"]
     panels = [
-        ("Fog", [("fog_csi", "CSI"), ("fog_pod", "Recall")]),
-        ("Mist", [("mist_csi", "CSI"), ("mist_pod", "Recall")]),
-        ("Low visibility", [("low_vis_csi", "CSI"), ("low_vis_recall", "Recall")]),
+        ("Ultra-low", [("fog_csi", "CSI"), ("fog_pod", "Recall")]),
+        ("Moderate-low", [("mist_csi", "CSI"), ("mist_pod", "Recall")]),
+        ("Low-vis event", [("low_vis_csi", "CSI"), ("low_vis_recall", "Recall")]),
     ]
     row_by_src = {str(r["source"]): r for _, r in df.iterrows()}
     fig_w = max(13.0, 10.8 + 0.78 * max(0, len(source_order) - 3))
@@ -2444,12 +2444,12 @@ def plot_fig11_lead_init(
         return
     fig, axes = plt.subplots(2, 3, figsize=(13.2, 7.2), sharex=True)
     specs = [
-        ("Fog_CSI", "Fog CSI"),
-        ("Fog_R", "Fog recall"),
-        ("Mist_CSI", "Mist CSI"),
-        ("Mist_R", "Mist recall"),
-        ("low_vis_csi", "Low-vis CSI"),
-        ("low_vis_recall", "Low-vis recall"),
+        ("Fog_CSI", "Ultra-low CSI"),
+        ("Fog_R", "Ultra-low recall"),
+        ("Mist_CSI", "Moderate-low CSI"),
+        ("Mist_R", "Moderate-low recall"),
+        ("low_vis_csi", "Low-vis event CSI"),
+        ("low_vis_recall", "Low-vis event recall"),
     ]
     for ax, (metric, title), letter in zip(axes.ravel(), specs, "abcdef"):
         plotted = False
@@ -2874,12 +2874,12 @@ def plot_fig11_48h_model_vs_ifs(
         return
     setup_journal_style()
     specs = [
-        ("Fog_CSI", "Fog CSI"),
-        ("Fog_R", "Fog recall"),
-        ("Mist_CSI", "Mist CSI"),
-        ("Mist_R", "Mist recall"),
-        ("low_vis_csi", "Low-vis CSI"),
-        ("low_vis_recall", "Low-vis recall"),
+        ("Fog_CSI", "Ultra-low CSI"),
+        ("Fog_R", "Ultra-low recall"),
+        ("Mist_CSI", "Moderate-low CSI"),
+        ("Mist_R", "Moderate-low recall"),
+        ("low_vis_csi", "Low-vis event CSI"),
+        ("low_vis_recall", "Low-vis event recall"),
     ]
 
     def _adaptive_ylim(values: Sequence[float]) -> float:
@@ -2997,12 +2997,12 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
         return
     setup_journal_style()
     specs = [
-        ("Fog_CSI", "Fog CSI"),
-        ("Fog_R", "Fog recall"),
-        ("Mist_CSI", "Mist CSI"),
-        ("Mist_R", "Mist recall"),
-        ("low_vis_csi", "Low-vis CSI"),
-        ("low_vis_recall", "Low-vis recall"),
+        ("Fog_CSI", "Ultra-low CSI"),
+        ("Fog_R", "Ultra-low recall"),
+        ("Mist_CSI", "Moderate-low CSI"),
+        ("Mist_R", "Moderate-low recall"),
+        ("low_vis_csi", "Low-vis event CSI"),
+        ("low_vis_recall", "Low-vis event recall"),
     ]
     lead_col = "display_lead_hour" if "display_lead_hour" in cmp_df else "lead_hour"
     df = cmp_df.copy()
@@ -3756,7 +3756,7 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
         "fog_recall",
         "n_fog",
         5,
-        "Station Fog Recall",
+        "Station Ultra-low Recall",
         "fig8_station_fog_recall",
         out_dir,
         manifest,
@@ -3771,7 +3771,7 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
         "mist_recall",
         "n_mist",
         5,
-        "Station Mist Recall",
+        "Station Moderate-low Recall",
         "fig8_station_mist_recall",
         out_dir,
         manifest,
@@ -3786,7 +3786,7 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
         "low_vis_csi",
         "n_low_vis",
         5,
-        "Station Low-Visibility CSI",
+        "Station Low-vis event CSI",
         "fig8_station_low_vis_csi",
         out_dir,
         manifest,
@@ -3848,7 +3848,7 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
                 manifest.add(
                     three_footprint_path.name,
                     event_sources,
-                    notes="Three selected widespread fog events with complete test-set windows where available.",
+                    notes="Three selected widespread Ultra-low events with complete test-set windows where available.",
                     n=int(len(y_cls)),
                     matched_ifs=int(np.sum(ifs_valid)) if ifs_valid is not None else None,
                 )
@@ -3865,7 +3865,7 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
                 manifest.add(
                     three_peak_path.name,
                     event_sources,
-                    notes="Observed visibility at the peak hour for the same three selected widespread fog events.",
+                    notes="Observed visibility at the peak hour for the same three selected widespread Ultra-low events.",
                     n=int(len(y_cls)),
                 )
     plot_event_peak_grid(eval_df, event_df, out_dir, manifest, [str(event_path), str(out_dir / "per_sample_eval.csv")], shp_gdf=shp_gdf)
