@@ -1389,7 +1389,7 @@ def plot_event_environment_grid(
     nrows = len(event_times)
     fig_h = max(7.2, 1.18 * nrows + 1.25)
     fig, axes = plt.subplots(nrows, 5, figsize=(11.2, fig_h), squeeze=False)
-    col_titles = ["Observed", "Model", "IFS diagnostic", "Tianji RH2m", "PM10"]
+    col_titles = ["Observed visibility", "PMST forecast", "IFS diagnostic VIS", "Tianji RH2m", "CAMS PM10"]
     for j, title in enumerate(col_titles):
         axes[0, j].set_title(title, fontsize=8.5, fontweight="bold", pad=4)
 
@@ -1423,7 +1423,7 @@ def plot_event_environment_grid(
             context_df=station_context,
         )
         _draw_grid_panel(axes[row_idx, 3], rh_fields.get(valid_time), shp_gdf, "YlGnBu", rh_norm, "RH2m missing", focus_extent)
-        _draw_grid_panel(axes[row_idx, 4], pm10_fields.get(valid_time), shp_gdf, "YlOrRd", pm10_norm, "PM10 missing", focus_extent)
+        _draw_grid_panel(axes[row_idx, 4], pm10_fields.get(valid_time), shp_gdf, "YlOrRd", pm10_norm, "CAMS PM10 missing", focus_extent)
 
     rh_sm = plt.cm.ScalarMappable(norm=rh_norm, cmap="YlGnBu")
     rh_sm.set_array([])
@@ -1462,8 +1462,8 @@ def plot_event_environment_grid(
         manifest,
         all_sources,
         notes=(
-            "Rows are UTC hours around the selected widespread low-vis event. "
-            "The first three columns use shared visibility categories; the model panel is categorical. "
+            "Rows are UTC hours around the selected widespread Low-vis event. "
+            "The first three columns use shared Ultra-low/Moderate-low/Clear categories; the PMST panel is categorical. "
             "RH2m and PM10 are raw gridded forecast fields read only for the displayed valid times."
         ),
         n=int(len(eval_df)),
@@ -1553,7 +1553,7 @@ def run_event_plots(
                 manifest.add(
                     three_footprint_path.name,
                     event_sources,
-                    notes="Three selected widespread ultra-low events with complete test-set windows where available.",
+                    notes="Three selected widespread Low-vis events with complete test-set windows where available.",
                     n=int(len(y_cls)),
                     matched_ifs=int(np.sum(ifs_valid)) if ifs_valid is not None else None,
                 )
@@ -1570,7 +1570,7 @@ def run_event_plots(
                 manifest.add(
                     three_peak_path.name,
                     event_sources,
-                    notes="Observed visibility at the peak hour for the same three selected widespread ultra-low events.",
+                    notes="Observed visibility at the peak hour for the same three selected widespread Low-vis events.",
                     n=int(len(y_cls)),
                 )
         plot_event_environment_grids(

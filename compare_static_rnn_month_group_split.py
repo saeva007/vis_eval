@@ -146,9 +146,10 @@ def setup_style() -> None:
 
 def plot_comparison(delta: pd.DataFrame, out_dir: Path, stem: str, current_label: str, month_group_label: str) -> None:
     setup_style()
-    metrics = delta["display_metric"].tolist()
-    cur_vals = delta[current_label].astype(float).to_numpy()
-    alt_vals = delta[month_group_label].astype(float).to_numpy()
+    skill_delta = delta[delta["metric"].astype(str) != "false_positive_rate"].copy()
+    metrics = skill_delta["display_metric"].tolist()
+    cur_vals = skill_delta[current_label].astype(float).to_numpy()
+    alt_vals = skill_delta[month_group_label].astype(float).to_numpy()
     x = np.arange(len(metrics))
     width = 0.36
     fig, ax = plt.subplots(figsize=(7.2, 3.2))
@@ -161,21 +162,44 @@ def plot_comparison(delta: pd.DataFrame, out_dir: Path, stem: str, current_label
     ax.set_title("Static-RNN split-protocol comparison")
     ax.grid(axis="y", color="#E5E7EB", lw=0.6)
     ax.legend(loc="upper left", frameon=False)
-    ax.text(
-        len(metrics) - 1,
-        ax.get_ylim()[1] * 0.96,
-        "Clear FPR: lower is better",
-        ha="right",
-        va="top",
-        fontsize=6.7,
-        color="#555555",
-    )
     out_dir.mkdir(parents=True, exist_ok=True)
     for ext in ("png", "pdf", "svg"):
         path = out_dir / f"{stem}.{ext}"
         fig.savefig(path, bbox_inches="tight")
         print(f"[figure] {path}", flush=True)
     plt.close(fig)
+
+    fpr_delta = delta[delta["metric"].astype(str) == "false_positive_rate"]
+    if not fpr_delta.empty:
+        cur_fpr = float(fpr_delta.iloc[0][current_label])
+        alt_fpr = float(fpr_delta.iloc[0][month_group_label])
+        values = np.asarray([cur_fpr, alt_fpr], dtype=float)
+        fig, ax = plt.subplots(figsize=(3.7, 3.05))
+        ax.bar(
+            np.arange(2),
+            values,
+            width=0.55,
+            color=["#8A8F98", "#2A9D8F"],
+            edgecolor="white",
+            linewidth=0.45,
+        )
+        ymax = max(0.04, float(np.nanmax(values)) * 1.35) if np.isfinite(values).any() else 0.1
+        for xi, value in enumerate(values):
+            if np.isfinite(value):
+                ax.text(xi, value + max(0.002, ymax * 0.025), f"{value:.3f}", ha="center", va="bottom", fontsize=6.8)
+        ax.set_xticks(np.arange(2))
+        ax.set_xticklabels([current_label, month_group_label], rotation=20, ha="right")
+        ax.set_ylim(0, min(1.0, ymax))
+        ax.set_ylabel("False-positive rate")
+        ax.set_title("Clear-condition false positives")
+        ax.grid(axis="y", color="#E5E7EB", lw=0.6)
+        ax.text(0.98, 0.96, "lower is better", transform=ax.transAxes, ha="right", va="top", fontsize=6.7, color="#555555")
+        fig.tight_layout()
+        for ext in ("png", "pdf", "svg"):
+            path = out_dir / f"{stem}_clear_fpr.{ext}"
+            fig.savefig(path, bbox_inches="tight")
+            print(f"[figure] {path}", flush=True)
+        plt.close(fig)
 
 
 def simple_markdown_table(df: pd.DataFrame) -> str:

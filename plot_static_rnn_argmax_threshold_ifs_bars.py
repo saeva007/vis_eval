@@ -45,7 +45,11 @@ PANELS: Sequence[Tuple[str, Sequence[Tuple[str, str]]]] = (
         "Low-vis event",
         (("low_vis_precision", "Precision"), ("low_vis_recall", "Recall"), ("low_vis_csi", "CSI")),
     ),
-    ("Overall / false alarms", (("accuracy", "Accuracy"), ("false_positive_rate", "Clear FPR"))),
+    ("Overall", (("accuracy", "Accuracy"),)),
+)
+FPR_PANEL: Tuple[str, Sequence[Tuple[str, str]]] = (
+    "Clear-condition false positives",
+    (("false_positive_rate", "Clear FPR"),),
 )
 
 
@@ -122,7 +126,7 @@ def load_comparison(argmax_csv: Path, threshold_csv: Path) -> pd.DataFrame:
             "n": row.get("n", np.nan),
             "matched_rows": row.get("matched_rows", np.nan),
         }
-        for _, metrics in PANELS:
+        for _, metrics in list(PANELS) + [FPR_PANEL]:
             for metric, _label in metrics:
                 rec[metric] = row.get(metric, np.nan)
         rows.append(rec)
@@ -167,17 +171,34 @@ def plot_panel(ax, data: pd.DataFrame, metrics: Sequence[Tuple[str, str]], title
     ax.set_ylabel("Metric value")
     ax.set_title(title, pad=8)
     ax.grid(axis="y", color="#E4E7EB", linewidth=0.65)
-    if title == "Overall / false alarms":
-        ax.text(
-            1.0,
-            0.98,
-            "Clear FPR: lower is better",
-            transform=ax.transAxes,
-            ha="right",
-            va="top",
-            fontsize=7.5,
-            color="#555555",
-        )
+
+
+def plot_fpr_panel(ax, data: pd.DataFrame) -> None:
+    methods = METHOD_ORDER
+    x = np.arange(len(methods), dtype=float)
+    values = []
+    for method in methods:
+        row = data[data["method"] == method]
+        values.append(float(row.iloc[0]["false_positive_rate"]) if not row.empty else np.nan)
+    ax.bar(
+        x,
+        values,
+        width=0.56,
+        color=[METHOD_COLORS[method] for method in methods],
+        edgecolor="white",
+        linewidth=0.5,
+    )
+    ymax = max(0.04, float(np.nanmax(values)) * 1.35) if np.isfinite(values).any() else 0.1
+    for xi, value in zip(x, values):
+        if np.isfinite(value):
+            ax.text(xi, value + max(0.002, ymax * 0.025), f"{value:.3f}", ha="center", va="bottom", fontsize=7.1)
+    ax.set_xticks(x)
+    ax.set_xticklabels(methods, rotation=15, ha="right")
+    ax.set_ylim(0, min(1.0, ymax))
+    ax.set_ylabel("False-positive rate")
+    ax.set_title("Clear-condition false positives", pad=8)
+    ax.grid(axis="y", color="#E4E7EB", linewidth=0.65)
+    ax.text(0.98, 0.96, "lower is better", transform=ax.transAxes, ha="right", va="top", fontsize=7.5, color="#555555")
 
 
 def save_outputs(fig, out_dir: Path, stem: str, dpi: int, source_csvs: Sequence[Path], source_data: pd.DataFrame) -> None:
@@ -222,6 +243,31 @@ def main() -> None:
         fig.suptitle(args.title, y=1.06, fontsize=12.5)
 
     save_outputs(fig, out_dir, args.figure_stem, args.dpi, [argmax_csv, threshold_csv], data)
+    plt.close(fig)
+
+    fpr_fig, fpr_ax = plt.subplots(figsize=(4.4, 3.35), constrained_layout=True)
+    plot_fpr_panel(fpr_ax, data)
+    save_outputs(
+        fpr_fig,
+        out_dir,
+        f"{args.figure_stem}_clear_fpr",
+        args.dpi,
+        [argmax_csv, threshold_csv],
+        data[
+            [
+                "method",
+                "source_csv",
+                "source",
+                "sample_scope",
+                "threshold_source",
+                "threshold_rule",
+                "n",
+                "matched_rows",
+                "false_positive_rate",
+            ]
+        ],
+    )
+    plt.close(fpr_fig)
 
 
 if __name__ == "__main__":

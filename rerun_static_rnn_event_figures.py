@@ -53,6 +53,12 @@ def parse_args() -> argparse.Namespace:
         help="Replace an event center as rank=YYYY-mm-ddTHH:MM:SS, e.g. 1=2025-10-30T22:00:00. Can be repeated.",
     )
     p.add_argument("--window_hours", type=int, default=3)
+    p.add_argument(
+        "--event_window_hours",
+        type=int,
+        default=None,
+        help="Compatibility alias used by the main event-grid helper; defaults to --window_hours.",
+    )
     p.add_argument("--event_env_max_events", type=int, default=3)
     p.add_argument("--event_env_source", choices=["grid", "none"], default="grid")
     p.add_argument("--shp_path", default="/public/home/putianshu/中华人民共和国/中华人民共和国.shp")
@@ -191,6 +197,10 @@ def arrays_from_eval(eval_df: pd.DataFrame):
 
 def main() -> None:
     args = parse_args()
+    if args.event_window_hours is None:
+        args.event_window_hours = int(args.window_hours)
+    else:
+        args.window_hours = int(args.event_window_hours)
     eval_dir = Path(args.eval_dir).expanduser().resolve()
     out_dir = Path(args.out_dir).expanduser().resolve() if args.out_dir else eval_dir / "event_rerun_custom"
     out_dir.mkdir(parents=True, exist_ok=True)

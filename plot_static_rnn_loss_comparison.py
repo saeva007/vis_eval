@@ -142,7 +142,6 @@ def panel_overall(ax, overall: pd.DataFrame, labels: Sequence[str]) -> None:
         ("low_vis_csi", "CSI"),
         ("low_vis_recall", "Recall"),
         ("low_vis_precision", "Precision"),
-        ("false_positive_rate", "FPR"),
     ]
     x = np.arange(len(metrics))
     offsets, bar_width = grouped_bar_geometry(len(labels))
@@ -163,8 +162,25 @@ def panel_overall(ax, overall: pd.DataFrame, labels: Sequence[str]) -> None:
     ax.set_ylim(0, 1.0)
     ax.set_title("Low-vis event skill")
     ax.grid(axis="y", color="#E5E7EB", lw=0.6)
-    ax.text(3, 0.98, "lower is better", ha="center", va="top", fontsize=6.4, color="#555555")
     ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.03), ncol=1, frameon=False)
+
+
+def panel_fpr(ax, overall: pd.DataFrame, labels: Sequence[str]) -> None:
+    x = np.arange(len(labels))
+    vals = metric_values(overall, labels, "false_positive_rate")
+    colors = [METHOD_COLORS.get(label, "#999999") for label in labels]
+    ax.bar(x, vals, width=0.62, color=colors, edgecolor="white", linewidth=0.45)
+    for xi, value in zip(x, vals):
+        if np.isfinite(value):
+            ax.text(xi, value + max(0.002, float(np.nanmax(vals)) * 0.035), f"{value:.3f}", ha="center", va="bottom", fontsize=6.7)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=25, ha="right")
+    ymax = max(0.04, float(np.nanmax(vals)) * 1.35) if np.isfinite(vals).any() else 0.1
+    ax.set_ylim(0, min(1.0, ymax))
+    ax.set_ylabel("False-positive rate")
+    ax.set_title("Clear-condition false positives")
+    ax.grid(axis="y", color="#E5E7EB", lw=0.6)
+    ax.text(0.98, 0.96, "lower is better", transform=ax.transAxes, ha="right", va="top", fontsize=6.4, color="#555555")
 
 
 def panel_ultra_moderate_metrics(ax, per_class: pd.DataFrame, labels: Sequence[str]) -> None:
@@ -338,7 +354,18 @@ def save_split_figures(
         out_dir,
         f"{figure_stem}_panel_b_lowvis_metrics",
         sources,
-        "Standalone panel b: aggregate low-vis event CSI, recall, precision and false-positive rate.",
+        "Standalone panel b: aggregate low-vis event CSI, recall and precision.",
+    )
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(3.85, 2.85), constrained_layout=True)
+    panel_fpr(ax, overall, labels)
+    save_figure(
+        fig,
+        out_dir,
+        f"{figure_stem}_panel_b_clear_fpr",
+        sources,
+        "Standalone false-positive-rate panel for clear-condition samples.",
     )
     plt.close(fig)
 
@@ -380,7 +407,8 @@ def write_caption(out_dir: Path, stem: str) -> None:
     text = (
         "Figure caption draft\n"
         "a, Visibility-aware soft targets used by the proposed rare-event focal objective around the 500 m and 1000 m operational thresholds. "
-        "b, Test-set low-vis event CSI, recall, precision and clear-sky false-positive rate. "
+        "b, Test-set Low-vis event CSI, recall and precision. "
+        "A separate false-positive-rate panel reports clear-condition samples incorrectly predicted as Low-vis event; lower values are better. "
         "An additional standalone panel reports Ultra-low and Moderate-low CSI, recall, precision and false-alarm ratio separately, avoiding reliance on the aggregate low-vis event score alone. "
         "c, Class-wise critical success index for Ultra-low, Moderate-low and Clear. "
         "d, Accuracy inside the two threshold-neighbour visibility bands where hard classification and direct regression are expected to be most fragile.\n"
