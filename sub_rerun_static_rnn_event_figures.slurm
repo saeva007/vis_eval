@@ -45,7 +45,10 @@ WINDOW_HOURS="${WINDOW_HOURS:-3}"
 EVENT_ENV_SOURCE="${EVENT_ENV_SOURCE:-grid}"
 EVENT_ENV_MAX_EVENTS="${EVENT_ENV_MAX_EVENTS:-3}"
 SHP_PATH="${SHP_PATH:-}"
-EVENT_ENV_TIANJI_TEMPLATE="${EVENT_ENV_TIANJI_TEMPLATE:-/tj01/sd3op/userpp/pp_data/{init_yyyymmddhh}/stage26Q/multi_model_sources/{init_yyyymmddhh}/{variable}.nc}"
+EVENT_ENV_TIANJI_TEMPLATE="${EVENT_ENV_TIANJI_TEMPLATE:-}"
+if [[ -z "${EVENT_ENV_TIANJI_TEMPLATE}" ]]; then
+    EVENT_ENV_TIANJI_TEMPLATE='/tj01/sd3op/userpp/pp_data/{init_yyyymmddhh}/stage26Q/multi_model_sources/{init_yyyymmddhh}/{variable}.nc'
+fi
 EVENT_ENV_RH2M_VAR="${EVENT_ENV_RH2M_VAR:-rh2m}"
 EVENT_ENV_PM10_DIR="${EVENT_ENV_PM10_DIR:-pm10_data}"
 EVENT_ENV_PM10_VAR="${EVENT_ENV_PM10_VAR:-pm10}"
