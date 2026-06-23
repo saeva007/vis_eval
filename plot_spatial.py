@@ -1,5 +1,5 @@
 """
-Paper Figure 8/9: Spatial maps and widespread fog-event evaluation.
+Paper Figure 8/9: Spatial maps and widespread ultra-low event evaluation.
 """
 import os
 
@@ -32,7 +32,7 @@ except ImportError:
     from plot_scenarios import derive_scenario_columns
 
 
-CLASS_SHORT_NAMES = ["Fog", "Mist", "Clear"]
+CLASS_SHORT_NAMES = ["Ultra-low", "Moderate-low", "Clear"]
 CLASS_BOUNDS = [-0.5, 0.5, 1.5, 2.5]
 CLASS_CMAP = ListedColormap(CLASS_COLORS)
 CLASS_NORM = BoundaryNorm(CLASS_BOUNDS, CLASS_CMAP.N)
@@ -56,16 +56,16 @@ def build_event_visibility_cmap():
     Continuous visibility colormap aligned with class colors.
 
     Design:
-    - very low visibility -> Fog blue
-    - 1000 m -> Mist amber
+    - very low visibility -> Ultra-low blue
+    - 1000 m -> Moderate-low amber
     - high visibility -> Clear gray
     This keeps the first row semantically consistent with the class-color rows.
     """
-    fog_side = "#7291B1"  # lighter blue for the mid-fog range
+    fog_side = "#7291B1"  # lighter blue for the mid ultra-low range
     mist_pos = (1000.0 - VIS_MIN_EVENT) / (VIS_MAX_EVENT - VIS_MIN_EVENT)
     anchors = [
         (0.00, PALETTE["Fog"]),
-        (0.23, fog_side),          # around the fog-threshold neighborhood
+        (0.23, fog_side),          # around the ultra-low threshold neighborhood
         (mist_pos, PALETTE["Mist"]),
         (1.00, PALETTE["Clear"]),
     ]
@@ -212,12 +212,12 @@ def aggregate_station_metrics(meta, y_true, y_pred, probs=None):
 
 
 def plot_fog_recall_map(sta_df, output_path, shp_path=None, min_fog_events=5):
-    """Fog recall by station."""
+    """Ultra-low recall by station."""
     shp = load_china_shapefile(shp_path) if shp_path else None
     return plot_station_map(
         sta_df,
         "fog_recall",
-        f"Station Fog Recall (≥{min_fog_events} fog obs)",
+        f"Station Ultra-low Recall (>= {min_fog_events} ultra-low obs)",
         output_path,
         shp_gdf=shp,
         min_events=min_fog_events,
@@ -244,12 +244,12 @@ def plot_fpr_map(sta_df, output_path, shp_path=None, min_clear_events=20):
 
 
 def plot_mist_recall_map(sta_df, output_path, shp_path=None, min_mist_events=5):
-    """Mist recall by station (same style as fog recall map)."""
+    """Moderate-low recall by station (same style as the ultra-low recall map)."""
     shp = load_china_shapefile(shp_path) if shp_path else None
     return plot_station_map(
         sta_df,
         "mist_recall",
-        f"Station Mist Recall (≥{min_mist_events} mist obs)",
+        f"Station Moderate-low Recall (>= {min_mist_events} moderate-low obs)",
         output_path,
         shp_gdf=shp,
         min_events=min_mist_events,
@@ -276,7 +276,7 @@ def plot_accuracy_map(sta_df, output_path, shp_path=None, min_total=50):
 
 
 def classify_visibility(vis_values, fog_threshold=500.0, mist_threshold=1000.0):
-    """Map continuous visibility in meters to Fog/Mist/Clear classes."""
+    """Map continuous visibility in meters to Ultra-low/Moderate-low/Clear classes."""
     vis = np.asarray(vis_values, dtype=np.float64)
     cls = np.full(vis.shape, 2, dtype=np.int64)
     cls[vis < mist_threshold] = 1
@@ -357,10 +357,10 @@ def detect_widespread_fog_events(
     required_valid_mask=None,
 ):
     """
-    Detect nationwide/widespread fog events from the test set.
+    Detect nationwide/widespread ultra-low events from the test set.
 
-    Events are identified from observed fog stations only, then clustered in time.
-    The ranking favors events with many fog stations and broad regional coverage.
+    Events are identified from observed ultra-low stations only, then clustered in time.
+    The ranking favors events with many ultra-low stations and broad regional coverage.
     """
     df = meta[["station_id", "lat", "lon"]].copy()
     df["time"] = _meta_utc_times(meta)
@@ -634,7 +634,7 @@ def _format_event_label(event_row):
         if actual_peak != peak_time:
             prefix = f"{prefix} window center; true peak {actual_peak:%Y-%m-%d %H:00} UTC"
     return (
-        f"{prefix} | peak fog={int(event_row['peak_fog_count'])} | "
+        f"{prefix} | peak ultra-low={int(event_row['peak_fog_count'])} | "
         f"regions={int(event_row['peak_region_count'])} | "
         f"span={event_row['peak_lon_span']:.1f}°×{event_row['peak_lat_span']:.1f}°"
     )
@@ -866,7 +866,7 @@ def plot_widespread_event_panels(
                     ax.text(
                         0.02,
                         0.03,
-                        f"F={counts[0]} M={counts[1]} C={counts[2]}",
+                        f"UL={counts[0]} ML={counts[1]} C={counts[2]}",
                         transform=ax.transAxes,
                         fontsize=6.5,
                         bbox=dict(facecolor="white", alpha=0.78, edgecolor="none", pad=1.5),
@@ -882,7 +882,9 @@ def plot_widespread_event_panels(
         )
         cbar.set_ticks([VIS_MIN_EVENT, 500.0, 1000.0, VIS_MAX_EVENT])
         cbar.set_ticklabels(["50", "500", "1000", "2000"])
-        cbar.set_label("Observed visibility (m) | 500 m=fog threshold, 1000 m=mist threshold")
+        cbar.set_label(
+            "Observed visibility (m) | 500 m=Ultra-low boundary, 1000 m=Low-vis event boundary"
+        )
 
     from matplotlib.patches import Patch
 
@@ -894,7 +896,7 @@ def plot_widespread_event_panels(
         bbox_to_anchor=(0.5, -0.01),
     )
     fig.suptitle(
-        "Widespread Fog Event Case\n" + _format_event_label(event_row),
+        "Widespread Ultra-low Event Case\n" + _format_event_label(event_row),
         fontsize=13,
         fontweight="bold",
         y=0.99,
@@ -1091,7 +1093,7 @@ def plot_three_events_peak_row(
             )
             pmst = pmst_pred[time_mask]
             ax.set_xlabel(
-                f"PMST @ peak: F={(pmst == 0).sum()} M={(pmst == 1).sum()} C={(pmst == 2).sum()}",
+                f"PMST @ peak: UL={(pmst == 0).sum()} ML={(pmst == 1).sum()} C={(pmst == 2).sum()}",
                 fontsize=8,
                 color="#4b5563",
             )
@@ -1110,7 +1112,12 @@ def plot_three_events_peak_row(
         cb.set_ticklabels(["50", "500", "1000", "2000"])
         cb.set_label("Visibility (m)")
 
-    fig.suptitle("Three widespread fog events — observed visibility at peak hour", fontsize=12, fontweight="bold", y=1.02)
+    fig.suptitle(
+        "Three widespread ultra-low events — observed visibility at peak hour",
+        fontsize=12,
+        fontweight="bold",
+        y=1.02,
+    )
     plt.tight_layout(rect=(0, 0.08, 1, 0.95))
     save_figure(fig, output_path)
     plt.close(fig)
@@ -1130,21 +1137,21 @@ def plot_event_metric_comparison(hourly_df, event_row, output_path):
     axes = axes.flatten()
 
     counts_ax = axes[0]
-    counts_ax.plot(x, hourly_df["obs_fog_count"], color=obs_color, marker="o", lw=2.2, label="Obs fog count")
-    counts_ax.plot(x, hourly_df["obs_low_vis_count"], color=obs_color, marker="o", lw=1.4, ls="--", label="Obs low-vis count")
-    counts_ax.plot(x, hourly_df["pmst_fog_count"], color=pmst_color, marker="o", lw=2.0, label="PMST fog count")
-    counts_ax.plot(x, hourly_df["pmst_low_vis_count"], color=pmst_color, marker="o", lw=1.4, ls="--", label="PMST low-vis count")
-    counts_ax.plot(x, hourly_df["ifs_fog_count"], color=ifs_color, marker="s", lw=2.0, label="IFS fog count")
-    counts_ax.plot(x, hourly_df["ifs_low_vis_count"], color=ifs_color, marker="s", lw=1.4, ls="--", label="IFS low-vis count")
+    counts_ax.plot(x, hourly_df["obs_fog_count"], color=obs_color, marker="o", lw=2.2, label="Obs ultra-low count")
+    counts_ax.plot(x, hourly_df["obs_low_vis_count"], color=obs_color, marker="o", lw=1.4, ls="--", label="Obs low-vis event count")
+    counts_ax.plot(x, hourly_df["pmst_fog_count"], color=pmst_color, marker="o", lw=2.0, label="PMST ultra-low count")
+    counts_ax.plot(x, hourly_df["pmst_low_vis_count"], color=pmst_color, marker="o", lw=1.4, ls="--", label="PMST low-vis event count")
+    counts_ax.plot(x, hourly_df["ifs_fog_count"], color=ifs_color, marker="s", lw=2.0, label="IFS ultra-low count")
+    counts_ax.plot(x, hourly_df["ifs_low_vis_count"], color=ifs_color, marker="s", lw=1.4, ls="--", label="IFS low-vis event count")
     counts_ax.set_ylabel("Station Count")
     counts_ax.set_title("Event Footprint Evolution")
     counts_ax.grid(alpha=0.3)
 
     metric_specs = [
-        ("fog_csi", "Fog CSI"),
-        ("fog_recall", "Fog recall"),
-        ("fog_far", "Fog FAR (lower better)"),
-        ("low_vis_recall", "Low-vis recall"),
+        ("fog_csi", "Ultra-low CSI"),
+        ("fog_recall", "Ultra-low recall"),
+        ("fog_far", "Ultra-low FAR (lower better)"),
+        ("low_vis_recall", "Low-vis event recall"),
     ]
     for ax, (metric, title) in zip(axes[1:], metric_specs):
         ax.plot(x, hourly_df[f"pmst_{metric}"], color=pmst_color, marker="o", lw=2.0, label="PMST")
@@ -1168,7 +1175,7 @@ def plot_event_metric_comparison(hourly_df, event_row, output_path):
     handles, labels = counts_ax.get_legend_handles_labels()
     fig.legend(handles, labels, loc="lower center", ncol=3, frameon=True, bbox_to_anchor=(0.5, -0.01))
     fig.suptitle(
-        "PMST vs IFS During Widespread Fog Event\n" + _format_event_label(event_row),
+        "PMST vs IFS During Widespread Ultra-low Event\n" + _format_event_label(event_row),
         fontsize=13,
         fontweight="bold",
         y=0.98,
@@ -1231,10 +1238,10 @@ def plot_event_summary_comparison(summary_df, output_path):
     fig, axes = plt.subplots(2, 2, figsize=(12.5, 8.2), sharex=True)
     axes = axes.flatten()
     panels = [
-        ("fog_csi_mean", "Event-Mean Fog CSI"),
-        ("fog_recall_mean", "Event-Mean Fog recall"),
-        ("low_vis_recall_mean", "Event-Mean Low-vis recall"),
-        ("low_vis_recall_peak", "Peak-hour Low-vis recall"),
+        ("fog_csi_mean", "Event-Mean Ultra-low CSI"),
+        ("fog_recall_mean", "Event-Mean Ultra-low recall"),
+        ("low_vis_recall_mean", "Event-Mean Low-vis event recall"),
+        ("low_vis_recall_peak", "Peak-hour Low-vis event recall"),
     ]
 
     for idx, (ax, (suffix, title)) in enumerate(zip(axes, panels)):
@@ -1266,7 +1273,7 @@ def plot_event_summary_comparison(summary_df, output_path):
 
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="lower center", ncol=2, frameon=True, bbox_to_anchor=(0.5, -0.01))
-    fig.suptitle("Widespread Fog Events: PMST vs IFS Summary", fontsize=13, fontweight="bold", y=0.98)
+    fig.suptitle("Widespread Ultra-low Events: PMST vs IFS Summary", fontsize=13, fontweight="bold", y=0.98)
     plt.tight_layout(rect=(0, 0.05, 1, 0.94))
     save_figure(fig, output_path)
     return fig
@@ -1291,11 +1298,11 @@ def run_widespread_event_evaluation(
     """
     End-to-end event evaluation:
     1. match IFS baseline
-    2. identify nationwide/widespread fog events
+    2. identify nationwide/widespread ultra-low events
     3. save spatial case panels and PMST-vs-IFS metric panels
     """
     if ifs_nc_path is None:
-        print("  [Event] No IFS file provided, skipping widespread fog-event evaluation.")
+        print("  [Event] No IFS file provided, skipping widespread ultra-low event evaluation.")
         return pd.DataFrame()
     if not os.path.exists(ifs_nc_path):
         print(f"  [Event] IFS file not found: {ifs_nc_path}. Skipping event evaluation.")
@@ -1327,7 +1334,7 @@ def run_widespread_event_evaluation(
     print(f"  [Event] Summary saved → {summary_path}")
 
     if event_df.empty:
-        print("  [Event] No widespread fog events met the current thresholds.")
+        print("  [Event] No widespread ultra-low events met the current thresholds.")
         return event_df
 
     event_summary_rows = []

@@ -579,12 +579,12 @@ def plot_summary_bar(summary: pd.DataFrame, out_dir: Path, manifest: Manifest, s
         return
     setup_journal_style()
     metrics = [
-        ("Fog_CSI", "Fog CSI"),
-        ("Fog_R", "Fog recall"),
-        ("Mist_CSI", "Mist CSI"),
-        ("Mist_R", "Mist recall"),
-        ("low_vis_csi", "Low-vis CSI"),
-        ("low_vis_recall", "Low-vis recall"),
+        ("Fog_CSI", "Ultra-low CSI"),
+        ("Fog_R", "Ultra-low recall"),
+        ("Mist_CSI", "Moderate-low CSI"),
+        ("Mist_R", "Moderate-low recall"),
+        ("low_vis_csi", "Low-vis event CSI"),
+        ("low_vis_recall", "Low-vis event recall"),
     ]
     labels = summary["label"].astype(str).tolist()
     x = np.arange(len(labels))
@@ -662,7 +662,7 @@ def plot_static_feature_importance(imp_df: pd.DataFrame, out_dir: Path, sort_met
     ax.barh(top["feature"].astype(str), top[col].astype(float), color=colors)
     ax.axvline(0, color="#222222", lw=0.8)
     ax.set_xlabel(f"Grouped permutation importance ({sort_metric})")
-    ax.set_title("Feature groups that sustain low-visibility skill")
+    ax.set_title("Feature groups that sustain low-vis event skill")
     ax.grid(axis="x", alpha=0.25)
     ax.grid(axis="y", visible=False)
     handles = [
@@ -1264,7 +1264,7 @@ def _event_focus_extent(
 def _draw_visibility_category_legend(ax) -> None:
     ax.set_axis_off()
     ax.text(0.0, 0.92, "Visibility category (m)", ha="left", va="top", fontsize=7.2)
-    labels = [("Fog", "<500"), ("Mist", "500-1000"), ("Clear", ">=1000")]
+    labels = [("Ultra-low", "<500"), ("Moderate-low", "500-1000"), ("Clear", ">=1000")]
     for i, (name, threshold) in enumerate(labels):
         x0 = i / 3.0 + 0.018
         width = 0.27
@@ -1462,7 +1462,7 @@ def plot_event_environment_grid(
         manifest,
         all_sources,
         notes=(
-            "Rows are UTC hours around the selected widespread low-visibility event. "
+            "Rows are UTC hours around the selected widespread low-vis event. "
             "The first three columns use shared visibility categories; the model panel is categorical. "
             "RH2m and PM10 are raw gridded forecast fields read only for the displayed valid times."
         ),
@@ -1553,7 +1553,7 @@ def run_event_plots(
                 manifest.add(
                     three_footprint_path.name,
                     event_sources,
-                    notes="Three selected widespread fog events with complete test-set windows where available.",
+                    notes="Three selected widespread ultra-low events with complete test-set windows where available.",
                     n=int(len(y_cls)),
                     matched_ifs=int(np.sum(ifs_valid)) if ifs_valid is not None else None,
                 )
@@ -1570,7 +1570,7 @@ def run_event_plots(
                 manifest.add(
                     three_peak_path.name,
                     event_sources,
-                    notes="Observed visibility at the peak hour for the same three selected widespread fog events.",
+                    notes="Observed visibility at the peak hour for the same three selected widespread ultra-low events.",
                     n=int(len(y_cls)),
                 )
         plot_event_environment_grids(
@@ -1764,7 +1764,7 @@ def evaluate_target(
                 "fog_recall",
                 "n_fog",
                 5,
-                "Station Fog Recall",
+                "Station Ultra-low Recall",
                 "fig8_station_fog_recall",
                 out_dir,
                 manifest,
@@ -1779,7 +1779,7 @@ def evaluate_target(
                 "mist_recall",
                 "n_mist",
                 5,
-                "Station Mist Recall",
+                "Station Moderate-low Recall",
                 "fig8_station_mist_recall",
                 out_dir,
                 manifest,
@@ -1794,7 +1794,7 @@ def evaluate_target(
                 "low_vis_csi",
                 "n_low_vis",
                 5,
-                "Station Low-Visibility CSI",
+                "Station Low-vis Event CSI",
                 "fig8_station_low_vis_csi",
                 out_dir,
                 manifest,

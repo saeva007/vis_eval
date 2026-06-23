@@ -52,6 +52,18 @@ METRIC_KEYS = [
     "false_positive_rate",
     "accuracy",
 ]
+METRIC_DISPLAY = {
+    "low_vis_f2": "Low-vis event F2",
+    "low_vis_csi": "Low-vis event CSI",
+    "low_vis_recall": "Low-vis event recall",
+    "low_vis_precision": "Low-vis event precision",
+    "Fog_CSI": "Ultra-low CSI",
+    "Fog_R": "Ultra-low recall",
+    "Mist_CSI": "Moderate-low CSI",
+    "Mist_R": "Moderate-low recall",
+    "false_positive_rate": "False positive rate",
+    "accuracy": "Accuracy",
+}
 
 
 def abs_under_base(base: Path, path_value: str) -> Path:
@@ -339,7 +351,8 @@ def plot_importance(df: pd.DataFrame, out_dir: Path, sort_metric: str) -> None:
     fig, ax = plt.subplots(figsize=(8.8, max(5.0, 0.28 * len(top) + 1.2)))
     ax.barh(top["feature"].astype(str), top[col].astype(float), color=colors)
     ax.axvline(0.0, color="black", lw=0.8)
-    ax.set_xlabel(f"Permutation importance ({sort_metric}; positive = worse after shuffling)")
+    metric_label = METRIC_DISPLAY.get(sort_metric, sort_metric)
+    ax.set_xlabel(f"Permutation importance ({metric_label}; positive = worse after shuffling)")
     ax.set_ylabel("")
     ax.set_title("Grouped permutation feature importance")
     ax.grid(axis="x", alpha=0.25)

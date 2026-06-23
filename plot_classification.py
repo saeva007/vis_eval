@@ -104,7 +104,7 @@ def plot_per_class_prf1(
     """
     setup_paper_style()
     apply_palette()
-    class_names = ["Fog", "Mist", "Clear"]
+    class_names = ["Ultra-low", "Moderate-low", "Clear"]
     metrics = ["Precision", "Recall", "F1"]
     keys_p = ["Fog_P", "Mist_P", "Clear_P"]
     keys_r = ["Fog_R", "Mist_R", "Clear_R"]
@@ -168,7 +168,7 @@ def plot_per_class_prf1(
 
 
 def plot_pr_curves(probs, y_true, class_names_short, output_path):
-    """Fog and Mist one-vs-rest PR curves."""
+    """Ultra-low and Moderate-low one-vs-rest PR curves."""
     setup_paper_style()
     apply_palette()
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
@@ -197,8 +197,8 @@ def plot_threshold_sweep(probs, y_true, output_path, fog_th=0.46, mist_th=0.38):
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
     # Left: POD vs FAR
     ax = axes[0]
-    ax.plot(sweep["far_fog"], sweep["pod_fog"], "C0-", lw=2, label="Fog POD vs FAR")
-    ax.plot(sweep["far_mist"], sweep["pod_mist"], "C1-", lw=2, label="Mist POD vs FAR")
+    ax.plot(sweep["far_fog"], sweep["pod_fog"], "C0-", lw=2, label="Ultra-low POD vs FAR")
+    ax.plot(sweep["far_mist"], sweep["pod_mist"], "C1-", lw=2, label="Moderate-low POD vs FAR")
     ax.axvline(x=0.5, color="gray", ls="--", alpha=0.5)
     ax.set_xlabel("False Alarm Ratio")
     ax.set_ylabel("Probability of Detection")
@@ -208,10 +208,10 @@ def plot_threshold_sweep(probs, y_true, output_path, fog_th=0.46, mist_th=0.38):
     ax.set_ylim(0, 1.05)
     # Right: CSI vs threshold
     ax = axes[1]
-    ax.plot(sweep["fog_thresholds"], sweep["csi_fog"], "C0-", lw=2, label="Fog CSI")
-    ax.plot(sweep["mist_thresholds"], sweep["csi_mist"], "C1-", lw=2, label="Mist CSI")
-    ax.axvline(x=fog_th, color="C0", ls="--", alpha=0.7, label=f"Fog op={fog_th}")
-    ax.axvline(x=mist_th, color="C1", ls="--", alpha=0.7, label=f"Mist op={mist_th}")
+    ax.plot(sweep["fog_thresholds"], sweep["csi_fog"], "C0-", lw=2, label="Ultra-low CSI")
+    ax.plot(sweep["mist_thresholds"], sweep["csi_mist"], "C1-", lw=2, label="Moderate-low CSI")
+    ax.axvline(x=fog_th, color="C0", ls="--", alpha=0.7, label=f"Ultra-low op={fog_th}")
+    ax.axvline(x=mist_th, color="C1", ls="--", alpha=0.7, label=f"Moderate-low op={mist_th}")
     ax.set_xlabel("Threshold")
     ax.set_ylabel("CSI")
     ax.legend()
@@ -225,14 +225,14 @@ def plot_threshold_sweep(probs, y_true, output_path, fog_th=0.46, mist_th=0.38):
 
 
 def plot_reliability_diagram(probs, y_true, output_path, n_bins=10):
-    """Reliability diagram for Fog and Mist probabilities."""
+    """Reliability diagram for Ultra-low and Moderate-low probabilities."""
     setup_paper_style()
     apply_palette()
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
     ece, brier, bin_acc, bin_conf = compute_calibration_metrics(
         probs, y_true, n_bins=n_bins
     )
-    for idx, (cls_name, ax) in enumerate(zip(["Fog", "Mist"], axes)):
+    for idx, (cls_name, ax) in enumerate(zip(["Ultra-low", "Moderate-low"], axes)):
         acc = bin_acc[idx]
         conf = bin_conf[idx]
         ax.plot([0, 1], [0, 1], "k--", lw=1, alpha=0.5)
@@ -243,7 +243,7 @@ def plot_reliability_diagram(probs, y_true, output_path, n_bins=10):
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1.05)
         ax.grid(alpha=0.3)
-    plt.suptitle(f"Brier: Fog={brier[0]:.3f}, Mist={brier[1]:.3f}")
+    plt.suptitle(f"Brier: Ultra-low={brier[0]:.3f}, Moderate-low={brier[1]:.3f}")
     plt.tight_layout()
     if output_path:
         save_figure(fig, output_path)

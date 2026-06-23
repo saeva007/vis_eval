@@ -143,13 +143,13 @@ def plot_compare(tab_utc: pd.DataFrame, tab_local: pd.DataFrame, out_path: Path,
 
     axes[0].plot(tab_utc["hour"], tab_utc["low_vis_rate"] * 100.0, "o-", lw=2.0, label="raw time is UTC: local=raw+8")
     axes[0].plot(tab_local["hour"], tab_local["low_vis_rate"] * 100.0, "s-", lw=1.8, label="raw time is BJT/local: local=raw")
-    axes[0].set_ylabel("Low-vis rate (%)")
+    axes[0].set_ylabel("Low-vis event rate (%)")
     axes[0].legend(frameon=False)
 
     width = 0.38
-    axes[1].bar(tab_utc["hour"] - width / 2, tab_utc["fog_count"], width=width, color="#2E5A87", alpha=0.85, label="Fog, raw UTC")
-    axes[1].bar(tab_utc["hour"] - width / 2, tab_utc["mist_count"], width=width, bottom=tab_utc["fog_count"], color="#E69F00", alpha=0.85, label="Mist, raw UTC")
-    axes[1].bar(tab_local["hour"] + width / 2, tab_local["low_vis_count"], width=width, color="#7F7F7F", alpha=0.35, label="Low-vis, raw local")
+    axes[1].bar(tab_utc["hour"] - width / 2, tab_utc["fog_count"], width=width, color="#2E5A87", alpha=0.85, label="Ultra-low, raw UTC")
+    axes[1].bar(tab_utc["hour"] - width / 2, tab_utc["mist_count"], width=width, bottom=tab_utc["fog_count"], color="#E69F00", alpha=0.85, label="Moderate-low, raw UTC")
+    axes[1].bar(tab_local["hour"] + width / 2, tab_local["low_vis_count"], width=width, color="#7F7F7F", alpha=0.35, label="Low-vis event, raw local")
     axes[1].set_ylabel("Counts")
     axes[1].legend(frameon=False, ncol=3, fontsize=8)
 
@@ -208,8 +208,8 @@ def main() -> None:
         },
         "interpretation_hint": (
             "Visibility is a weather outcome, so use it as supporting evidence. "
-            "A local-clock early-morning low-vis peak is more physically plausible "
-            "for fog-prone samples than a daytime/afternoon peak."
+            "A local-clock early-morning low-vis event peak is more physically plausible "
+            "for ultra-low-prone samples than a daytime/afternoon peak."
         ),
     }
     with open(out_dir / "visibility_diurnal_summary.json", "w", encoding="utf-8") as f:

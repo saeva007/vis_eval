@@ -122,8 +122,8 @@ def panel_soft_targets(ax) -> None:
     fog, mist, clear = proposed_soft_targets(x)
     ax.axvspan(400, 600, color="#D7DEE8", alpha=0.45, lw=0)
     ax.axvspan(800, 1200, color="#D7DEE8", alpha=0.30, lw=0)
-    ax.plot(x, fog, color="#2E5A87", lw=1.8, label="Fog target")
-    ax.plot(x, mist, color="#D09A3A", lw=1.8, label="Mist target")
+    ax.plot(x, fog, color="#2E5A87", lw=1.8, label="Ultra-low target")
+    ax.plot(x, mist, color="#D09A3A", lw=1.8, label="Moderate-low target")
     ax.plot(x, clear, color="#777777", lw=1.8, label="Clear target")
     for val, txt in [(500, "500 m"), (1000, "1000 m")]:
         ax.axvline(val, color="#333333", lw=0.7, ls="--", alpha=0.65)
@@ -161,26 +161,30 @@ def panel_overall(ax, overall: pd.DataFrame, labels: Sequence[str]) -> None:
     ax.set_xticklabels([name for _, name in metrics])
     ax.set_ylabel("Score")
     ax.set_ylim(0, 1.0)
-    ax.set_title("Operational low-visibility skill")
+    ax.set_title("Low-vis event skill")
     ax.grid(axis="y", color="#E5E7EB", lw=0.6)
     ax.text(3, 0.98, "lower is better", ha="center", va="top", fontsize=6.4, color="#555555")
     ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.03), ncol=1, frameon=False)
 
 
-def panel_fog_mist_metrics(ax, per_class: pd.DataFrame, labels: Sequence[str]) -> None:
+def panel_ultra_moderate_metrics(ax, per_class: pd.DataFrame, labels: Sequence[str]) -> None:
     df = per_class.copy()
     if "display_label" not in df.columns:
         df["display_label"] = df.apply(display_label, axis=1)
+    class_aliases = {
+        "Fog": {"Fog", "Ultra-low"},
+        "Mist": {"Mist", "Moderate-low"},
+    }
 
     groups = [
-        ("Fog", "csi", "Fog\nCSI"),
-        ("Fog", "recall", "Fog\nRecall"),
-        ("Fog", "precision", "Fog\nPrecision"),
-        ("Fog", "far", "Fog\nFAR"),
-        ("Mist", "csi", "Mist\nCSI"),
-        ("Mist", "recall", "Mist\nRecall"),
-        ("Mist", "precision", "Mist\nPrecision"),
-        ("Mist", "far", "Mist\nFAR"),
+        ("Fog", "csi", "Ultra-low\nCSI"),
+        ("Fog", "recall", "Ultra-low\nRecall"),
+        ("Fog", "precision", "Ultra-low\nPrecision"),
+        ("Fog", "far", "Ultra-low\nFAR"),
+        ("Mist", "csi", "Moderate-low\nCSI"),
+        ("Mist", "recall", "Moderate-low\nRecall"),
+        ("Mist", "precision", "Moderate-low\nPrecision"),
+        ("Mist", "far", "Moderate-low\nFAR"),
     ]
     x = np.arange(len(groups))
     offsets, bar_width = grouped_bar_geometry(len(labels), total_width=0.82)
@@ -188,7 +192,10 @@ def panel_fog_mist_metrics(ax, per_class: pd.DataFrame, labels: Sequence[str]) -
     for offset, label in zip(offsets, labels):
         vals = []
         for class_name, metric, _ in groups:
-            sub = df[(df["class_name"] == class_name) & (df["display_label"] == label)]
+            sub = df[
+                (df["class_name"].astype(str).isin(class_aliases[class_name]))
+                & (df["display_label"] == label)
+            ]
             value = sub.iloc[0][metric] if not sub.empty and metric in sub.columns else np.nan
             vals.append(float(value) if pd.notna(value) else np.nan)
         ax.bar(
@@ -206,7 +213,7 @@ def panel_fog_mist_metrics(ax, per_class: pd.DataFrame, labels: Sequence[str]) -
     ax.set_xticklabels([name for _, _, name in groups])
     ax.set_ylabel("Score")
     ax.set_ylim(0, 1.0)
-    ax.set_title("Fog and Mist skill by class")
+    ax.set_title("Ultra-low and Moderate-low skill by class")
     ax.grid(axis="y", color="#E5E7EB", lw=0.6)
     ax.text(3, 0.98, "FAR: lower is better", ha="center", va="top", fontsize=6.4, color="#555555")
     ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.03), ncol=1, frameon=False)
@@ -217,10 +224,19 @@ def panel_class_heatmap(ax, per_class: pd.DataFrame, labels: Sequence[str]) -> N
     if "display_label" not in df.columns:
         df["display_label"] = df.apply(display_label, axis=1)
     classes = ["Fog", "Mist", "Clear"]
+    class_display = {"Fog": "Ultra-low", "Mist": "Moderate-low", "Clear": "Clear"}
+    class_aliases = {
+        "Fog": {"Fog", "Ultra-low"},
+        "Mist": {"Mist", "Moderate-low"},
+        "Clear": {"Clear"},
+    }
     mat = np.full((len(classes), len(labels)), np.nan)
     for i, cls in enumerate(classes):
         for j, label in enumerate(labels):
-            sub = df[(df["class_name"] == cls) & (df["display_label"] == label)]
+            sub = df[
+                (df["class_name"].astype(str).isin(class_aliases[cls]))
+                & (df["display_label"] == label)
+            ]
             if not sub.empty and "csi" in sub.columns:
                 mat[i, j] = float(sub.iloc[0]["csi"])
     vmax = max(0.25, float(np.nanmax(mat)) if np.isfinite(mat).any() else 1.0)
@@ -228,7 +244,7 @@ def panel_class_heatmap(ax, per_class: pd.DataFrame, labels: Sequence[str]) -> N
     ax.set_xticks(np.arange(len(labels)))
     ax.set_xticklabels(labels, rotation=30, ha="right")
     ax.set_yticks(np.arange(len(classes)))
-    ax.set_yticklabels(classes)
+    ax.set_yticklabels([class_display[c] for c in classes])
     ax.set_title("Class-wise CSI")
     for i in range(mat.shape[0]):
         for j in range(mat.shape[1]):
@@ -245,8 +261,8 @@ def panel_boundary(ax, boundary: pd.DataFrame, labels: Sequence[str]) -> None:
     if "display_label" not in df.columns:
         df["display_label"] = df.apply(display_label, axis=1)
     bands = [
-        ("fog_mist_400_600m", "400-600 m"),
-        ("mist_clear_800_1200m", "800-1200 m"),
+        ("fog_mist_400_600m", "Ultra-low/Moderate-low\n400-600 m"),
+        ("mist_clear_800_1200m", "Moderate-low/Clear\n800-1200 m"),
     ]
     x = np.arange(len(bands))
     offsets, bar_width = grouped_bar_geometry(len(labels))
@@ -322,18 +338,18 @@ def save_split_figures(
         out_dir,
         f"{figure_stem}_panel_b_lowvis_metrics",
         sources,
-        "Standalone panel b: aggregate low-visibility CSI, recall, precision and false-positive rate.",
+        "Standalone panel b: aggregate low-vis event CSI, recall, precision and false-positive rate.",
     )
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(5.8, 3.4), constrained_layout=True)
-    panel_fog_mist_metrics(ax, per_class, labels)
+    panel_ultra_moderate_metrics(ax, per_class, labels)
     save_figure(
         fig,
         out_dir,
-        f"{figure_stem}_fog_mist_metrics",
+        f"{figure_stem}_ultra_moderate_metrics",
         sources,
-        "Fog and Mist per-class CSI, recall, precision and false-alarm ratio.",
+        "Ultra-low and Moderate-low per-class CSI, recall, precision and false-alarm ratio.",
     )
     plt.close(fig)
 
@@ -364,9 +380,9 @@ def write_caption(out_dir: Path, stem: str) -> None:
     text = (
         "Figure caption draft\n"
         "a, Visibility-aware soft targets used by the proposed rare-event focal objective around the 500 m and 1000 m operational thresholds. "
-        "b, Test-set low-visibility CSI, recall, precision and clear-sky false-positive rate. "
-        "An additional standalone panel reports Fog and Mist CSI, recall, precision and false-alarm ratio separately, avoiding reliance on the aggregate low-visibility score alone. "
-        "c, Class-wise critical success index for Fog, Mist and Clear. "
+        "b, Test-set low-vis event CSI, recall, precision and clear-sky false-positive rate. "
+        "An additional standalone panel reports Ultra-low and Moderate-low CSI, recall, precision and false-alarm ratio separately, avoiding reliance on the aggregate low-vis event score alone. "
+        "c, Class-wise critical success index for Ultra-low, Moderate-low and Clear. "
         "d, Accuracy inside the two threshold-neighbour visibility bands where hard classification and direct regression are expected to be most fragile.\n"
     )
     (out_dir / f"{stem}_caption.md").write_text(text, encoding="utf-8")

@@ -24,11 +24,11 @@ import pandas as pd
 
 
 KEY_METRICS = [
-    ("Fog_CSI", "Fog CSI", "higher"),
-    ("Mist_CSI", "Mist CSI", "higher"),
-    ("low_vis_csi", "Low-vis CSI", "higher"),
-    ("low_vis_recall", "Low-vis recall", "higher"),
-    ("low_vis_precision", "Low-vis precision", "higher"),
+    ("Fog_CSI", "Ultra-low CSI", "higher"),
+    ("Mist_CSI", "Moderate-low CSI", "higher"),
+    ("low_vis_csi", "Low-vis event CSI", "higher"),
+    ("low_vis_recall", "Low-vis event recall", "higher"),
+    ("low_vis_precision", "Low-vis event precision", "higher"),
     ("false_positive_rate", "Clear FPR", "lower"),
 ]
 

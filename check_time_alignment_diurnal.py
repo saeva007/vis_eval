@@ -9,7 +9,7 @@ NetCDF first. It compares two interpretations of the raw naive timestamp:
 2. raw_is_local: local clock = raw_time
 
 The physically plausible interpretation should place shortwave radiation near
-local noon and 2 m temperature near local afternoon. Visibility/low-visibility
+local noon and 2 m temperature near local afternoon. Visibility/low-vis event
 counts can then be read on the same local-clock axis.
 """
 
@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--nc", default=DEFAULT_NC, help="Input merged Tianji/station NetCDF.")
     p.add_argument("--out_dir", default="time_alignment_check", help="Output directory.")
-    p.add_argument("--station_id", default="", help="Station id to plot. If omitted, choose by low-vis count.")
+    p.add_argument("--station_id", default="", help="Station id to plot. If omitted, choose by low-vis event count.")
     p.add_argument("--lat", type=float, default=np.nan, help="Choose nearest station to this latitude.")
     p.add_argument("--lon", type=float, default=np.nan, help="Choose nearest station to this longitude.")
     p.add_argument("--start", default="", help="Raw timestamp slice start, e.g. 2025-01-01.")
@@ -111,7 +111,7 @@ def choose_station(ds: xr.Dataset, args: argparse.Namespace, station_dim: str, v
         vis_m = vis_m * 1000.0
     low_counts = ((vis_m >= 0.0) & (vis_m < 1000.0)).sum("time")
     i = int(np.nanargmax(low_counts.values))
-    return coord.values[i].item(), "max low-vis count in selected window"
+    return coord.values[i].item(), "max low-vis event count in selected window"
 
 
 def to_1d_values(da: xr.DataArray) -> np.ndarray:
@@ -212,7 +212,7 @@ def plot_diurnal_compare(tab_utc: pd.DataFrame, tab_local: pd.DataFrame, out_pat
     specs = [
         ("t2m_c_median", "2 m temperature median (deg C)"),
         ("sw_rad_median" if "sw_rad_median" in tab_utc else "visibility_m_median", "Shortwave median (W m-2)" if "sw_rad_median" in tab_utc else "Visibility median (m)"),
-        ("low_vis_rate", "Observed low-vis rate"),
+        ("low_vis_rate", "Observed low-vis event rate"),
     ]
     for ax, (col, ylabel) in zip(axes, specs):
         ax.axvspan(0, 6, color="#D9E4F5", alpha=0.35, lw=0)

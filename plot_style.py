@@ -8,15 +8,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 
-# Palette per plan: Fog=deep blue, Mist=amber/orange, Clear=neutral gray
+# Internal keys keep the historical class names; display labels use threshold bins.
 PALETTE = {
     "Fog":   "#2E5A87",  # deep blue
     "Mist":  "#E69F00",  # amber
     "Clear": "#7F7F7F",  # neutral gray
 }
 CLASS_COLORS = [PALETTE["Fog"], PALETTE["Mist"], PALETTE["Clear"]]
-CLASS_NAMES  = ["Fog (<500 m)", "Mist (500–1000 m)", "Clear (≥1000 m)"]
-CLASS_SHORT  = ["Fog", "Mist", "Clear"]
+CLASS_NAMES  = ["Ultra-low (<500 m)", "Moderate-low (500–1000 m)", "Clear (≥1000 m)"]
+CLASS_SHORT  = ["Ultra-low", "Moderate-low", "Clear"]
 
 # Skill heatmaps
 CMAP_SKILL   = "cividis"
@@ -57,7 +57,7 @@ def save_figure(fig, path, dpi=300):
 
 
 def apply_palette():
-    """Set default color cycle for Fog/Mist/Clear."""
+    """Set default color cycle for Ultra-low/Moderate-low/Clear."""
     import matplotlib.pyplot as plt
     plt.rcParams["axes.prop_cycle"] = plt.cycler(color=CLASS_COLORS)
 

@@ -41,11 +41,11 @@ LOSS_LABELS: Dict[str, str] = {
     "plain_focal_loss": "Focal loss",
 }
 
-CLASS_NAMES = ("Fog", "Mist", "Clear")
+CLASS_NAMES = ("Ultra-low", "Moderate-low", "Clear")
 BOUNDARY_BANDS: Tuple[Tuple[str, str, float, float], ...] = (
-    ("fog_mist_400_600m", "Fog-Mist transition (400-600 m)", 400.0, 600.0),
-    ("mist_clear_800_1200m", "Mist-Clear transition (800-1200 m)", 800.0, 1200.0),
-    ("low_visibility_0_1000m", "All observed low visibility (<1000 m)", 0.0, 1000.0),
+    ("fog_mist_400_600m", "Ultra-low/Moderate-low transition (400-600 m)", 400.0, 600.0),
+    ("mist_clear_800_1200m", "Moderate-low/Clear transition (800-1200 m)", 800.0, 1200.0),
+    ("low_visibility_0_1000m", "Low-vis event (<1000 m)", 0.0, 1000.0),
 )
 
 

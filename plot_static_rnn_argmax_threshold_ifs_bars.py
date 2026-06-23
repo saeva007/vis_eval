@@ -39,10 +39,10 @@ METHOD_COLORS = {
 }
 
 PANELS: Sequence[Tuple[str, Sequence[Tuple[str, str]]]] = (
-    ("Fog", (("Fog_P", "Precision"), ("Fog_R", "Recall"), ("Fog_CSI", "CSI"))),
-    ("Mist", (("Mist_P", "Precision"), ("Mist_R", "Recall"), ("Mist_CSI", "CSI"))),
+    ("Ultra-low", (("Fog_P", "Precision"), ("Fog_R", "Recall"), ("Fog_CSI", "CSI"))),
+    ("Moderate-low", (("Mist_P", "Precision"), ("Mist_R", "Recall"), ("Mist_CSI", "CSI"))),
     (
-        "Low visibility",
+        "Low-vis event",
         (("low_vis_precision", "Precision"), ("low_vis_recall", "Recall"), ("low_vis_csi", "CSI")),
     ),
     ("Overall / false alarms", (("accuracy", "Accuracy"), ("false_positive_rate", "Clear FPR"))),

@@ -30,7 +30,7 @@ except ImportError:
 def _pred_from_threshold_rule(probs, fog_th, mist_th, threshold_rule="default"):
     """
     Map threshold_rule to the same pred_* helpers as the training / paper_eval notebooks.
-    - default: pred_from_thresholds (mist band then fog overwrite)
+    - default: pred_from_thresholds (moderate-low band then ultra-low overwrite)
     - mutual:  pred_from_thresholds_mutual (aligned with ComprehensiveMetrics._build_full_metrics)
     - joint:   pred_from_joint_thresholds
     """
@@ -136,7 +136,7 @@ def _compute_scenario_metrics(y_true, y_pred):
     m_fog = binary_metrics_from_preds(y_fog, pred_fog)
     m_mist = binary_metrics_from_preds(y_mist, pred_mist)
 
-    # Low-vis precision/recall for the combined Fog+Mist event.
+    # Low-vis event precision/recall for the combined class-0/class-1 event.
     low_vis_pred = (y_pred <= 1)
     low_vis_true = (y_true <= 1)
     lv_prec = (low_vis_true & low_vis_pred).sum() / low_vis_pred.sum() if low_vis_pred.sum() > 0 else np.nan
@@ -366,13 +366,19 @@ def save_scenario_table(results, output_path):
 
 
 def plot_scenario_robustness(scenario_results, output_path):
-    """Grouped bar chart of Fog/Mist skill plus low-vis precision and recall."""
+    """Grouped bar chart of Ultra-low/Moderate-low skill plus low-vis event precision and recall."""
     setup_paper_style()
     apply_palette()
 
     names = [k for k in scenario_results if scenario_results[k]["n"] >= 50]
     metrics = ["fog_csi", "fog_pod", "mist_csi", "lv_precision", "lv_recall"]
-    labels = ["Fog CSI", "Fog POD", "Mist CSI", "Low-vis Prec", "Low-vis Recall"]
+    labels = [
+        "Ultra-low CSI",
+        "Ultra-low POD",
+        "Moderate-low CSI",
+        "Low-vis event Prec",
+        "Low-vis event Recall",
+    ]
 
     x = np.arange(len(names))
     w = 0.78 / max(len(metrics), 1)
@@ -397,7 +403,7 @@ def plot_scenario_robustness(scenario_results, output_path):
 
 
 def plot_scenario_detailed_multipanel(scenario_results, output_path):
-    """Multipanel figure: Fog/Mist CSI, low-vis precision/recall, and FPR by scenario."""
+    """Multipanel figure: Ultra-low/Moderate-low CSI, low-vis event precision/recall, and FPR by scenario."""
     setup_paper_style()
     apply_palette()
 
@@ -406,10 +412,10 @@ def plot_scenario_detailed_multipanel(scenario_results, output_path):
         return None
 
     panels = [
-        ("fog_csi", "Fog CSI", "viridis"),
-        ("mist_csi", "Mist CSI", "plasma"),
-        ("lv_precision", "Low-vis Precision", "cividis"),
-        ("lv_recall", "Low-vis Recall", "YlGnBu"),
+        ("fog_csi", "Ultra-low CSI", "viridis"),
+        ("mist_csi", "Moderate-low CSI", "plasma"),
+        ("lv_precision", "Low-vis event Precision", "cividis"),
+        ("lv_recall", "Low-vis event Recall", "YlGnBu"),
         ("fpr", "False Positive Rate (lower=better)", "Reds_r"),
     ]
 
@@ -517,7 +523,13 @@ def plot_forecast_init_comparison(results, output_path, min_n=50):
     setup_paper_style()
     apply_palette()
     metrics = ["fog_csi", "fog_pod", "mist_csi", "lv_precision", "lv_recall"]
-    labels = ["Fog CSI", "Fog POD", "Mist CSI", "Low-vis Prec", "Low-vis Recall"]
+    labels = [
+        "Ultra-low CSI",
+        "Ultra-low POD",
+        "Moderate-low CSI",
+        "Low-vis event Prec",
+        "Low-vis event Recall",
+    ]
     x = np.arange(len(keys))
     w = 0.78 / max(len(metrics), 1)
     fig, ax = plt.subplots(figsize=(max(8, len(keys) * 1.8), 5))
@@ -560,7 +572,13 @@ def save_forecast_init_metrics_table(results, output_path):
 # Stratified confusion summaries and bottleneck table (Priority 1 diagnostics)
 # -----------------------------------------------------------------------------
 
-CONFUSION_TYPES = ["fog->mist", "mist->fog", "mist->clear", "clear->mist", "clear->fog"]
+CONFUSION_TYPES = [
+    "ultra-low->moderate-low",
+    "moderate-low->ultra-low",
+    "moderate-low->clear",
+    "clear->moderate-low",
+    "clear->ultra-low",
+]
 
 
 def _confusion_type(y_true, pred):
@@ -568,15 +586,15 @@ def _confusion_type(y_true, pred):
     if y_true == pred:
         return "correct"
     if y_true == 0 and pred == 1:
-        return "fog->mist"
+        return "ultra-low->moderate-low"
     if y_true == 1 and pred == 0:
-        return "mist->fog"
+        return "moderate-low->ultra-low"
     if y_true == 1 and pred == 2:
-        return "mist->clear"
+        return "moderate-low->clear"
     if y_true == 2 and pred == 1:
-        return "clear->mist"
+        return "clear->moderate-low"
     if y_true == 2 and pred == 0:
-        return "clear->fog"
+        return "clear->ultra-low"
     return "other"
 
 

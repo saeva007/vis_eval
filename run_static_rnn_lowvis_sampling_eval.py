@@ -25,10 +25,10 @@ SAMPLING_EXPERIMENTS: Dict[int, str] = {
 }
 
 SAMPLING_LABELS: Dict[str, str] = {
-    "natural_shuffle": "Natural shuffle",
-    "current_stratified": "Current stratified",
-    "light_lowvis_oversample": "Light low-vis oversampling",
-    "heavy_lowvis_oversample": "Heavy low-vis oversampling",
+    "natural_shuffle": "No Low-vis event oversampling",
+    "current_stratified": "With Low-vis event oversampling",
+    "light_lowvis_oversample": "Light Low-vis event oversampling",
+    "heavy_lowvis_oversample": "Heavy Low-vis event oversampling",
 }
 
 CLASS_NAMES = ("Fog", "Mist", "Clear")
@@ -57,7 +57,7 @@ def parse_args() -> argparse.Namespace:
         "--experiments",
         "--matrix_experiments",
         dest="experiments",
-        default=os.environ.get("LOWVIS_RNN_SAMPLING_EXPERIMENTS", "0:1:2:3"),
+        default=os.environ.get("LOWVIS_RNN_SAMPLING_EXPERIMENTS", "0:1"),
         help="Sampling experiment ids separated by colon/comma/space.",
     )
     p.add_argument("--allow_missing", action="store_true")
