@@ -104,6 +104,7 @@ try:
         setup_journal_style,
         write_report,
         export_per_sample,
+        finish_figure_layout,
     )
 except Exception as exc:  # pragma: no cover - import failure must be explicit remotely.
     raise RuntimeError(f"Cannot import journal evaluation helpers from {VIS_EVAL_DIR}") from exc
@@ -598,7 +599,7 @@ def plot_summary_bar(summary: pd.DataFrame, out_dir: Path, manifest: Manifest, s
     labels = summary["label"].astype(str).tolist()
     x = np.arange(len(labels))
     width = min(0.12, 0.78 / len(metrics))
-    fig, ax = plt.subplots(figsize=(max(9.0, 0.82 * len(labels)), 4.6))
+    fig, ax = plt.subplots(figsize=(max(9.2, 0.86 * len(labels)), 5.0))
     for i, (key, label) in enumerate(metrics):
         vals = summary[key].astype(float).to_numpy()
         ax.bar(x + (i - (len(metrics) - 1) / 2) * width, vals, width * 0.96, label=label)
@@ -610,7 +611,7 @@ def plot_summary_bar(summary: pd.DataFrame, out_dir: Path, manifest: Manifest, s
     ax.legend(ncol=3, frameon=False, loc="upper center", bbox_to_anchor=(0.5, 1.22))
     ax.grid(axis="y", alpha=0.25)
     ax.grid(axis="x", visible=False)
-    fig.tight_layout()
+    finish_figure_layout(fig, rect=(0.02, 0.04, 0.98, 0.78), h_pad=1.4)
     save_fig_pair(fig, out_dir, "fig_static_rnn_model_matrix_summary", manifest, sources, notes="Static-RNN main/ablation checkpoint comparison.")
 
 

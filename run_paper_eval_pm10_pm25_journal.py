@@ -91,6 +91,7 @@ try:
         plot_three_events_peak_row,
         load_china_shapefile as _load_china_shapefile,
         _draw_event_basemap as _plot_spatial_event_basemap,
+        _ordered_events_for_display,
     )
 except Exception:
     run_widespread_event_evaluation = None
@@ -99,6 +100,7 @@ except Exception:
     plot_three_events_peak_row = None
     _load_china_shapefile = None
     _plot_spatial_event_basemap = None
+    _ordered_events_for_display = None
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +250,14 @@ def add_panel_label(ax, label: str, x: float = -0.10, y: float = 1.03) -> None:
         fontweight="bold",
         va="bottom",
     )
+
+
+def finish_figure_layout(fig, rect=(0.02, 0.02, 0.98, 0.96), h_pad: float = 1.0, w_pad: float = 0.8) -> None:
+    """Apply tight layout with explicit reserved space for legends and titles."""
+    try:
+        fig.tight_layout(rect=rect, h_pad=h_pad, w_pad=w_pad)
+    except Exception as exc:
+        print(f"  [WARN] tight_layout failed: {exc}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1229,7 +1239,7 @@ def plot_csi_recall_pmst_vs_ifs(
         ("Moderate-low", [("Mist_CSI", "CSI"), ("Mist_R", "Recall")]),
         ("Low-vis event", [("low_vis_csi", "CSI"), ("low_vis_recall", "Recall")]),
     ]
-    fig, axes = plt.subplots(1, 3, figsize=(10.8, 3.6), sharey=False)
+    fig, axes = plt.subplots(1, 3, figsize=(11.2, 4.2), sharey=False)
     for ax_idx, (ax, (group, sub)) in enumerate(zip(axes, panels)):
         x = np.arange(len(sub))
         width = 0.32
@@ -1249,8 +1259,8 @@ def plot_csi_recall_pmst_vs_ifs(
         ax.grid(axis="x", visible=False)
     handles, labels = axes[0].get_legend_handles_labels()
     if handles:
-        fig.legend(handles, labels, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.05))
-    fig.tight_layout()
+        fig.legend(handles, labels, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 0.985))
+    finish_figure_layout(fig, rect=(0.02, 0.02, 0.98, 0.88))
     save_fig_pair(
         fig,
         out_dir,
@@ -1304,7 +1314,7 @@ def plot_ifs_visibility_bias(
     axes[1].set_title("IFS VIS distribution by observed class")
     axes[1].legend(frameon=False)
     add_panel_label(axes[1], "b")
-    fig.tight_layout()
+    finish_figure_layout(fig)
     save_fig_pair(
         fig,
         out_dir,
@@ -1351,7 +1361,7 @@ def plot_scenario_split(
     colors = [FOG_COLOR, "#6E91B5", MIST_COLOR, "#F0B84A", "#334155", "#64748B"]
     x = np.arange(len(df))
     width = min(0.16, 0.80 / len(metrics))
-    fig, ax = plt.subplots(figsize=(max(7.5, 0.78 * len(df)), 4.2))
+    fig, ax = plt.subplots(figsize=(max(8.2, 0.82 * len(df)), 5.0))
     for i, ((key, label), color) in enumerate(zip(metrics, colors)):
         vals = df[key].astype(float).to_numpy()
         ax.bar(x + (i - (len(metrics) - 1) / 2) * width, vals, width * 0.94, label=label, color=color)
@@ -1362,7 +1372,7 @@ def plot_scenario_split(
     title = {"time_of_day": f"Metrics by time of day ({LOCAL_TIME_LABEL})", "season": "Metrics by season", "region": "Metrics by region"}.get(split, split)
     ax.set_title(title)
     ax.legend(ncol=3, frameon=False, loc="upper center", bbox_to_anchor=(0.5, 1.22))
-    fig.tight_layout()
+    finish_figure_layout(fig, rect=(0.02, 0.04, 0.98, 0.78), h_pad=1.4)
     stem = {
         "time_of_day": "fig7_split_time_of_day",
         "season": "fig7_split_season",
@@ -1423,7 +1433,7 @@ def plot_diurnal_time_detail(
     fig, axes = plt.subplots(
         2,
         1,
-        figsize=(9.2, 6.2),
+        figsize=(9.6, 6.9),
         sharex=True,
         gridspec_kw={"height_ratios": [1.0, 1.15], "hspace": 0.15},
     )
@@ -1465,7 +1475,7 @@ def plot_diurnal_time_detail(
     for left, right in ((0, 6), (18, 24)):
         for a in axes:
             a.axvspan(left - 0.5, right - 0.5, color="#F3F4F6", alpha=0.55, zorder=-10)
-    fig.tight_layout()
+    finish_figure_layout(fig, rect=(0.02, 0.04, 0.98, 0.95), h_pad=1.7)
     save_fig_pair(
         fig,
         out_dir,
@@ -1520,7 +1530,7 @@ def plot_region_detail(
     handles2, legend_labels2 = ax2.get_legend_handles_labels()
     ax.legend(handles + handles2, legend_labels + legend_labels2, frameon=False, loc="lower right")
 
-    fig.tight_layout()
+    finish_figure_layout(fig)
     save_fig_pair(
         fig,
         out_dir,
@@ -1582,7 +1592,7 @@ def plot_time_of_day_detail(
     handles2, legend_labels2 = ax2.get_legend_handles_labels()
     ax.legend(handles + handles2, legend_labels + legend_labels2, frameon=False, loc="lower right")
 
-    fig.tight_layout()
+    finish_figure_layout(fig)
     save_fig_pair(
         fig,
         out_dir,
@@ -1770,7 +1780,7 @@ def plot_feature_convergence_from_history(
     print(f"[table] {table_path}", flush=True)
 
     setup_journal_style()
-    fig, axes = plt.subplots(1, 2, figsize=(10.5, 3.8), sharex=True)
+    fig, axes = plt.subplots(1, 2, figsize=(10.8, 4.3), sharex=True)
     color_map = {"Full FE": PMST_COLOR, "No FE values": IFS_DIAG_COLOR}
     for variant, sub in table.groupby("variant", sort=False):
         color = color_map.get(variant, None)
@@ -1788,8 +1798,8 @@ def plot_feature_convergence_from_history(
         ax.grid(alpha=0.25)
         add_panel_label(ax, chr(ord("a") + ax_idx))
     handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, frameon=False, ncol=max(1, len(labels)), loc="upper center", bbox_to_anchor=(0.5, 1.12))
-    fig.tight_layout()
+    fig.legend(handles, labels, frameon=False, ncol=max(1, len(labels)), loc="upper center", bbox_to_anchor=(0.5, 0.985))
+    finish_figure_layout(fig, rect=(0.02, 0.04, 0.98, 0.84))
     save_fig_pair(
         fig,
         out_dir,
@@ -1969,7 +1979,7 @@ def plot_station_metric_map(
     cb = fig.colorbar(sc, ax=ax, shrink=0.78)
     cb.set_label(value_col)
     ax.set_title(title)
-    fig.tight_layout()
+    finish_figure_layout(fig)
     save_fig_pair(fig, out_dir, stem, manifest, sources, notes=f"Station map masked by {mask_col}>={min_count}.", n=len(df))
 
 
@@ -2199,7 +2209,7 @@ def plot_station_recall_delta_map(
         fontsize=9,
         color="#08306B",
     )
-    fig.tight_layout()
+    finish_figure_layout(fig)
     notes = (
         f"Station-level {label.lower()} deltas on finite IFS-matched rows; "
         "blue means PMST recall exceeds IFS diagnostic visibility recall, "
@@ -2228,16 +2238,20 @@ def plot_event_peak_grid(
         print("  [WARN] No event summary for peak grid.", flush=True)
         return
     setup_journal_style()
-    events = event_df.copy()
-    events["__peak_time_sort"] = pd.to_datetime(events["peak_time"], errors="coerce")
-    sort_cols = ["__peak_time_sort"]
-    if "event_rank" in events:
-        sort_cols.append("event_rank")
-    events = events.sort_values(sort_cols).drop(columns=["__peak_time_sort"]).head(3).copy()
+    if _ordered_events_for_display is not None:
+        events = _ordered_events_for_display(event_df, n=3).copy()
+    else:
+        events = event_df.copy()
+        if "event_rank" in events:
+            events["__event_rank_sort"] = pd.to_numeric(events["event_rank"], errors="coerce")
+            events = events.sort_values(["__event_rank_sort", "peak_time"]).drop(columns=["__event_rank_sort"]).head(3).copy()
+        else:
+            events["__peak_time_sort"] = pd.to_datetime(events["peak_time"], errors="coerce")
+            events = events.sort_values(["__peak_time_sort"]).drop(columns=["__peak_time_sort"]).head(3).copy()
     n_cols = len(events)
     if n_cols == 0:
         return
-    fig, axes = plt.subplots(3, n_cols, figsize=(4.1 * n_cols, 9.0), squeeze=False)
+    fig, axes = plt.subplots(3, n_cols, figsize=(4.3 * n_cols, 9.6), squeeze=False)
     row_specs = [
         ("Observed class", "y_true"),
         ("PMST", "pmst_pred"),
@@ -2280,7 +2294,7 @@ def plot_event_peak_grid(
     handles = [Patch(facecolor=CLASS_COLORS[i], label=CLASS_NAMES[i]) for i in range(3)]
     handles.append(Patch(facecolor="#D3D3D3", label="IFS missing"))
     fig.legend(handles=handles, loc="lower center", ncol=4, frameon=False)
-    fig.tight_layout(rect=(0, 0.05, 1, 1))
+    finish_figure_layout(fig, rect=(0.02, 0.09, 0.98, 0.98), h_pad=1.1, w_pad=0.7)
     save_fig_pair(
         fig,
         out_dir,
@@ -2318,7 +2332,7 @@ def plot_event_footprint(
                 vals = vals[np.isfinite(vals)]
                 if vals.size:
                     ymax = max(ymax, int(np.nanmax(vals)))
-    fig, axes = plt.subplots(1, len(dfs), figsize=(4.3 * len(dfs), 3.7), sharey=True, squeeze=False)
+    fig, axes = plt.subplots(1, len(dfs), figsize=(4.5 * len(dfs), 4.6), sharey=True, squeeze=False)
     for i, (ax, df) in enumerate(zip(axes.ravel(), dfs), start=1):
         x = df["hour_offset"].to_numpy(dtype=float)
         ax.plot(x, df[_count_col(df, "obs_ultralow_count", "obs_fog_count")], color="#111111", marker="o", lw=1.9, label="Obs Ultra-low")
@@ -2341,8 +2355,8 @@ def plot_event_footprint(
             ax.set_ylabel("Station count")
         add_panel_label(ax, chr(ord("a") + i - 1))
     handles, labels = axes.ravel()[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", ncol=3, frameon=False, bbox_to_anchor=(0.5, 1.12))
-    fig.tight_layout()
+    fig.legend(handles, labels, loc="upper center", ncol=3, frameon=False, bbox_to_anchor=(0.5, 0.985))
+    finish_figure_layout(fig, rect=(0.02, 0.04, 0.98, 0.78), h_pad=1.3)
     save_fig_pair(
         fig,
         out_dir,
@@ -2418,7 +2432,7 @@ def plot_overlap_fig10(overlap_out: Path, out_dir: Path, manifest: Manifest) -> 
     ]
     row_by_src = {str(r["source"]): r for _, r in df.iterrows()}
     fig_w = max(13.0, 10.8 + 0.78 * max(0, len(source_order) - 3))
-    fig, axes = plt.subplots(1, 3, figsize=(fig_w, 4.05), sharey=False)
+    fig, axes = plt.subplots(1, 3, figsize=(fig_w, 4.7), sharey=False)
     for ax_idx, (ax, (title, metric_specs)) in enumerate(zip(axes, panels)):
         x = np.arange(len(metric_specs))
         width = min(0.28, 0.80 / max(len(source_order), 1))
@@ -2443,8 +2457,8 @@ def plot_overlap_fig10(overlap_out: Path, out_dir: Path, manifest: Manifest) -> 
         ax.set_ylabel("Score")
         add_panel_label(ax, chr(ord("a") + ax_idx))
     handles, leg_labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, leg_labels, loc="upper center", ncol=min(len(handles), 4), frameon=False, bbox_to_anchor=(0.5, 1.14))
-    fig.tight_layout()
+    fig.legend(handles, leg_labels, loc="upper center", ncol=min(len(handles), 4), frameon=False, bbox_to_anchor=(0.5, 0.985))
+    finish_figure_layout(fig, rect=(0.02, 0.04, 0.98, 0.78), h_pad=1.3)
     save_fig_pair(
         fig,
         out_dir,
@@ -2467,7 +2481,7 @@ def plot_fig11_lead_init(
     if lead_pooled.empty and lead00.empty and lead12.empty:
         print("  [WARN] Empty 48h lead tables; skip init-hour figure.", flush=True)
         return
-    fig, axes = plt.subplots(2, 3, figsize=(13.2, 7.2), sharex=True)
+    fig, axes = plt.subplots(2, 3, figsize=(13.4, 7.8), sharex=True)
     specs = [
         ("Fog_CSI", "Ultra-low CSI"),
         ("Fog_R", "Ultra-low recall"),
@@ -2498,7 +2512,7 @@ def plot_fig11_lead_init(
         if handles:
             break
     if handles:
-        fig.legend(handles, labels, loc="upper center", ncol=3, frameon=False, bbox_to_anchor=(0.5, 1.03))
+        fig.legend(handles, labels, loc="upper center", ncol=3, frameon=False, bbox_to_anchor=(0.5, 0.985))
     fig.text(
         0.995,
         0.01,
@@ -2508,7 +2522,7 @@ def plot_fig11_lead_init(
         fontsize=9,
         color="#3F4A3F",
     )
-    fig.tight_layout()
+    finish_figure_layout(fig, rect=(0.02, 0.06, 0.98, 0.93), h_pad=1.25)
     save_fig_pair(
         fig,
         out_dir,
@@ -2921,7 +2935,7 @@ def plot_fig11_48h_model_vs_ifs(
         step = 0.02 if padded <= 0.20 else 0.05 if padded <= 0.50 else 0.10
         return min(1.0, max(step * 3, math.ceil(padded / step) * step))
 
-    fig, axes = plt.subplots(2, 3, figsize=(13.2, 7.2), sharex=True)
+    fig, axes = plt.subplots(2, 3, figsize=(13.4, 7.8), sharex=True)
     for ax, (metric, title), letter in zip(axes.ravel(), specs, "abcdef"):
         model_col = f"{metric}_model"
         ifs_col = f"{metric}_ifs"
@@ -2975,7 +2989,7 @@ def plot_fig11_48h_model_vs_ifs(
         if handles:
             break
     if handles:
-        fig.legend(handles, labels, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 1.03))
+        fig.legend(handles, labels, loc="upper center", ncol=2, frameon=False, bbox_to_anchor=(0.5, 0.985))
     if mark_filled_segment:
         fig.text(
             0.995,
@@ -2986,7 +3000,7 @@ def plot_fig11_48h_model_vs_ifs(
             fontsize=9,
             color="#3F4A3F",
         )
-    fig.tight_layout()
+    finish_figure_layout(fig, rect=(0.02, 0.06, 0.98, 0.93), h_pad=1.25)
     n_val = int(cmp_df["n_ifs"].sum()) if "n_ifs" in cmp_df else None
     save_fig_pair(
         fig,
@@ -3091,7 +3105,7 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
     extend = "both"
     cmap.set_bad("#ECEFF3")
 
-    fig, ax = plt.subplots(figsize=(11.8, 4.6))
+    fig, ax = plt.subplots(figsize=(12.2, 5.2))
     x_edges = _lead_center_edges(leads)
     y_edges = np.arange(len(specs) + 1, dtype=float) - 0.5
     mesh = ax.pcolormesh(
@@ -3155,7 +3169,7 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
         fontsize=9,
         color="#475569",
     )
-    fig.tight_layout()
+    finish_figure_layout(fig, rect=(0.04, 0.12, 0.98, 0.96), h_pad=1.2)
     save_fig_pair(
         fig,
         out_dir,
@@ -3874,7 +3888,7 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
                 manifest.add(
                     three_footprint_path.name,
                     event_sources,
-                    notes="Three selected widespread Ultra-low events with complete test-set windows where available.",
+                    notes="Three selected widespread Low-vis events with complete test-set windows where available.",
                     n=int(len(y_cls)),
                     matched_ifs=int(np.sum(ifs_valid)) if ifs_valid is not None else None,
                 )
@@ -3891,7 +3905,7 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
                 manifest.add(
                     three_peak_path.name,
                     event_sources,
-                    notes="Observed visibility at the peak hour for the same three selected widespread Ultra-low events.",
+                    notes="Observed visibility at the peak hour for the same three selected widespread Low-vis events.",
                     n=int(len(y_cls)),
                 )
     plot_event_peak_grid(eval_df, event_df, out_dir, manifest, [str(event_path), str(out_dir / "per_sample_eval.csv")], shp_gdf=shp_gdf)

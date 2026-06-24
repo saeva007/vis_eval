@@ -713,10 +713,8 @@ def detect_widespread_fog_events(
     if not selected_rows:
         return _empty_events()
 
-    out = pd.DataFrame(selected_rows).sort_values(
-        ["peak_time", "selection_tier_rank", "event_score"],
-        ascending=[True, True, False],
-    ).head(top_k).reset_index(drop=True)
+    out = pd.DataFrame(selected_rows).head(top_k).reset_index(drop=True)
+    out["selection_order"] = np.arange(1, len(out) + 1)
     if "event_rank" in out.columns:
         out = out.drop(columns=["event_rank"])
     for new_col, old_col in {
@@ -758,19 +756,39 @@ def _draw_event_basemap(ax, shp_gdf=None):
         spine.set_linewidth(0.5)
 
 
-def _chronological_events(event_df, n=None):
+def _ordered_events_for_display(event_df, n=None):
     if event_df is None or len(event_df) == 0:
         return event_df
     out = event_df.copy()
+    sort_cols = []
+    ascending = []
+    if "event_rank" in out:
+        out["__event_rank_sort"] = pd.to_numeric(out["event_rank"], errors="coerce")
+        sort_cols.append("__event_rank_sort")
+        ascending.append(True)
+    elif "selection_order" in out:
+        out["__selection_order_sort"] = pd.to_numeric(out["selection_order"], errors="coerce")
+        sort_cols.append("__selection_order_sort")
+        ascending.append(True)
+    elif {"selection_tier_rank", "event_score"}.issubset(out.columns):
+        out["__selection_tier_sort"] = pd.to_numeric(out["selection_tier_rank"], errors="coerce")
+        out["__event_score_sort"] = pd.to_numeric(out["event_score"], errors="coerce")
+        sort_cols.extend(["__selection_tier_sort", "__event_score_sort"])
+        ascending.extend([True, False])
     if "peak_time" in out:
-        out["__peak_time_sort"] = pd.to_datetime(out["peak_time"])
-        sort_cols = ["__peak_time_sort"]
-        if "event_rank" in out:
-            sort_cols.append("event_rank")
-        out = out.sort_values(sort_cols).drop(columns=["__peak_time_sort"])
+        out["__peak_time_sort"] = pd.to_datetime(out["peak_time"], errors="coerce")
+        sort_cols.append("__peak_time_sort")
+        ascending.append(True)
+    if sort_cols:
+        out = out.sort_values(sort_cols, ascending=ascending)
+        out = out.drop(columns=[c for c in out.columns if c.startswith("__")])
     if n is not None:
         out = out.head(n)
     return out.reset_index(drop=True)
+
+
+def _chronological_events(event_df, n=None):
+    return _ordered_events_for_display(event_df, n=n)
 
 def _format_event_label(event_row):
     peak_time = pd.Timestamp(event_row["peak_time"])
@@ -934,7 +952,7 @@ def plot_widespread_event_panels(
     center_time = pd.Timestamp(event_row["peak_time"])
     hour_offsets = list(range(-window_hours, window_hours + 1))
     ncols = len(hour_offsets)
-    fig, axes = plt.subplots(3, ncols, figsize=(2.6 * ncols, 8.6))
+    fig, axes = plt.subplots(3, ncols, figsize=(2.7 * ncols, 9.2))
 
     vis_norm = Normalize(VIS_MIN_EVENT, VIS_MAX_EVENT)
     vis_cmap = build_event_visibility_cmap()
@@ -1061,15 +1079,15 @@ def plot_widespread_event_panels(
         loc="lower center",
         ncol=3,
         frameon=True,
-        bbox_to_anchor=(0.5, -0.01),
+        bbox_to_anchor=(0.5, 0.02),
     )
     fig.suptitle(
         "Widespread Low-vis Event Case\n" + _format_event_label(event_row),
         fontsize=13,
         fontweight="bold",
-        y=0.99,
+        y=0.965,
     )
-    plt.tight_layout(rect=(0, 0.05, 1, 0.95))
+    plt.tight_layout(rect=(0.01, 0.08, 0.99, 0.93))
     save_figure(fig, output_path)
     return fig
 
@@ -1104,8 +1122,8 @@ def plot_three_events_footprint_row(
     vis_cmap = build_event_visibility_cmap()
     vis_mappable = None
 
-    fig = plt.figure(figsize=(max(14.0, n_h * n_ev * 0.95), 6.4))
-    gs_outer = fig.add_gridspec(1, n_ev, wspace=0.26, left=0.04, right=0.98, top=0.86, bottom=0.14)
+    fig = plt.figure(figsize=(max(15.0, n_h * n_ev * 0.98), 7.2))
+    gs_outer = fig.add_gridspec(1, n_ev, wspace=0.26, left=0.04, right=0.98, top=0.82, bottom=0.24)
 
     for ei, (_, er) in enumerate(event_df.iterrows()):
         center_time = pd.Timestamp(er["peak_time"])
@@ -1168,7 +1186,7 @@ def plot_three_events_footprint_row(
 
         fig.text(
             (0.04 + (ei + 0.5) / n_ev * 0.94),
-            0.93,
+            0.875,
             col_title,
             ha="center",
             va="bottom",
@@ -1181,7 +1199,7 @@ def plot_three_events_footprint_row(
     fig.text(0.02, 0.22, "PMST\n(3-class)", rotation=90, va="center", ha="center", fontsize=10, fontweight="600")
 
     if vis_mappable is not None:
-        cax = fig.add_axes([0.25, 0.06, 0.5, 0.025])
+        cax = fig.add_axes([0.24, 0.105, 0.52, 0.026])
         cb = fig.colorbar(vis_mappable, cax=cax, orientation="horizontal")
         cb.set_ticks([VIS_MIN_EVENT, 500.0, 1000.0, VIS_MAX_EVENT])
         cb.set_ticklabels(["50", "500", "1000", "2000"])
@@ -1194,14 +1212,14 @@ def plot_three_events_footprint_row(
         loc="lower center",
         ncol=3,
         frameon=True,
-        bbox_to_anchor=(0.5, -0.02),
+        bbox_to_anchor=(0.5, 0.035),
         fontsize=9,
     )
     fig.suptitle(
         "Three Low-vis events — spatial footprint: observed visibility vs PMST forecast",
         fontsize=12,
         fontweight="bold",
-        y=0.99,
+        y=0.965,
     )
     save_figure(fig, output_path)
     plt.close(fig)
@@ -1231,7 +1249,7 @@ def plot_three_events_peak_row(
     vis_cmap = build_event_visibility_cmap()
     vis_mappable = None
 
-    fig, axes = plt.subplots(1, 3, figsize=(13.2, 4.5), constrained_layout=False)
+    fig, axes = plt.subplots(1, 3, figsize=(13.8, 5.1), constrained_layout=False)
     axes = np.atleast_1d(axes).ravel()
 
     for ax, (_, er) in zip(axes, event_df.iterrows()):
@@ -1274,7 +1292,7 @@ def plot_three_events_peak_row(
         )
 
     if vis_mappable is not None:
-        cax = fig.add_axes([0.2, 0.02, 0.6, 0.03])
+        cax = fig.add_axes([0.2, 0.08, 0.6, 0.03])
         cb = fig.colorbar(vis_mappable, cax=cax, orientation="horizontal")
         cb.set_ticks([VIS_MIN_EVENT, 500.0, 1000.0, VIS_MAX_EVENT])
         cb.set_ticklabels(["50", "500", "1000", "2000"])
@@ -1284,9 +1302,9 @@ def plot_three_events_peak_row(
         "Three widespread Low-vis events — observed visibility at peak hour",
         fontsize=12,
         fontweight="bold",
-        y=1.02,
+        y=0.96,
     )
-    plt.tight_layout(rect=(0, 0.08, 1, 0.95))
+    plt.tight_layout(rect=(0.01, 0.16, 0.99, 0.88))
     save_figure(fig, output_path)
     plt.close(fig)
     return fig
@@ -1301,7 +1319,7 @@ def plot_event_metric_comparison(hourly_df, event_row, output_path):
     obs_color = "#111111"
     x = hourly_df["hour_offset"].to_numpy()
 
-    fig, axes = plt.subplots(2, 3, figsize=(13.5, 7.8), sharex=True)
+    fig, axes = plt.subplots(2, 3, figsize=(13.8, 8.3), sharex=True)
     axes = axes.flatten()
 
     counts_ax = axes[0]
@@ -1342,14 +1360,14 @@ def plot_event_metric_comparison(hourly_df, event_row, output_path):
             ax.set_xlabel("Hour Relative to Event Peak")
 
     handles, labels = counts_ax.get_legend_handles_labels()
-    fig.legend(handles, labels, loc="lower center", ncol=3, frameon=True, bbox_to_anchor=(0.5, -0.01))
+    fig.legend(handles, labels, loc="lower center", ncol=3, frameon=True, bbox_to_anchor=(0.5, 0.02))
     fig.suptitle(
         "PMST vs IFS During Widespread Low-vis Event\n" + _format_event_label(event_row),
         fontsize=13,
         fontweight="bold",
-        y=0.98,
+        y=0.965,
     )
-    plt.tight_layout(rect=(0, 0.06, 1, 0.94))
+    plt.tight_layout(rect=(0.01, 0.11, 0.99, 0.90))
     save_figure(fig, output_path)
     return fig
 
@@ -1414,7 +1432,7 @@ def plot_event_summary_comparison(summary_df, output_path):
     x = np.arange(len(summary_df))
     width = 0.36
 
-    fig, axes = plt.subplots(2, 2, figsize=(12.5, 8.2), sharex=True)
+    fig, axes = plt.subplots(2, 2, figsize=(12.8, 8.6), sharex=True)
     axes = axes.flatten()
     panels = [
         ("ultralow_csi_mean", "Event-Mean Ultra-low CSI"),
@@ -1451,9 +1469,9 @@ def plot_event_summary_comparison(summary_df, output_path):
         ax.set_xticklabels(event_labels)
 
     handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="lower center", ncol=2, frameon=True, bbox_to_anchor=(0.5, -0.01))
-    fig.suptitle("Widespread Low-vis Events: PMST vs IFS Summary", fontsize=13, fontweight="bold", y=0.98)
-    plt.tight_layout(rect=(0, 0.05, 1, 0.94))
+    fig.legend(handles, labels, loc="lower center", ncol=2, frameon=True, bbox_to_anchor=(0.5, 0.02))
+    fig.suptitle("Widespread Low-vis Events: PMST vs IFS Summary", fontsize=13, fontweight="bold", y=0.965)
+    plt.tight_layout(rect=(0.01, 0.11, 0.99, 0.90))
     save_figure(fig, output_path)
     return fig
 
