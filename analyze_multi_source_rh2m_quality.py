@@ -287,7 +287,14 @@ def plot_tail_curves(samples: Dict[str, pd.DataFrame], meta_rows: pd.DataFrame, 
             "font.sans-serif": ["Arial", "DejaVu Sans", "Liberation Sans"],
             "svg.fonttype": "none",
             "pdf.fonttype": 42,
-            "font.size": 8.0,
+            "font.size": 9.5,
+            "axes.labelsize": 10,
+            "axes.titlesize": 10.5,
+            "axes.titleweight": "bold",
+            "axes.labelweight": "bold",
+            "xtick.labelsize": 9,
+            "ytick.labelsize": 9,
+            "legend.fontsize": 9,
             "axes.spines.top": False,
             "axes.spines.right": False,
             "axes.grid": True,
@@ -471,10 +478,10 @@ def plot_tail_curves(samples: Dict[str, pd.DataFrame], meta_rows: pd.DataFrame, 
                     transform=ax.transAxes,
                     ha="left",
                     va="bottom",
-                    fontsize=6.5,
+                    fontsize=8.5,
                     color="#666666",
                 )
-            ax.legend(frameon=False, fontsize=7)
+            ax.legend(frameon=False, fontsize=9)
             fig.tight_layout()
             safe_feature = feature.lower().replace("_", "")
             tail_table.to_csv(out_dir / f"key_variable_tail_curve_{safe_feature}_{safe_group}.csv", index=False, float_format="%.6f")

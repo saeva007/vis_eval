@@ -69,12 +69,14 @@ def setup_style() -> None:
             "svg.fonttype": "none",
             "pdf.fonttype": 42,
             "ps.fonttype": 42,
-            "font.size": 7.5,
-            "axes.labelsize": 8,
-            "axes.titlesize": 8.5,
-            "xtick.labelsize": 7,
-            "ytick.labelsize": 7,
-            "legend.fontsize": 7,
+            "font.size": 9.5,
+            "axes.labelsize": 10,
+            "axes.titlesize": 10.5,
+            "axes.titleweight": "bold",
+            "axes.labelweight": "bold",
+            "xtick.labelsize": 9,
+            "ytick.labelsize": 9,
+            "legend.fontsize": 9,
             "axes.spines.top": False,
             "axes.spines.right": False,
             "axes.linewidth": 0.75,
@@ -217,10 +219,10 @@ def panel_sampling_design(ax, overall: pd.DataFrame, labels: Sequence[str]) -> p
         if not natural.empty:
             y = float(natural["low_vis_share"].iloc[0])
             ax.axhline(y, color="#4B5563", lw=0.7, ls="--", alpha=0.65)
-            ax.text(0.02, y + 0.012, "natural Low-vis event share", fontsize=6.5, color="#4B5563")
+            ax.text(0.02, y + 0.012, "natural Low-vis event share", fontsize=8.5, color="#4B5563")
     for i, row in shares.iterrows():
         if str(row["share_source"]) == "missing":
-            ax.text(i, 0.03, "natural", ha="center", va="bottom", fontsize=6.5, color="#555555")
+            ax.text(i, 0.03, "natural", ha="center", va="bottom", fontsize=8.5, color="#555555")
     ymax = max(0.32, float(np.nanmax(shares["low_vis_share"].to_numpy(dtype=float))) * 1.28)
     ax.set_ylim(0, min(1.0, ymax))
     ax.set_xticks(x)
@@ -287,14 +289,14 @@ def panel_fpr(ax, overall: pd.DataFrame, labels: Sequence[str]) -> pd.DataFrame:
     ymax = max(0.04, float(np.nanmax(values)) * 1.35) if np.isfinite(values).any() else 0.1
     for xi, value in zip(x, values):
         if np.isfinite(value):
-            ax.text(xi, value + max(0.002, ymax * 0.025), f"{value:.3f}", ha="center", va="bottom", fontsize=6.7)
+            ax.text(xi, value + max(0.002, ymax * 0.025), f"{value:.3f}", ha="center", va="bottom", fontsize=8.6)
     ax.set_xticks(x)
     ax.set_xticklabels([short_label(label) for label in labels])
     ax.set_ylim(0, min(1.0, ymax))
     ax.set_ylabel("False-positive rate")
     ax.set_title("Clear-condition false positives")
     ax.grid(axis="y", color=GRID_COLOR, lw=0.6)
-    ax.text(0.98, 0.96, "lower is better", transform=ax.transAxes, ha="right", va="top", fontsize=6.4, color="#555555")
+    ax.text(0.98, 0.96, "lower is better", transform=ax.transAxes, ha="right", va="top", fontsize=8.4, color="#555555")
     return pd.DataFrame(
         [
             {
@@ -423,7 +425,7 @@ def panel_lowvis_mix(ax, confusion: pd.DataFrame, labels: Sequence[str]) -> pd.D
         transform=ax.transAxes,
         ha="right",
         va="top",
-        fontsize=6.4,
+        fontsize=8.4,
         color="#555555",
         bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.72, "pad": 1.0},
     )

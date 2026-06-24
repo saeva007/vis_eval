@@ -323,11 +323,13 @@ def plot_importance(df: pd.DataFrame, out_dir: Path, sort_metric: str) -> None:
     plt.rcParams.update(
         {
             "font.family": "DejaVu Serif",
-            "font.size": 9,
-            "axes.labelsize": 10,
-            "axes.titlesize": 10,
-            "xtick.labelsize": 8,
-            "ytick.labelsize": 8,
+            "font.size": 10.5,
+            "axes.labelsize": 11,
+            "axes.titlesize": 11.5,
+            "axes.titleweight": "bold",
+            "axes.labelweight": "bold",
+            "xtick.labelsize": 9.5,
+            "ytick.labelsize": 9.5,
             "figure.dpi": 150,
             "savefig.dpi": 300,
             "savefig.bbox": "tight",

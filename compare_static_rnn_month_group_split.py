@@ -130,12 +130,14 @@ def setup_style() -> None:
             "font.sans-serif": ["Arial", "DejaVu Sans", "Liberation Sans"],
             "svg.fonttype": "none",
             "pdf.fonttype": 42,
-            "font.size": 8,
-            "axes.labelsize": 8,
-            "axes.titlesize": 8.5,
-            "xtick.labelsize": 7,
-            "ytick.labelsize": 7,
-            "legend.fontsize": 7,
+            "font.size": 9.5,
+            "axes.labelsize": 10,
+            "axes.titlesize": 10.5,
+            "axes.titleweight": "bold",
+            "axes.labelweight": "bold",
+            "xtick.labelsize": 9,
+            "ytick.labelsize": 9,
+            "legend.fontsize": 9,
             "axes.spines.top": False,
             "axes.spines.right": False,
             "figure.dpi": 180,
@@ -186,14 +188,14 @@ def plot_comparison(delta: pd.DataFrame, out_dir: Path, stem: str, current_label
         ymax = max(0.04, float(np.nanmax(values)) * 1.35) if np.isfinite(values).any() else 0.1
         for xi, value in enumerate(values):
             if np.isfinite(value):
-                ax.text(xi, value + max(0.002, ymax * 0.025), f"{value:.3f}", ha="center", va="bottom", fontsize=6.8)
+                ax.text(xi, value + max(0.002, ymax * 0.025), f"{value:.3f}", ha="center", va="bottom", fontsize=8.6)
         ax.set_xticks(np.arange(2))
         ax.set_xticklabels([current_label, month_group_label], rotation=20, ha="right")
         ax.set_ylim(0, min(1.0, ymax))
         ax.set_ylabel("False-positive rate")
         ax.set_title("Clear-condition false positives")
         ax.grid(axis="y", color="#E5E7EB", lw=0.6)
-        ax.text(0.98, 0.96, "lower is better", transform=ax.transAxes, ha="right", va="top", fontsize=6.7, color="#555555")
+        ax.text(0.98, 0.96, "lower is better", transform=ax.transAxes, ha="right", va="top", fontsize=8.4, color="#555555")
         fig.tight_layout()
         for ext in ("png", "pdf", "svg"):
             path = out_dir / f"{stem}_clear_fpr.{ext}"

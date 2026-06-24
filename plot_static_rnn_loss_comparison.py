@@ -48,12 +48,14 @@ def setup_style() -> None:
             "svg.fonttype": "none",
             "pdf.fonttype": 42,
             "ps.fonttype": 42,
-            "font.size": 7.5,
-            "axes.labelsize": 8,
-            "axes.titlesize": 8.5,
-            "xtick.labelsize": 7,
-            "ytick.labelsize": 7,
-            "legend.fontsize": 7,
+            "font.size": 9.5,
+            "axes.labelsize": 10,
+            "axes.titlesize": 10.5,
+            "axes.titleweight": "bold",
+            "axes.labelweight": "bold",
+            "xtick.labelsize": 9,
+            "ytick.labelsize": 9,
+            "legend.fontsize": 9,
             "axes.spines.top": False,
             "axes.spines.right": False,
             "axes.linewidth": 0.75,
@@ -127,7 +129,7 @@ def panel_soft_targets(ax) -> None:
     ax.plot(x, clear, color="#777777", lw=1.8, label="Clear target")
     for val, txt in [(500, "500 m"), (1000, "1000 m")]:
         ax.axvline(val, color="#333333", lw=0.7, ls="--", alpha=0.65)
-        ax.text(val + 18, 1.03, txt, ha="left", va="bottom", fontsize=6.5)
+        ax.text(val + 18, 1.03, txt, ha="left", va="bottom", fontsize=8.5)
     ax.set_xlim(0, 1600)
     ax.set_ylim(-0.03, 1.12)
     ax.set_xlabel("Observed visibility (m)")
@@ -172,7 +174,7 @@ def panel_fpr(ax, overall: pd.DataFrame, labels: Sequence[str]) -> None:
     ax.bar(x, vals, width=0.62, color=colors, edgecolor="white", linewidth=0.45)
     for xi, value in zip(x, vals):
         if np.isfinite(value):
-            ax.text(xi, value + max(0.002, float(np.nanmax(vals)) * 0.035), f"{value:.3f}", ha="center", va="bottom", fontsize=6.7)
+            ax.text(xi, value + max(0.002, float(np.nanmax(vals)) * 0.035), f"{value:.3f}", ha="center", va="bottom", fontsize=8.6)
     ax.set_xticks(x)
     ax.set_xticklabels(labels, rotation=25, ha="right")
     ymax = max(0.04, float(np.nanmax(vals)) * 1.35) if np.isfinite(vals).any() else 0.1
@@ -180,7 +182,7 @@ def panel_fpr(ax, overall: pd.DataFrame, labels: Sequence[str]) -> None:
     ax.set_ylabel("False-positive rate")
     ax.set_title("Clear-condition false positives")
     ax.grid(axis="y", color="#E5E7EB", lw=0.6)
-    ax.text(0.98, 0.96, "lower is better", transform=ax.transAxes, ha="right", va="top", fontsize=6.4, color="#555555")
+    ax.text(0.98, 0.96, "lower is better", transform=ax.transAxes, ha="right", va="top", fontsize=8.4, color="#555555")
 
 
 def panel_ultra_moderate_metrics(ax, per_class: pd.DataFrame, labels: Sequence[str]) -> None:
@@ -231,7 +233,7 @@ def panel_ultra_moderate_metrics(ax, per_class: pd.DataFrame, labels: Sequence[s
     ax.set_ylim(0, 1.0)
     ax.set_title("Ultra-low and Moderate-low skill by class")
     ax.grid(axis="y", color="#E5E7EB", lw=0.6)
-    ax.text(3, 0.98, "FAR: lower is better", ha="center", va="top", fontsize=6.4, color="#555555")
+    ax.text(3, 0.98, "FAR: lower is better", ha="center", va="top", fontsize=8.4, color="#555555")
     ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.03), ncol=1, frameon=False)
 
 
@@ -267,9 +269,9 @@ def panel_class_heatmap(ax, per_class: pd.DataFrame, labels: Sequence[str]) -> N
             value = mat[i, j]
             if np.isfinite(value):
                 color = "white" if value > vmax * 0.55 else "#111111"
-                ax.text(j, i, f"{value:.2f}", ha="center", va="center", fontsize=6.5, color=color)
+                ax.text(j, i, f"{value:.2f}", ha="center", va="center", fontsize=8.8, color=color)
     cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
-    cbar.ax.tick_params(labelsize=6.5, length=2)
+    cbar.ax.tick_params(labelsize=8.5, length=2)
 
 
 def panel_boundary(ax, boundary: pd.DataFrame, labels: Sequence[str]) -> None:
@@ -305,7 +307,7 @@ def panel_boundary(ax, boundary: pd.DataFrame, labels: Sequence[str]) -> None:
 
 
 def add_panel_label(ax, label: str) -> None:
-    ax.text(-0.12, 1.08, label, transform=ax.transAxes, fontsize=10, fontweight="bold", va="top")
+    ax.text(-0.12, 1.08, label, transform=ax.transAxes, fontsize=11.5, fontweight="bold", va="top")
 
 
 def save_figure(fig, out_dir: Path, stem: str, sources: Sequence[Path], notes: str = "") -> None:
@@ -450,7 +452,7 @@ def main() -> None:
     for ax, label in zip((ax_a, ax_b, ax_c, ax_d), ("a", "b", "c", "d")):
         add_panel_label(ax, label)
     if args.title:
-        fig.suptitle(args.title, y=1.02, fontsize=9.5)
+        fig.suptitle(args.title, y=1.02, fontsize=11)
 
     sources = [overall_path, per_class_path, boundary_path]
     save_figure(fig, out_dir, args.figure_stem, sources)

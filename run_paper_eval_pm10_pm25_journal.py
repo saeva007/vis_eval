@@ -171,12 +171,14 @@ def setup_journal_style() -> None:
             "font.family": "sans-serif",
             "font.sans-serif": ["Arial", "DejaVu Sans", "Liberation Sans"],
             "svg.fonttype": "none",
-            "font.size": 9,
-            "axes.labelsize": 10,
-            "axes.titlesize": 10,
-            "xtick.labelsize": 8,
-            "ytick.labelsize": 8,
-            "legend.fontsize": 8,
+            "font.size": 10.5,
+            "axes.labelsize": 11,
+            "axes.titlesize": 11.5,
+            "axes.titleweight": "bold",
+            "axes.labelweight": "bold",
+            "xtick.labelsize": 9.5,
+            "ytick.labelsize": 9.5,
+            "legend.fontsize": 9.5,
             "figure.dpi": 150,
             "savefig.dpi": 300,
             "savefig.bbox": "tight",
@@ -242,7 +244,7 @@ def add_panel_label(ax, label: str, x: float = -0.10, y: float = 1.03) -> None:
         y,
         f"({label})",
         transform=ax.transAxes,
-        fontsize=11,
+        fontsize=12,
         fontweight="bold",
         va="bottom",
     )
@@ -328,6 +330,15 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--event_min_lon_span", type=float, default=10.0)
     ap.add_argument("--event_min_lat_span", type=float, default=4.0)
     ap.add_argument("--event_gap_hours", type=int, default=24)
+    ap.add_argument(
+        "--event_preferred_times",
+        default="10-30 22:00",
+        help=(
+            "Comma/semicolon-separated UTC event centers to force into the selected event set. "
+            "Yearless values such as '1030 22:00' or '10-30 22:00' match month-day-hour. "
+            "Pass an empty string to disable."
+        ),
+    )
     ap.add_argument("--overlap_script", default="")
     ap.add_argument("--overlap_out_dir", default="")
     ap.add_argument("--overlap_extra_args", default="", help="Extra args passed verbatim to overlap evaluator.")
@@ -1189,7 +1200,7 @@ def plot_confusion_pmst_vs_ifs(
         for i in range(3):
             for j in range(3):
                 txt = f"{cm_norm[i, j]:.2f}\n{cm[i, j]:,}"
-                ax.text(j, i, txt, ha="center", va="center", fontsize=8, color="#111111")
+                ax.text(j, i, txt, ha="center", va="center", fontsize=9.5, color="#111111")
     fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.82, label="Row-normalized fraction")
     save_fig_pair(
         fig,
@@ -2119,7 +2130,7 @@ def plot_station_recall_delta_map(
     worse = int((df[metric] < 0).sum())
     median_delta = float(np.nanmedian(vals))
     mean_delta = float(np.nanmean(vals))
-    ax.set_title(f"Station-level {label.lower()} difference", fontsize=11, fontweight="bold", pad=8)
+    ax.set_title(f"Station-level {label.lower()} difference", fontsize=12, fontweight="bold", pad=8)
     ax.text(
         0.02,
         0.98,
@@ -2129,7 +2140,7 @@ def plot_station_recall_delta_map(
         transform=ax.transAxes,
         ha="left",
         va="top",
-        fontsize=8.5,
+        fontsize=9.5,
         color="#1F2937",
         bbox={"facecolor": "white", "edgecolor": "#B8B8B8", "linewidth": 0.4, "alpha": 0.88, "pad": 3.0},
         zorder=8,
@@ -2157,9 +2168,9 @@ def plot_station_recall_delta_map(
     hist_ax.axvline(0.0, color="#C62828", linestyle="--", linewidth=1.0)
     hist_ax.axvline(mean_delta, color="#1F2937", linestyle="-", linewidth=0.9)
     hist_ax.set_xlim(hist_lo, hist_hi)
-    hist_ax.set_xlabel("Delta recall", fontsize=7)
-    hist_ax.set_ylabel("Density", fontsize=7)
-    hist_ax.tick_params(axis="both", labelsize=7, length=2.5)
+    hist_ax.set_xlabel("Delta recall", fontsize=9)
+    hist_ax.set_ylabel("Density", fontsize=9)
+    hist_ax.tick_params(axis="both", labelsize=8.5, length=2.5)
     hist_ax.grid(alpha=0.18)
     for spine in hist_ax.spines.values():
         spine.set_color("#555555")
@@ -2175,7 +2186,7 @@ def plot_station_recall_delta_map(
         transform=cb.ax.transAxes,
         ha="left",
         va="top",
-        fontsize=7.5,
+        fontsize=9,
         color="#9E1F36",
     )
     cb.ax.text(
@@ -2185,7 +2196,7 @@ def plot_station_recall_delta_map(
         transform=cb.ax.transAxes,
         ha="right",
         va="top",
-        fontsize=7.5,
+        fontsize=9,
         color="#08306B",
     )
     fig.tight_layout()
@@ -2217,7 +2228,12 @@ def plot_event_peak_grid(
         print("  [WARN] No event summary for peak grid.", flush=True)
         return
     setup_journal_style()
-    events = event_df.head(3).copy()
+    events = event_df.copy()
+    events["__peak_time_sort"] = pd.to_datetime(events["peak_time"], errors="coerce")
+    sort_cols = ["__peak_time_sort"]
+    if "event_rank" in events:
+        sort_cols.append("event_rank")
+    events = events.sort_values(sort_cols).drop(columns=["__peak_time_sort"]).head(3).copy()
     n_cols = len(events)
     if n_cols == 0:
         return
@@ -2260,7 +2276,7 @@ def plot_event_peak_grid(
             if row_idx == 0:
                 ax.set_title(f"Event {int(ev.get('event_rank', col_idx + 1))}\n{peak:%Y-%m-%d %H:00 UTC}")
             if col_idx == 0:
-                ax.text(-0.18, 0.5, row_label, transform=ax.transAxes, rotation=90, va="center", ha="center", fontsize=10, fontweight="bold")
+                ax.text(-0.18, 0.5, row_label, transform=ax.transAxes, rotation=90, va="center", ha="center", fontsize=11.5, fontweight="bold")
     handles = [Patch(facecolor=CLASS_COLORS[i], label=CLASS_NAMES[i]) for i in range(3)]
     handles.append(Patch(facecolor="#D3D3D3", label="IFS missing"))
     fig.legend(handles=handles, loc="lower center", ncol=4, frameon=False)
@@ -2289,6 +2305,10 @@ def plot_event_footprint(
     if not dfs:
         print("  [WARN] No event hourly metrics for footprint figure.", flush=True)
         return
+
+    def _count_col(df: pd.DataFrame, preferred: str, fallback: str) -> str:
+        return preferred if preferred in df else fallback
+
     setup_journal_style()
     ymax = 0
     for df in dfs:
@@ -2301,15 +2321,20 @@ def plot_event_footprint(
     fig, axes = plt.subplots(1, len(dfs), figsize=(4.3 * len(dfs), 3.7), sharey=True, squeeze=False)
     for i, (ax, df) in enumerate(zip(axes.ravel(), dfs), start=1):
         x = df["hour_offset"].to_numpy(dtype=float)
-        ax.plot(x, df["obs_fog_count"], color="#111111", marker="o", lw=1.9, label="Obs Ultra-low")
+        ax.plot(x, df[_count_col(df, "obs_ultralow_count", "obs_fog_count")], color="#111111", marker="o", lw=1.9, label="Obs Ultra-low")
         ax.plot(x, df["obs_low_vis_count"], color="#111111", marker="o", lw=1.2, ls="--", label="Obs Low-vis event")
-        ax.plot(x, df["pmst_fog_count"], color=PMST_COLOR, marker="s", lw=1.9, label="PMST Ultra-low")
+        ax.plot(x, df[_count_col(df, "pmst_ultralow_count", "pmst_fog_count")], color=PMST_COLOR, marker="s", lw=1.9, label="PMST Ultra-low")
         ax.plot(x, df["pmst_low_vis_count"], color=PMST_COLOR, marker="s", lw=1.2, ls="--", label="PMST Low-vis event")
-        if "ifs_fog_count" in df:
-            ax.plot(x, df["ifs_fog_count"], color=IFS_DIAG_COLOR, marker="^", lw=1.9, label="IFS Ultra-low")
+        if "ifs_ultralow_count" in df or "ifs_fog_count" in df:
+            ax.plot(x, df[_count_col(df, "ifs_ultralow_count", "ifs_fog_count")], color=IFS_DIAG_COLOR, marker="^", lw=1.9, label="IFS Ultra-low")
             ax.plot(x, df["ifs_low_vis_count"], color=IFS_DIAG_COLOR, marker="^", lw=1.2, ls="--", label="IFS Low-vis event")
         ax.axvline(0, color="#333333", lw=1.0, ls=":")
-        ax.set_title(f"Event {i}")
+        peak_label = f"Event {i}"
+        if "time" in df and "hour_offset" in df:
+            peak_rows = df.loc[pd.to_numeric(df["hour_offset"], errors="coerce") == 0, "time"]
+            if not peak_rows.empty:
+                peak_label = f"Event {i}\n{pd.Timestamp(peak_rows.iloc[0]):%m-%d %H:00} UTC"
+        ax.set_title(peak_label)
         ax.set_xlabel("Hour relative to peak")
         ax.set_ylim(0, max(10, ymax * 1.08))
         if i == 1:
@@ -2321,10 +2346,10 @@ def plot_event_footprint(
     save_fig_pair(
         fig,
         out_dir,
-        "fig9_events_footprint_evolution_1x3",
+        "fig9_events_ultralow_lowvis_counts_1x3",
         manifest,
         sources,
-        notes="Event footprint growth/decay from hourly station counts.",
+        notes="Ultra-low and Low-vis event footprint growth/decay from hourly station counts.",
     )
 
 
@@ -2480,7 +2505,7 @@ def plot_fig11_lead_init(
         "Dotted 0-12 h segment is filled from the previous initialization's 12-24 h verification window.",
         ha="right",
         va="bottom",
-        fontsize=7.5,
+        fontsize=9,
         color="#3F4A3F",
     )
     fig.tight_layout()
@@ -2958,7 +2983,7 @@ def plot_fig11_48h_model_vs_ifs(
             "Dotted 0-12 h segment is filled from the previous initialization's 12-24 h verification window.",
             ha="right",
             va="bottom",
-            fontsize=7.5,
+            fontsize=9,
             color="#3F4A3F",
         )
     fig.tight_layout()
@@ -3086,13 +3111,13 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
     if major_ticks:
         ax.set_xticks(major_ticks)
     ax.set_xlabel("Display lead time (h)")
-    ax.set_title("48h lead-time skill gain over IFS", fontsize=11, fontweight="bold", pad=8)
+    ax.set_title("48h lead-time skill gain over IFS", fontsize=12, fontweight="bold", pad=8)
     for sep in (1.5, 3.5):
         ax.axhline(sep, color="#334155", lw=0.7, alpha=0.75)
     for lead_line in (12, 24, 36):
         if leads.min() <= lead_line <= leads.max():
             ax.axvline(lead_line, color="#334155", lw=0.55, alpha=0.38)
-    ax.tick_params(axis="both", labelsize=8)
+    ax.tick_params(axis="both", labelsize=9.5)
     ax.grid(False)
     for spine in ax.spines.values():
         spine.set_color("#111827")
@@ -3107,7 +3132,7 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
         transform=cb.ax.transAxes,
         ha="left",
         va="top",
-        fontsize=7.5,
+        fontsize=9,
         color="#9E1F36",
     )
     cb.ax.text(
@@ -3117,17 +3142,17 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
         transform=cb.ax.transAxes,
         ha="right",
         va="top",
-        fontsize=7.5,
+        fontsize=9,
         color="#08306B",
     )
-    cb.set_label("PMST - IFS diagnostic VIS (percentage points)", fontsize=8)
+    cb.set_label("PMST - IFS diagnostic VIS (percentage points)", fontsize=9.5)
     fig.text(
         0.995,
         0.01,
         f"Color scale is centered at zero and clipped at +/-{lim:g} percentage points to preserve lead-time contrast.",
         ha="right",
         va="bottom",
-        fontsize=7.1,
+        fontsize=9,
         color="#475569",
     )
     fig.tight_layout()
@@ -3757,7 +3782,7 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
         "n_fog",
         5,
         "Station Ultra-low Recall",
-        "fig8_station_fog_recall",
+        "fig8_station_ultralow_recall",
         out_dir,
         manifest,
         [str(out_dir / "station_metrics.csv")],
@@ -3772,7 +3797,7 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
         "n_mist",
         5,
         "Station Moderate-low Recall",
-        "fig8_station_mist_recall",
+        "fig8_station_moderatelow_recall",
         out_dir,
         manifest,
         [str(out_dir / "station_metrics.csv")],
@@ -3818,6 +3843,7 @@ def run_main(args: argparse.Namespace, base: Path, out_dir: Path, manifest: Mani
                 min_lon_span=args.event_min_lon_span,
                 min_lat_span=args.event_min_lat_span,
                 gap_hours=args.event_gap_hours,
+                preferred_event_times=args.event_preferred_times,
             )
             event_eval_completed = True
         except Exception as exc:

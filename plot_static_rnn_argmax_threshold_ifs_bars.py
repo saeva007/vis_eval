@@ -74,11 +74,13 @@ def setup_style() -> None:
             "svg.fonttype": "none",
             "pdf.fonttype": 42,
             "ps.fonttype": 42,
-            "font.size": 9,
-            "axes.labelsize": 9.5,
-            "axes.titlesize": 10.5,
-            "xtick.labelsize": 8.5,
-            "ytick.labelsize": 8.5,
+            "font.size": 9.5,
+            "axes.labelsize": 10,
+            "axes.titlesize": 11,
+            "axes.titleweight": "bold",
+            "axes.labelweight": "bold",
+            "xtick.labelsize": 9,
+            "ytick.labelsize": 9,
             "legend.fontsize": 9,
             "axes.spines.top": False,
             "axes.spines.right": False,
@@ -162,7 +164,7 @@ def plot_panel(ax, data: pd.DataFrame, metrics: Sequence[Tuple[str, str]], title
                     f"{value:.2f}",
                     ha="center",
                     va="bottom",
-                    fontsize=7.1,
+                    fontsize=8.8,
                     rotation=0,
                 )
     ax.set_xticks(x)
@@ -191,14 +193,14 @@ def plot_fpr_panel(ax, data: pd.DataFrame) -> None:
     ymax = max(0.04, float(np.nanmax(values)) * 1.35) if np.isfinite(values).any() else 0.1
     for xi, value in zip(x, values):
         if np.isfinite(value):
-            ax.text(xi, value + max(0.002, ymax * 0.025), f"{value:.3f}", ha="center", va="bottom", fontsize=7.1)
+            ax.text(xi, value + max(0.002, ymax * 0.025), f"{value:.3f}", ha="center", va="bottom", fontsize=8.8)
     ax.set_xticks(x)
     ax.set_xticklabels(methods, rotation=15, ha="right")
     ax.set_ylim(0, min(1.0, ymax))
     ax.set_ylabel("False-positive rate")
     ax.set_title("Clear-condition false positives", pad=8)
     ax.grid(axis="y", color="#E4E7EB", linewidth=0.65)
-    ax.text(0.98, 0.96, "lower is better", transform=ax.transAxes, ha="right", va="top", fontsize=7.5, color="#555555")
+    ax.text(0.98, 0.96, "lower is better", transform=ax.transAxes, ha="right", va="top", fontsize=8.5, color="#555555")
 
 
 def save_outputs(fig, out_dir: Path, stem: str, dpi: int, source_csvs: Sequence[Path], source_data: pd.DataFrame) -> None:

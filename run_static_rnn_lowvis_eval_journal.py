@@ -217,6 +217,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--event_min_lon_span", type=float, default=10.0)
     p.add_argument("--event_min_lat_span", type=float, default=4.0)
     p.add_argument("--event_gap_hours", type=int, default=24)
+    p.add_argument(
+        "--event_preferred_times",
+        default="10-30 22:00",
+        help=(
+            "Comma/semicolon-separated UTC event centers to force into the selected event set. "
+            "Yearless values such as '1030 22:00' or '10-30 22:00' match month-day-hour. "
+            "Pass an empty string to disable."
+        ),
+    )
     p.add_argument("--event_env_source", choices=["grid", "none"], default="grid")
     p.add_argument("--event_env_max_events", type=int, default=3)
     p.add_argument("--event_env_rh2m_var", default="rh2m")
@@ -1263,7 +1272,7 @@ def _event_focus_extent(
 
 def _draw_visibility_category_legend(ax) -> None:
     ax.set_axis_off()
-    ax.text(0.0, 0.92, "Visibility category (m)", ha="left", va="top", fontsize=7.2)
+    ax.text(0.0, 0.92, "Visibility category (m)", ha="left", va="top", fontsize=9)
     labels = [("Ultra-low", "<500"), ("Moderate-low", "500-1000"), ("Clear", ">=1000")]
     for i, (name, threshold) in enumerate(labels):
         x0 = i / 3.0 + 0.018
@@ -1279,7 +1288,7 @@ def _draw_visibility_category_legend(ax) -> None:
                 linewidth=0.45,
             )
         )
-        ax.text(x0 + width / 2.0, 0.12, f"{name}\n{threshold}", transform=ax.transAxes, ha="center", va="center", fontsize=6.8)
+        ax.text(x0 + width / 2.0, 0.12, f"{name}\n{threshold}", transform=ax.transAxes, ha="center", va="center", fontsize=8.8)
 
 
 def _draw_visibility_class_panel(
@@ -1304,7 +1313,7 @@ def _draw_visibility_class_panel(
             zorder=2,
         )
     if sub.empty or value_col not in sub:
-        ax.text(0.5, 0.5, "No samples", transform=ax.transAxes, ha="center", va="center", color="#6B7280", fontsize=7)
+        ax.text(0.5, 0.5, "No samples", transform=ax.transAxes, ha="center", va="center", color="#6B7280", fontsize=9)
         return
     plot_df = sub
     if valid_col and valid_col in sub:
@@ -1313,7 +1322,7 @@ def _draw_visibility_class_panel(
             ax.scatter(sub.loc[~valid, "lon"], sub.loc[~valid, "lat"], s=3.2, color="#D2D6DC", alpha=0.55, linewidths=0, zorder=2)
         plot_df = sub.loc[valid]
     if plot_df.empty:
-        ax.text(0.5, 0.5, "No matched IFS", transform=ax.transAxes, ha="center", va="center", color="#6B7280", fontsize=7)
+        ax.text(0.5, 0.5, "No matched IFS", transform=ax.transAxes, ha="center", va="center", color="#6B7280", fontsize=9)
         return
     if value_col.endswith("_m"):
         vals = classify_visibility_values(plot_df[value_col].to_numpy(dtype=float))
@@ -1347,7 +1356,7 @@ def _draw_grid_panel(
     draw_basemap(ax, shp_gdf, compact=True)
     _apply_event_map_extent(ax, extent)
     if field is None:
-        ax.text(0.5, 0.5, missing_label, transform=ax.transAxes, ha="center", va="center", color="#6B7280", fontsize=7)
+        ax.text(0.5, 0.5, missing_label, transform=ax.transAxes, ha="center", va="center", color="#6B7280", fontsize=9)
         return
     lon2d, lat2d = _grid_lon_lat(field.lats, field.lons)
     ax.pcolormesh(lon2d, lat2d, field.values, cmap=cmap, norm=norm, shading="auto", zorder=2, rasterized=True)
@@ -1391,7 +1400,7 @@ def plot_event_environment_grid(
     fig, axes = plt.subplots(nrows, 5, figsize=(11.2, fig_h), squeeze=False)
     col_titles = ["Observed visibility", "PMST forecast", "IFS diagnostic VIS", "Tianji RH2m", "CAMS PM10"]
     for j, title in enumerate(col_titles):
-        axes[0, j].set_title(title, fontsize=8.5, fontweight="bold", pad=4)
+        axes[0, j].set_title(title, fontsize=10.5, fontweight="bold", pad=4)
 
     rh_norm = Normalize(vmin=float(args.event_env_rh2m_vmin), vmax=float(args.event_env_rh2m_vmax))
     pm10_norm = Normalize(vmin=float(args.event_env_pm10_vmin), vmax=float(args.event_env_pm10_vmax))
@@ -1407,7 +1416,7 @@ def plot_event_environment_grid(
             transform=axes[row_idx, 0].transAxes,
             ha="right",
             va="center",
-            fontsize=6.8,
+            fontsize=8.8,
             color="#364152",
             linespacing=1.08,
         )
@@ -1436,7 +1445,7 @@ def plot_event_environment_grid(
         actual_ts = _event_timestamp(actual_peak)
         if actual_ts != center_time:
             title += f" window center; true peak {actual_ts:%Y-%m-%d %H:00 UTC}"
-    fig.suptitle(title, x=0.5, y=0.988, fontsize=9.8, fontweight="bold")
+    fig.suptitle(title, x=0.5, y=0.988, fontsize=12, fontweight="bold")
     fig.subplots_adjust(left=0.088, right=0.994, top=0.94, bottom=0.18, wspace=0.012, hspace=0.035)
     fig.canvas.draw()
 
@@ -1450,9 +1459,9 @@ def plot_event_environment_grid(
 
     _draw_visibility_category_legend(fig.add_axes(cbar_span(0, 2, y=0.035, height=0.092)))
     cb2 = fig.colorbar(rh_sm, cax=fig.add_axes(cbar_span(3, 3)), orientation="horizontal")
-    cb2.set_label("RH2m (%)", fontsize=7.2)
+    cb2.set_label("RH2m (%)", fontsize=9)
     cb3 = fig.colorbar(pm10_sm, cax=fig.add_axes(cbar_span(4, 4)), orientation="horizontal", extend="max")
-    cb3.set_label(r"PM10 ($\mu$g m$^{-3}$)", fontsize=7.2)
+    cb3.set_label(r"PM10 ($\mu$g m$^{-3}$)", fontsize=9)
 
     all_sources = list(sources) + rh_sources + pm10_sources
     save_fig_pair(
@@ -1526,6 +1535,7 @@ def run_event_plots(
                 min_lon_span=args.event_min_lon_span,
                 min_lat_span=args.event_min_lat_span,
                 gap_hours=args.event_gap_hours,
+                preferred_event_times=args.event_preferred_times,
             )
             event_eval_completed = True
         except Exception as exc:
@@ -1765,7 +1775,7 @@ def evaluate_target(
                 "n_fog",
                 5,
                 "Station Ultra-low Recall",
-                "fig8_station_fog_recall",
+                "fig8_station_ultralow_recall",
                 out_dir,
                 manifest,
                 [str(out_dir / "station_metrics.csv")],
@@ -1780,7 +1790,7 @@ def evaluate_target(
                 "n_mist",
                 5,
                 "Station Moderate-low Recall",
-                "fig8_station_mist_recall",
+                "fig8_station_moderatelow_recall",
                 out_dir,
                 manifest,
                 [str(out_dir / "station_metrics.csv")],

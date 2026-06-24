@@ -144,7 +144,9 @@ def update_event_row(row: pd.Series, eval_df: pd.DataFrame, peak_time: pd.Timest
     out["peak_time"] = peak_time
     out["actual_peak_time"] = peak_time
     out["peak_fog_count"] = int(len(fog))
+    out["peak_ultralow_count"] = int(len(fog))
     out["actual_peak_fog_count"] = int(len(fog))
+    out["actual_peak_ultralow_count"] = int(len(fog))
     out["peak_region_count"] = region_count_for_hour(fog)
     out["actual_peak_region_count"] = region_count_for_hour(fog)
     out["peak_lon_span"] = span(fog["lon"]) if "lon" in fog else 0.0
@@ -165,6 +167,7 @@ def update_event_row(row: pd.Series, eval_df: pd.DataFrame, peak_time: pd.Timest
     out["total_fog_station_hours"] = int(
         sum(int(((eval_df["time"] == t) & (eval_df["y_true"] == 0)).sum()) for t in needed)
     )
+    out["total_ultralow_station_hours"] = int(out["total_fog_station_hours"])
     out["event_score"] = float(out["total_fog_station_hours"]) + 2.0 * int(len(fog)) + int(len(low_vis))
     out["selection_tier"] = "manual_replacement"
     out["selection_tier_rank"] = -1
@@ -181,7 +184,17 @@ def apply_replacements(event_df: pd.DataFrame, eval_df: pd.DataFrame, replacemen
             raise ValueError(f"Cannot replace event rank {rank}; event summary only has ranks {out['event_rank'].tolist()}")
         idx = out.index[mask][0]
         out.loc[idx] = update_event_row(out.loc[idx], eval_df, ts, window_hours)
-    out = out.sort_values("event_rank").reset_index(drop=True)
+    out = sort_events_chronologically(out)
+    return out
+
+
+def sort_events_chronologically(event_df: pd.DataFrame) -> pd.DataFrame:
+    out = event_df.copy()
+    out["__peak_time_sort"] = pd.to_datetime(out["peak_time"], errors="coerce")
+    out = out.sort_values(["__peak_time_sort", "event_rank"]).drop(columns=["__peak_time_sort"]).reset_index(drop=True)
+    if "event_rank" in out.columns:
+        out = out.drop(columns=["event_rank"])
+    out.insert(0, "event_rank", np.arange(1, len(out) + 1))
     return out
 
 
@@ -211,6 +224,8 @@ def main() -> None:
     replacements = parse_replacements(args.replace_event)
     if replacements:
         event_df = apply_replacements(event_df, eval_df, replacements, args.window_hours)
+    else:
+        event_df = sort_events_chronologically(event_df)
     event_df.to_csv(out_dir / "event_case_summary.csv", index=False)
 
     meta, y_cls, y_raw, pmst_pred, ifs_pred, ifs_valid = arrays_from_eval(eval_df)
@@ -219,7 +234,8 @@ def main() -> None:
     sources = [str(eval_dir / "per_sample_eval.csv"), str(out_dir / "event_case_summary.csv")]
 
     summary_rows: List[dict] = []
-    for _, event_row in event_df.head(3).iterrows():
+    event_df_top = sort_events_chronologically(event_df).head(3).copy()
+    for _, event_row in event_df_top.iterrows():
         rank = int(event_row["event_rank"])
         hourly = compute_event_hourly_metrics(
             meta,
@@ -276,7 +292,7 @@ def main() -> None:
     manifest.add(three_peak_path.name, sources, notes="Manual event-only rerun peak row.", n=int(len(eval_df)))
 
     journal.plot_event_peak_grid(eval_df, event_df, out_dir, manifest, sources, shp_gdf=shp_gdf)
-    hourly_paths = [out_dir / f"fig9_event_{int(row.event_rank)}_hourly_metrics.csv" for row in event_df.head(3).itertuples()]
+    hourly_paths = [out_dir / f"fig9_event_{int(row.event_rank)}_hourly_metrics.csv" for row in event_df_top.itertuples()]
     journal.plot_event_footprint(hourly_paths, out_dir, manifest, [str(p) for p in hourly_paths])
 
     journal.plot_event_environment_grids(

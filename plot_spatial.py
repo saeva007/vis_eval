@@ -2,6 +2,7 @@
  Paper Figure 8/9: Spatial maps and widespread Low-vis event evaluation.
 """
 import os
+import re
 
 import numpy as np
 import pandas as pd
@@ -355,6 +356,7 @@ def detect_widespread_fog_events(
     min_lat_span=4.0,
     gap_hours=24,
     required_valid_mask=None,
+    preferred_event_times=None,
 ):
     """
     Detect nationwide/widespread Low-vis events from the test set.
@@ -388,13 +390,15 @@ def detect_widespread_fog_events(
     fog_df = derive_scenario_columns(fog_df)
     event_columns = [
         "event_rank", "peak_time", "start_time", "end_time", "duration_h",
-        "peak_fog_count", "total_fog_station_hours", "peak_region_count",
-        "peak_lon_span", "peak_lat_span", "actual_peak_time",
-        "actual_peak_fog_count", "actual_peak_region_count", "actual_peak_lon_span",
-        "actual_peak_lat_span", "event_score", "selection_tier", "selection_tier_rank",
-        "selection_min_fog_stations", "selection_min_regions", "selection_min_lon_span",
-        "selection_min_lat_span", "window_start", "window_end", "window_complete",
-        "window_available_hours", "window_required_hours",
+        "peak_fog_count", "peak_ultralow_count", "total_fog_station_hours",
+        "total_ultralow_station_hours", "peak_region_count", "peak_lon_span", "peak_lat_span",
+        "actual_peak_time", "actual_peak_fog_count", "actual_peak_ultralow_count",
+        "actual_peak_region_count", "actual_peak_lon_span", "actual_peak_lat_span",
+        "event_score", "selection_tier", "selection_tier_rank", "selection_reason",
+        "preferred_event_spec", "selection_min_fog_stations", "selection_min_ultralow_stations",
+        "selection_min_regions", "selection_min_lon_span", "selection_min_lat_span",
+        "window_start", "window_end", "window_complete", "window_available_hours",
+        "window_required_hours",
     ]
 
     def _region_count(series):
@@ -416,6 +420,61 @@ def detect_widespread_fog_events(
 
     def _empty_events():
         return pd.DataFrame(columns=event_columns)
+
+    def _split_preferred_event_specs(value):
+        if value is None:
+            return []
+        if isinstance(value, str):
+            items = [part.strip() for part in re.split(r"[,;，；]+", value) if part.strip()]
+        else:
+            items = [str(part).strip() for part in value if str(part).strip()]
+        specs = []
+        for raw in items:
+            text = raw.replace("：", ":").replace("T", " ").strip()
+            m = re.match(
+                r"^(?P<year>\d{4})[-/]?(?P<month>\d{1,2})[-/]?(?P<day>\d{1,2})\s+"
+                r"(?P<hour>\d{1,2})(?::(?P<minute>\d{1,2}))?$",
+                text,
+            )
+            if m:
+                parts = {k: int(v) if v is not None else 0 for k, v in m.groupdict().items()}
+                try:
+                    specs.append({"raw": raw, "timestamp": pd.Timestamp(
+                        year=parts["year"], month=parts["month"], day=parts["day"],
+                        hour=parts["hour"], minute=parts["minute"],
+                    )})
+                except ValueError:
+                    print(f"  [Event] Ignoring invalid preferred event time: {raw}", flush=True)
+                continue
+            m = re.match(
+                r"^(?P<month>\d{1,2})[-/]?(?P<day>\d{1,2})\s+"
+                r"(?P<hour>\d{1,2})(?::(?P<minute>\d{1,2}))?$",
+                text,
+            )
+            if m:
+                parts = {k: int(v) if v is not None else 0 for k, v in m.groupdict().items()}
+                try:
+                    pd.Timestamp(year=2000, month=parts["month"], day=parts["day"], hour=parts["hour"], minute=parts["minute"])
+                    specs.append({"raw": raw, "timestamp": None, **parts})
+                except ValueError:
+                    print(f"  [Event] Ignoring invalid preferred event time: {raw}", flush=True)
+                continue
+            try:
+                specs.append({"raw": raw, "timestamp": pd.Timestamp(text)})
+            except Exception:
+                print(f"  [Event] Ignoring unparseable preferred event time: {raw}", flush=True)
+        return specs
+
+    def _match_event_times(times, spec):
+        ts = pd.Series(pd.to_datetime(times))
+        if spec.get("timestamp") is not None:
+            return ts == pd.Timestamp(spec["timestamp"])
+        return (
+            (ts.dt.month == int(spec["month"]))
+            & (ts.dt.day == int(spec["day"]))
+            & (ts.dt.hour == int(spec["hour"]))
+            & (ts.dt.minute == int(spec.get("minute", 0)))
+        )
 
     available_idx = pd.DatetimeIndex(pd.to_datetime(df["time"]).dropna()).astype("datetime64[ns]")
     available_times = set(available_idx.asi8.tolist())
@@ -490,19 +549,25 @@ def detect_widespread_fog_events(
                 "end_time": end_time,
                 "duration_h": duration_h,
                 "peak_fog_count": int(peak["n_fog"]),
+                "peak_ultralow_count": int(peak["n_fog"]),
                 "total_fog_station_hours": total_fog_station_hours,
+                "total_ultralow_station_hours": total_fog_station_hours,
                 "peak_region_count": int(peak["n_regions"]),
                 "peak_lon_span": float(peak["lon_span"]),
                 "peak_lat_span": float(peak["lat_span"]),
                 "actual_peak_time": pd.Timestamp(actual_peak["time"]),
                 "actual_peak_fog_count": int(actual_peak["n_fog"]),
+                "actual_peak_ultralow_count": int(actual_peak["n_fog"]),
                 "actual_peak_region_count": int(actual_peak["n_regions"]),
                 "actual_peak_lon_span": float(actual_peak["lon_span"]),
                 "actual_peak_lat_span": float(actual_peak["lat_span"]),
                 "event_score": float(score),
                 "selection_tier": tier_name,
                 "selection_tier_rank": int(tier_rank),
+                "selection_reason": "ranked_event",
+                "preferred_event_spec": "",
                 "selection_min_fog_stations": int(fog_min),
+                "selection_min_ultralow_stations": int(fog_min),
                 "selection_min_regions": int(regions_min),
                 "selection_min_lon_span": float(lon_min),
                 "selection_min_lat_span": float(lat_min),
@@ -559,6 +624,50 @@ def detect_widespread_fog_events(
     if all_candidates.empty:
         return _empty_events()
 
+    def _candidate_sort(events_df):
+        return events_df.sort_values(
+            ["selection_tier_rank", "event_score", "peak_fog_count", "peak_region_count"],
+            ascending=[True, False, False, False],
+        )
+
+    def _preferred_row_for_spec(spec):
+        target_times = pd.to_datetime(hourly.loc[_match_event_times(hourly["time"], spec), "time"]).drop_duplicates()
+        if target_times.empty:
+            return None
+        rows = []
+        starts = pd.to_datetime(all_candidates["start_time"])
+        ends = pd.to_datetime(all_candidates["end_time"])
+        for target in sorted(target_times):
+            target = pd.Timestamp(target)
+            covered = all_candidates[(starts <= target) & (ends >= target)].copy()
+            if covered.empty:
+                continue
+            peak_rows = hourly[pd.to_datetime(hourly["time"]) == target]
+            if peak_rows.empty:
+                continue
+            peak = peak_rows.sort_values(["n_fog", "n_regions", "lon_span", "lat_span"], ascending=False).iloc[0]
+            for _, base in _candidate_sort(covered).iterrows():
+                row = base.copy()
+                row["peak_time"] = target
+                row["peak_fog_count"] = int(peak["n_fog"])
+                row["peak_ultralow_count"] = int(peak["n_fog"])
+                row["peak_region_count"] = int(peak["n_regions"])
+                row["peak_lon_span"] = float(peak["lon_span"])
+                row["peak_lat_span"] = float(peak["lat_span"])
+                row["selection_reason"] = "preferred_event"
+                row["preferred_event_spec"] = str(spec.get("raw", ""))
+                if window_hours is not None:
+                    win = _window_available(target)
+                    for key, value in win.items():
+                        row[key] = value
+                    if required_valid_mask is not None and not bool(row.get("window_complete", True)):
+                        continue
+                rows.append(row)
+                break
+        if not rows:
+            return None
+        return _candidate_sort(pd.DataFrame(rows)).iloc[0].to_dict()
+
     def _distinct_from_selected(row, selected_rows):
         row_start = pd.Timestamp(row["start_time"])
         row_end = pd.Timestamp(row["end_time"])
@@ -571,6 +680,21 @@ def detect_widespread_fog_events(
         return True
 
     selected_rows = []
+    preferred_specs = _split_preferred_event_specs(preferred_event_times)
+    for spec in preferred_specs:
+        preferred_row = _preferred_row_for_spec(spec)
+        if preferred_row is None:
+            print(f"  [Event] Preferred event {spec.get('raw')} was not available in selected event candidates.", flush=True)
+            continue
+        if _distinct_from_selected(preferred_row, selected_rows):
+            selected_rows.append(preferred_row)
+            print(
+                "  [Event] Forced preferred event into case set: "
+                f"{pd.Timestamp(preferred_row['peak_time']):%Y-%m-%d %H:00} UTC "
+                f"({spec.get('raw')}).",
+                flush=True,
+            )
+
     # When a required-valid mask is supplied, do not fall back to incomplete
     # windows: the selected event panels must be fully covered by the
     # observation/model/IFS intersection.
@@ -590,11 +714,19 @@ def detect_widespread_fog_events(
         return _empty_events()
 
     out = pd.DataFrame(selected_rows).sort_values(
-        ["selection_tier_rank", "event_score", "peak_fog_count", "peak_region_count"],
-        ascending=[True, False, False, False],
+        ["peak_time", "selection_tier_rank", "event_score"],
+        ascending=[True, True, False],
     ).head(top_k).reset_index(drop=True)
     if "event_rank" in out.columns:
         out = out.drop(columns=["event_rank"])
+    for new_col, old_col in {
+        "peak_ultralow_count": "peak_fog_count",
+        "total_ultralow_station_hours": "total_fog_station_hours",
+        "actual_peak_ultralow_count": "actual_peak_fog_count",
+        "selection_min_ultralow_stations": "selection_min_fog_stations",
+    }.items():
+        if old_col in out and new_col not in out:
+            out[new_col] = out[old_col]
     out.insert(0, "event_rank", np.arange(1, len(out) + 1))
     if len(out) < top_k:
         print(
@@ -626,6 +758,20 @@ def _draw_event_basemap(ax, shp_gdf=None):
         spine.set_linewidth(0.5)
 
 
+def _chronological_events(event_df, n=None):
+    if event_df is None or len(event_df) == 0:
+        return event_df
+    out = event_df.copy()
+    if "peak_time" in out:
+        out["__peak_time_sort"] = pd.to_datetime(out["peak_time"])
+        sort_cols = ["__peak_time_sort"]
+        if "event_rank" in out:
+            sort_cols.append("event_rank")
+        out = out.sort_values(sort_cols).drop(columns=["__peak_time_sort"])
+    if n is not None:
+        out = out.head(n)
+    return out.reset_index(drop=True)
+
 def _format_event_label(event_row):
     peak_time = pd.Timestamp(event_row["peak_time"])
     prefix = f"{peak_time:%Y-%m-%d %H:00} UTC"
@@ -634,7 +780,7 @@ def _format_event_label(event_row):
         if actual_peak != peak_time:
             prefix = f"{prefix} window center; true peak {actual_peak:%Y-%m-%d %H:00} UTC"
     return (
-        f"{prefix} | peak Ultra-low={int(event_row['peak_fog_count'])} | "
+        f"{prefix} | peak Ultra-low={int(event_row.get('peak_ultralow_count', event_row['peak_fog_count']))} | "
         f"regions={int(event_row['peak_region_count'])} | "
         f"span={event_row['peak_lon_span']:.1f}°×{event_row['peak_lat_span']:.1f}°"
     )
@@ -666,6 +812,28 @@ def _compute_case_metrics(y_true, y_pred):
         "low_vis_recall": low_vis_recall,
     }
 
+
+def _add_ultralow_event_aliases(df):
+    out = df.copy()
+    aliases = {
+        "obs_ultralow_count": "obs_fog_count",
+        "pmst_ultralow_count": "pmst_fog_count",
+        "ifs_ultralow_count": "ifs_fog_count",
+        "pmst_ultralow_csi": "pmst_fog_csi",
+        "pmst_ultralow_recall": "pmst_fog_recall",
+        "pmst_ultralow_far": "pmst_fog_far",
+        "ifs_ultralow_csi": "ifs_fog_csi",
+        "ifs_ultralow_recall": "ifs_fog_recall",
+        "ifs_ultralow_far": "ifs_fog_far",
+    }
+    for new_col, old_col in aliases.items():
+        if old_col in out and new_col not in out:
+            out[new_col] = out[old_col]
+    return out
+
+
+def _event_col(df, preferred, fallback):
+    return preferred if preferred in df else fallback
 
 def compute_event_hourly_metrics(
     meta,
@@ -742,7 +910,7 @@ def compute_event_hourly_metrics(
             row.update({f"ifs_{k}": v for k, v in ifs_metrics.items()})
 
         rows.append(row)
-    return pd.DataFrame(rows)
+    return _add_ultralow_event_aliases(pd.DataFrame(rows))
 
 
 def plot_widespread_event_panels(
@@ -803,7 +971,7 @@ def plot_widespread_event_panels(
 
             if time_mask.sum() == 0:
                 ax.text(0.5, 0.5, "No samples", transform=ax.transAxes,
-                        ha="center", va="center", fontsize=8, color="#666666")
+                        ha="center", va="center", fontsize=9, color="#666666")
                 continue
 
             event_df = meta.loc[time_mask, ["lon", "lat"]].copy()
@@ -830,7 +998,7 @@ def plot_widespread_event_panels(
                     0.03,
                     f"median={np.nanmedian(vis_vals):.0f} m",
                     transform=ax.transAxes,
-                    fontsize=6.5,
+                    fontsize=8.5,
                     bbox=dict(facecolor="white", alpha=0.78, edgecolor="none", pad=1.5),
                 )
             else:
@@ -868,7 +1036,7 @@ def plot_widespread_event_panels(
                         0.03,
                         f"UL={counts[0]} ML={counts[1]} C={counts[2]}",
                         transform=ax.transAxes,
-                        fontsize=6.5,
+                        fontsize=8.5,
                         bbox=dict(facecolor="white", alpha=0.78, edgecolor="none", pad=1.5),
                     )
 
@@ -924,7 +1092,7 @@ def plot_three_events_footprint_row(
         print("  [Event] plot_three_events_footprint_row: empty event_df, skip.")
         return None
 
-    event_df = event_df.head(3).copy()
+    event_df = _chronological_events(event_df, n=3).copy()
     n_ev = len(event_df)
     offsets = list(range(-int(window_hours), int(window_hours) + 1))
     n_h = len(offsets)
@@ -956,12 +1124,12 @@ def plot_three_events_footprint_row(
                     ttl = t_now.strftime("%m-%d\n%H:00")
                     if off == 0:
                         ttl = t_now.strftime("%m-%d\npeak %H:00")
-                    ax.set_title(ttl, fontsize=7.5, pad=2)
+                    ax.set_title(ttl, fontsize=9, pad=2)
 
                 if time_mask.sum() == 0:
                     ax.text(
                         0.5, 0.5, "—", transform=ax.transAxes,
-                        ha="center", va="center", fontsize=8, color="#999999",
+                        ha="center", va="center", fontsize=9, color="#999999",
                     )
                     continue
 
@@ -1054,7 +1222,7 @@ def plot_three_events_peak_row(
         print("  [Event] plot_three_events_peak_row: empty event_df, skip.")
         return None
 
-    event_df = event_df.head(3).copy()
+    event_df = _chronological_events(event_df, n=3).copy()
     times = _meta_utc_times(meta)
     y_true_raw = np.asarray(y_true_raw, dtype=np.float64)
     pmst_pred = np.asarray(pmst_pred, dtype=np.int64)
@@ -1137,20 +1305,21 @@ def plot_event_metric_comparison(hourly_df, event_row, output_path):
     axes = axes.flatten()
 
     counts_ax = axes[0]
-    counts_ax.plot(x, hourly_df["obs_fog_count"], color=obs_color, marker="o", lw=2.2, label="Obs Ultra-low count")
+    hourly_df = _add_ultralow_event_aliases(hourly_df)
+    counts_ax.plot(x, hourly_df[_event_col(hourly_df, "obs_ultralow_count", "obs_fog_count")], color=obs_color, marker="o", lw=2.2, label="Obs Ultra-low count")
     counts_ax.plot(x, hourly_df["obs_low_vis_count"], color=obs_color, marker="o", lw=1.4, ls="--", label="Obs Low-vis event count")
-    counts_ax.plot(x, hourly_df["pmst_fog_count"], color=pmst_color, marker="o", lw=2.0, label="PMST Ultra-low count")
+    counts_ax.plot(x, hourly_df[_event_col(hourly_df, "pmst_ultralow_count", "pmst_fog_count")], color=pmst_color, marker="o", lw=2.0, label="PMST Ultra-low count")
     counts_ax.plot(x, hourly_df["pmst_low_vis_count"], color=pmst_color, marker="o", lw=1.4, ls="--", label="PMST Low-vis event count")
-    counts_ax.plot(x, hourly_df["ifs_fog_count"], color=ifs_color, marker="s", lw=2.0, label="IFS Ultra-low count")
+    counts_ax.plot(x, hourly_df[_event_col(hourly_df, "ifs_ultralow_count", "ifs_fog_count")], color=ifs_color, marker="s", lw=2.0, label="IFS Ultra-low count")
     counts_ax.plot(x, hourly_df["ifs_low_vis_count"], color=ifs_color, marker="s", lw=1.4, ls="--", label="IFS Low-vis event count")
     counts_ax.set_ylabel("Station Count")
     counts_ax.set_title("Event Footprint Evolution")
     counts_ax.grid(alpha=0.3)
 
     metric_specs = [
-        ("fog_csi", "Ultra-low CSI"),
-        ("fog_recall", "Ultra-low recall"),
-        ("fog_far", "Ultra-low FAR (lower better)"),
+        ("ultralow_csi", "Ultra-low CSI"),
+        ("ultralow_recall", "Ultra-low recall"),
+        ("ultralow_far", "Ultra-low FAR (lower better)"),
         ("low_vis_recall", "Low-vis event recall"),
     ]
     for ax, (metric, title) in zip(axes[1:], metric_specs):
@@ -1187,6 +1356,7 @@ def plot_event_metric_comparison(hourly_df, event_row, output_path):
 
 def summarize_event_metrics(hourly_df, event_row):
     """Collapse hourly event metrics into one summary row."""
+    hourly_df = _add_ultralow_event_aliases(hourly_df)
     peak_mask = hourly_df["hour_offset"] == 0
 
     def _safe_mean(series_name):
@@ -1202,18 +1372,27 @@ def summarize_event_metrics(hourly_df, event_row):
         "event_rank": int(event_row["event_rank"]),
         "peak_time": peak_time,
         "peak_fog_count": int(event_row["peak_fog_count"]),
+        "peak_ultralow_count": int(event_row.get("peak_ultralow_count", event_row["peak_fog_count"])),
         "peak_region_count": int(event_row["peak_region_count"]),
         "duration_h": int(event_row["duration_h"]),
         "pmst_fog_csi_mean": _safe_mean("pmst_fog_csi"),
+        "pmst_ultralow_csi_mean": _safe_mean("pmst_ultralow_csi"),
         "ifs_fog_csi_mean": _safe_mean("ifs_fog_csi"),
+        "ifs_ultralow_csi_mean": _safe_mean("ifs_ultralow_csi"),
         "pmst_fog_recall_mean": _safe_mean("pmst_fog_recall"),
+        "pmst_ultralow_recall_mean": _safe_mean("pmst_ultralow_recall"),
         "ifs_fog_recall_mean": _safe_mean("ifs_fog_recall"),
+        "ifs_ultralow_recall_mean": _safe_mean("ifs_ultralow_recall"),
         "pmst_low_vis_recall_mean": _safe_mean("pmst_low_vis_recall"),
         "ifs_low_vis_recall_mean": _safe_mean("ifs_low_vis_recall"),
         "pmst_fog_csi_peak": _safe_peak("pmst_fog_csi"),
+        "pmst_ultralow_csi_peak": _safe_peak("pmst_ultralow_csi"),
         "ifs_fog_csi_peak": _safe_peak("ifs_fog_csi"),
+        "ifs_ultralow_csi_peak": _safe_peak("ifs_ultralow_csi"),
         "pmst_fog_recall_peak": _safe_peak("pmst_fog_recall"),
+        "pmst_ultralow_recall_peak": _safe_peak("pmst_ultralow_recall"),
         "ifs_fog_recall_peak": _safe_peak("ifs_fog_recall"),
+        "ifs_ultralow_recall_peak": _safe_peak("ifs_ultralow_recall"),
         "pmst_low_vis_recall_peak": _safe_peak("pmst_low_vis_recall"),
         "ifs_low_vis_recall_peak": _safe_peak("ifs_low_vis_recall"),
     }
@@ -1238,8 +1417,8 @@ def plot_event_summary_comparison(summary_df, output_path):
     fig, axes = plt.subplots(2, 2, figsize=(12.5, 8.2), sharex=True)
     axes = axes.flatten()
     panels = [
-        ("fog_csi_mean", "Event-Mean Ultra-low CSI"),
-        ("fog_recall_mean", "Event-Mean Ultra-low recall"),
+        ("ultralow_csi_mean", "Event-Mean Ultra-low CSI"),
+        ("ultralow_recall_mean", "Event-Mean Ultra-low recall"),
         ("low_vis_recall_mean", "Event-Mean Low-vis event recall"),
         ("low_vis_recall_peak", "Peak-hour Low-vis event recall"),
     ]
@@ -1294,6 +1473,7 @@ def run_widespread_event_evaluation(
     min_lon_span=10.0,
     min_lat_span=4.0,
     gap_hours=24,
+    preferred_event_times=None,
 ):
     """
     End-to-end event evaluation:
@@ -1328,6 +1508,7 @@ def run_widespread_event_evaluation(
         min_lat_span=min_lat_span,
         gap_hours=gap_hours,
         required_valid_mask=ifs_valid,
+        preferred_event_times=preferred_event_times,
     )
     summary_path = os.path.join(output_dir, "event_case_summary.csv")
     event_df.to_csv(summary_path, index=False)
