@@ -1195,23 +1195,42 @@ def plot_confusion_pmst_vs_ifs(
         y = y_true
         panels = [("PMST", pmst_pred)]
         matched = None
-    fig, axes = plt.subplots(1, len(panels), figsize=(5.2 * len(panels), 4.2), squeeze=False)
-    for ax, (title, pred) in zip(axes.ravel(), panels):
+    # These panels share the same observed classes.  Repeating the y-axis label
+    # on every panel wastes space and can intrude into the neighbouring matrix.
+    fig, axes = plt.subplots(
+        1,
+        len(panels),
+        figsize=(5.1 * len(panels) + 0.9, 5.25),
+        sharey=True,
+        squeeze=False,
+        constrained_layout=True,
+    )
+    for panel_idx, (ax, (title, pred)) in enumerate(zip(axes.ravel(), panels)):
         cm = confusion_counts(y, pred)
         cm_norm = cm.astype(float) / np.maximum(cm.sum(axis=1, keepdims=True), 1)
         im = ax.imshow(cm_norm, cmap="Blues", vmin=0, vmax=1)
         ax.set_xticks([0, 1, 2])
         ax.set_yticks([0, 1, 2])
         ax.set_xticklabels(CLASS_NAMES)
-        ax.set_yticklabels(CLASS_NAMES)
+        if panel_idx == 0:
+            ax.set_yticklabels(CLASS_NAMES)
+            ax.set_ylabel("Observed class", labelpad=10)
+        else:
+            ax.tick_params(axis="y", which="both", left=False, labelleft=False)
         ax.set_xlabel("Predicted class")
-        ax.set_ylabel("Observed class")
-        ax.set_title(title)
+        ax.set_title(title, pad=10)
         for i in range(3):
             for j in range(3):
                 txt = f"{cm_norm[i, j]:.2f}\n{cm[i, j]:,}"
                 ax.text(j, i, txt, ha="center", va="center", fontsize=9.5, color="#111111")
-    fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.82, label="Row-normalized fraction")
+    cbar = fig.colorbar(
+        im,
+        ax=axes.ravel().tolist(),
+        shrink=0.86,
+        pad=0.035,
+        label="Row-normalized fraction",
+    )
+    cbar.ax.yaxis.labelpad = 10
     save_fig_pair(
         fig,
         out_dir,
@@ -1371,8 +1390,9 @@ def plot_scenario_split(
     ax.set_ylabel("Score")
     title = {"time_of_day": f"Metrics by time of day ({LOCAL_TIME_LABEL})", "season": "Metrics by season", "region": "Metrics by region"}.get(split, split)
     ax.set_title(title)
-    ax.legend(ncol=3, frameon=False, loc="upper center", bbox_to_anchor=(0.5, 1.22))
-    finish_figure_layout(fig, rect=(0.02, 0.04, 0.98, 0.78), h_pad=1.4)
+    handles, labels = ax.get_legend_handles_labels()
+    fig.legend(handles, labels, ncol=3, frameon=False, loc="upper center", bbox_to_anchor=(0.5, 0.985))
+    finish_figure_layout(fig, rect=(0.02, 0.04, 0.98, 0.80), h_pad=1.4)
     stem = {
         "time_of_day": "fig7_split_time_of_day",
         "season": "fig7_split_season",
@@ -1433,9 +1453,9 @@ def plot_diurnal_time_detail(
     fig, axes = plt.subplots(
         2,
         1,
-        figsize=(9.6, 6.9),
+        figsize=(9.6, 8.2),
         sharex=True,
-        gridspec_kw={"height_ratios": [1.0, 1.15], "hspace": 0.15},
+        gridspec_kw={"height_ratios": [1.0, 1.15], "hspace": 0.30},
     )
     ax = axes[0]
     ax.bar(x, fog_k, width=0.82, color=FOG_COLOR, label="Observed Ultra-low")
@@ -1449,7 +1469,8 @@ def plot_diurnal_time_detail(
     ax2.set_ylabel("Low-vis rate (%)")
     lines, labels = ax.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
-    ax.legend(lines + lines2, labels + labels2, frameon=False, ncol=3, loc="upper left")
+    top_handles = lines + lines2
+    top_labels = labels + labels2
     add_panel_label(ax, "a")
 
     metric_specs = [
@@ -1470,12 +1491,16 @@ def plot_diurnal_time_detail(
     ax.set_xlabel(f"Hour ({LOCAL_TIME_LABEL})")
     ax.grid(axis="y", alpha=0.25)
     ax.grid(axis="x", alpha=0.10)
-    ax.legend(ncol=3, frameon=False, loc="upper center", bbox_to_anchor=(0.5, 1.22))
+    skill_handles, skill_labels = ax.get_legend_handles_labels()
     add_panel_label(ax, "b")
     for left, right in ((0, 6), (18, 24)):
         for a in axes:
             a.axvspan(left - 0.5, right - 0.5, color="#F3F4F6", alpha=0.55, zorder=-10)
-    finish_figure_layout(fig, rect=(0.02, 0.04, 0.98, 0.95), h_pad=1.7)
+    # Twin y-axes and two figure-level legends need fixed regions.  This keeps
+    # both legends outside the data panels without relying on tight_layout.
+    fig.legend(top_handles, top_labels, frameon=False, ncol=3, loc="upper center", bbox_to_anchor=(0.5, 0.985))
+    fig.legend(skill_handles, skill_labels, ncol=3, frameon=False, loc="center", bbox_to_anchor=(0.5, 0.515))
+    fig.subplots_adjust(left=0.10, right=0.90, top=0.87, bottom=0.10, hspace=1.15)
     save_fig_pair(
         fig,
         out_dir,
@@ -1977,7 +2002,7 @@ def plot_station_metric_map(
     )
     draw_boundary(ax, shp_gdf, color="#202020", linewidth=0.55, zorder=6)
     cb = fig.colorbar(sc, ax=ax, shrink=0.78)
-    cb.set_label(value_col)
+    cb.set_label(title.removeprefix("Station "))
     ax.set_title(title)
     finish_figure_layout(fig)
     save_fig_pair(fig, out_dir, stem, manifest, sources, notes=f"Station map masked by {mask_col}>={min_count}.", n=len(df))
@@ -2186,6 +2211,9 @@ def plot_station_recall_delta_map(
         spine.set_color("#555555")
         spine.set_linewidth(0.5)
 
+    # The inset histogram is anchored to the map axes, so use fixed figure
+    # margins instead of tight_layout (which cannot lay out inset axes safely).
+    fig.subplots_adjust(left=0.08, right=0.98, top=0.91, bottom=0.18)
     cb = fig.colorbar(sc, ax=ax, orientation="horizontal", fraction=0.055, pad=0.045, extend="both")
     cb.set_ticks(np.linspace(-lim, lim, 5))
     cb.set_label("Recall difference (PMST - IFS diagnostic VIS)")
@@ -2209,7 +2237,6 @@ def plot_station_recall_delta_map(
         fontsize=9,
         color="#08306B",
     )
-    finish_figure_layout(fig)
     notes = (
         f"Station-level {label.lower()} deltas on finite IFS-matched rows; "
         "blue means PMST recall exceeds IFS diagnostic visibility recall, "

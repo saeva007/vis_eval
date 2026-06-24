@@ -145,7 +145,8 @@ def plot_station_map(
         vmin=vmin if vmin is not None else np.nanmin(vals[valid]),
         vmax=vmax if vmax is not None else np.nanmax(vals[valid]),
     )
-    plt.colorbar(sc, ax=ax, label=value_col)
+    colorbar_label = title.removeprefix("Station ").split(" (", 1)[0]
+    plt.colorbar(sc, ax=ax, label=colorbar_label)
     ax.set_xlabel("Longitude")
     ax.set_ylabel("Latitude")
     ax.set_title(title)
@@ -1058,13 +1059,17 @@ def plot_widespread_event_panels(
                         bbox=dict(facecolor="white", alpha=0.78, edgecolor="none", pad=1.5),
                     )
 
+    # Reserve the title, row-1 colorbar, and bottom class legend before the
+    # colorbar is created.  tight_layout moves map axes independently of a
+    # colorbar and can place it on top of the first row.
+    fig.subplots_adjust(left=0.065, right=0.99, top=0.89, bottom=0.10, wspace=0.08, hspace=0.34)
     if vis_mappable is not None:
         cbar = fig.colorbar(
             vis_mappable,
             ax=axes[0, :].tolist(),
             orientation="horizontal",
-            fraction=0.05,
-            pad=0.08,
+            fraction=0.045,
+            pad=0.11,
         )
         cbar.set_ticks([VIS_MIN_EVENT, 500.0, 1000.0, VIS_MAX_EVENT])
         cbar.set_ticklabels(["50", "500", "1000", "2000"])
@@ -1085,9 +1090,8 @@ def plot_widespread_event_panels(
         "Widespread Low-vis Event Case\n" + _format_event_label(event_row),
         fontsize=13,
         fontweight="bold",
-        y=0.965,
+        y=0.98,
     )
-    plt.tight_layout(rect=(0.01, 0.08, 0.99, 0.93))
     save_figure(fig, output_path)
     return fig
 
@@ -1199,7 +1203,7 @@ def plot_three_events_footprint_row(
     fig.text(0.02, 0.22, "PMST\n(3-class)", rotation=90, va="center", ha="center", fontsize=10, fontweight="600")
 
     if vis_mappable is not None:
-        cax = fig.add_axes([0.24, 0.105, 0.52, 0.026])
+        cax = fig.add_axes([0.24, 0.155, 0.52, 0.026])
         cb = fig.colorbar(vis_mappable, cax=cax, orientation="horizontal")
         cb.set_ticks([VIS_MIN_EVENT, 500.0, 1000.0, VIS_MAX_EVENT])
         cb.set_ticklabels(["50", "500", "1000", "2000"])
@@ -1212,7 +1216,7 @@ def plot_three_events_footprint_row(
         loc="lower center",
         ncol=3,
         frameon=True,
-        bbox_to_anchor=(0.5, 0.035),
+        bbox_to_anchor=(0.5, 0.03),
         fontsize=9,
     )
     fig.suptitle(
@@ -1291,6 +1295,9 @@ def plot_three_events_peak_row(
             pad=6,
         )
 
+    # A manually placed colorbar is part of this fixed three-panel layout;
+    # keep all subplot geometry explicit rather than invoking tight_layout.
+    fig.subplots_adjust(left=0.04, right=0.98, top=0.80, bottom=0.25, wspace=0.08)
     if vis_mappable is not None:
         cax = fig.add_axes([0.2, 0.08, 0.6, 0.03])
         cb = fig.colorbar(vis_mappable, cax=cax, orientation="horizontal")
@@ -1304,7 +1311,6 @@ def plot_three_events_peak_row(
         fontweight="bold",
         y=0.96,
     )
-    plt.tight_layout(rect=(0.01, 0.16, 0.99, 0.88))
     save_figure(fig, output_path)
     plt.close(fig)
     return fig

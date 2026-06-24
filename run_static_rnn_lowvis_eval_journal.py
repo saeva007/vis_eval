@@ -608,10 +608,11 @@ def plot_summary_bar(summary: pd.DataFrame, out_dir: Path, manifest: Manifest, s
     ax.set_ylim(0, 1.05)
     ax.set_ylabel("Score")
     ax.set_title("Static-RNN checkpoint comparison on the S2 test set")
-    ax.legend(ncol=3, frameon=False, loc="upper center", bbox_to_anchor=(0.5, 1.22))
+    handles, legend_labels = ax.get_legend_handles_labels()
+    fig.legend(handles, legend_labels, ncol=3, frameon=False, loc="upper center", bbox_to_anchor=(0.5, 0.985))
     ax.grid(axis="y", alpha=0.25)
     ax.grid(axis="x", visible=False)
-    finish_figure_layout(fig, rect=(0.02, 0.04, 0.98, 0.78), h_pad=1.4)
+    finish_figure_layout(fig, rect=(0.02, 0.04, 0.98, 0.80), h_pad=1.4)
     save_fig_pair(fig, out_dir, "fig_static_rnn_model_matrix_summary", manifest, sources, notes="Static-RNN main/ablation checkpoint comparison.")
 
 
