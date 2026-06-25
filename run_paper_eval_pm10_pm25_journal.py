@@ -2318,16 +2318,35 @@ def plot_event_footprint(
     manifest: Manifest,
     sources: Sequence[str],
 ) -> None:
-    dfs = []
+    def _event_peak_time(df: pd.DataFrame) -> pd.Timestamp:
+        if "time" in df and "hour_offset" in df:
+            offsets = pd.to_numeric(df["hour_offset"], errors="coerce")
+            times = pd.to_datetime(df["time"], errors="coerce")
+            peak_times = times.loc[offsets == 0].dropna()
+            if not peak_times.empty:
+                return pd.Timestamp(peak_times.iloc[0])
+        if "time" in df:
+            times = pd.to_datetime(df["time"], errors="coerce").dropna()
+            if not times.empty:
+                return pd.Timestamp(times.min())
+        return pd.NaT
+
+    event_items = []
     for p in hourly_paths:
         if p.exists():
-            dfs.append(pd.read_csv(p))
-    if not dfs:
+            df = pd.read_csv(p)
+            event_items.append((p, df, _event_peak_time(df)))
+    if not event_items:
         print("  [WARN] No event hourly metrics for footprint figure.", flush=True)
         return
-
-    def _count_col(df: pd.DataFrame, preferred: str, fallback: str) -> str:
-        return preferred if preferred in df else fallback
+    event_items.sort(
+        key=lambda item: (
+            pd.Timestamp.max if pd.isna(item[2]) else item[2],
+            str(item[0]),
+        )
+    )
+    dfs = [df for _, df, _ in event_items]
+    footprint_sources = [str(p) for p, _, _ in event_items]
 
     setup_journal_style()
     ymax = 0
@@ -2341,13 +2360,14 @@ def plot_event_footprint(
     fig, axes = plt.subplots(1, len(dfs), figsize=(4.5 * len(dfs), 4.6), sharey=True, squeeze=False)
     for i, (ax, df) in enumerate(zip(axes.ravel(), dfs), start=1):
         x = df["hour_offset"].to_numpy(dtype=float)
-        ax.plot(x, df[_count_col(df, "obs_ultralow_count", "obs_fog_count")], color="#111111", marker="o", lw=1.9, label="Obs Ultra-low")
-        ax.plot(x, df["obs_low_vis_count"], color="#111111", marker="o", lw=1.2, ls="--", label="Obs Low-vis event")
-        ax.plot(x, df[_count_col(df, "pmst_ultralow_count", "pmst_fog_count")], color=PMST_COLOR, marker="s", lw=1.9, label="PMST Ultra-low")
-        ax.plot(x, df["pmst_low_vis_count"], color=PMST_COLOR, marker="s", lw=1.2, ls="--", label="PMST Low-vis event")
-        if "ifs_ultralow_count" in df or "ifs_fog_count" in df:
-            ax.plot(x, df[_count_col(df, "ifs_ultralow_count", "ifs_fog_count")], color=IFS_DIAG_COLOR, marker="^", lw=1.9, label="IFS Ultra-low")
-            ax.plot(x, df["ifs_low_vis_count"], color=IFS_DIAG_COLOR, marker="^", lw=1.2, ls="--", label="IFS Low-vis event")
+        line_specs = [
+            ("obs_low_vis_count", "#111111", "o", "Observed Low-vis event"),
+            ("pmst_low_vis_count", PMST_COLOR, "s", "PMST Low-vis event"),
+            ("ifs_low_vis_count", IFS_DIAG_COLOR, "^", "IFS Low-vis event"),
+        ]
+        for col, color, marker, label in line_specs:
+            if col in df:
+                ax.plot(x, df[col], color=color, marker=marker, lw=1.9, label=label)
         ax.axvline(0, color="#333333", lw=1.0, ls=":")
         peak_label = f"Event {i}"
         if "time" in df and "hour_offset" in df:
@@ -2360,7 +2380,13 @@ def plot_event_footprint(
         if i == 1:
             ax.set_ylabel("Station count")
         add_panel_label(ax, chr(ord("a") + i - 1))
-    handles, labels = axes.ravel()[0].get_legend_handles_labels()
+    handles, labels = [], []
+    for ax in axes.ravel():
+        ax_handles, ax_labels = ax.get_legend_handles_labels()
+        for handle, label in zip(ax_handles, ax_labels):
+            if label not in labels:
+                handles.append(handle)
+                labels.append(label)
     fig.legend(handles, labels, loc="upper center", ncol=3, frameon=False, bbox_to_anchor=(0.5, 0.985))
     finish_figure_layout(fig, rect=(0.02, 0.04, 0.98, 0.78), h_pad=1.3)
     save_fig_pair(
@@ -2368,8 +2394,8 @@ def plot_event_footprint(
         out_dir,
         "fig9_events_ultralow_lowvis_counts_1x3",
         manifest,
-        sources,
-        notes="Ultra-low and Low-vis event footprint growth/decay from hourly station counts.",
+        list(dict.fromkeys([*footprint_sources, *sources])),
+        notes="Low-vis event station-count growth/decay from hourly station counts; panels are sorted by event peak time.",
     )
 
 
