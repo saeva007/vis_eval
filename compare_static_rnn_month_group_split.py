@@ -34,6 +34,11 @@ SKILL_METRICS = [
 FPR_METRIC = ("false_positive_rate", "Clear FPR", "lower")
 KEY_METRICS = [*SKILL_METRICS, FPR_METRIC]
 
+PRETRAINED_COLOR = "#2E5A87"
+SCRATCH_COLOR = "#8A8F98"
+MONTH_GROUP_COLOR = "#2A9D8F"
+DEFAULT_BASELINE_COLOR = "#8A8F98"
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Compare Static-RNN default and month-group split evaluation outputs.")
@@ -148,6 +153,17 @@ def setup_style() -> None:
     )
 
 
+def label_color(label: str) -> str:
+    text = str(label).lower().replace("-", " ")
+    if "pretrain" in text or "pre train" in text or "预训练" in str(label):
+        return PRETRAINED_COLOR
+    if "scratch" in text or "from scratch" in text or "从头" in str(label):
+        return SCRATCH_COLOR
+    if "month group" in text or "monthgroup" in text:
+        return MONTH_GROUP_COLOR
+    return DEFAULT_BASELINE_COLOR
+
+
 def plot_comparison(delta: pd.DataFrame, out_dir: Path, stem: str, current_label: str, month_group_label: str) -> None:
     setup_style()
     skill_names = {metric for metric, _, _ in SKILL_METRICS}
@@ -157,9 +173,10 @@ def plot_comparison(delta: pd.DataFrame, out_dir: Path, stem: str, current_label
     alt_vals = skill_delta[month_group_label].astype(float).to_numpy()
     x = np.arange(len(metrics))
     width = 0.36
+    colors = [label_color(current_label), label_color(month_group_label)]
     fig, ax = plt.subplots(figsize=(7.2, 3.2))
-    ax.bar(x - width / 2, cur_vals, width=width, color="#8A8F98", label=current_label)
-    ax.bar(x + width / 2, alt_vals, width=width, color="#2A9D8F", label=month_group_label)
+    ax.bar(x - width / 2, cur_vals, width=width, color=colors[0], label=current_label)
+    ax.bar(x + width / 2, alt_vals, width=width, color=colors[1], label=month_group_label)
     ax.set_xticks(x)
     ax.set_xticklabels(metrics, rotation=25, ha="right")
     ax.set_ylabel("Metric value")
@@ -184,7 +201,7 @@ def plot_comparison(delta: pd.DataFrame, out_dir: Path, stem: str, current_label
             np.arange(2),
             values,
             width=0.55,
-            color=["#8A8F98", "#2A9D8F"],
+            color=colors,
             edgecolor="white",
             linewidth=0.45,
         )
