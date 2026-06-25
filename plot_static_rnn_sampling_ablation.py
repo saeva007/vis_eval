@@ -234,7 +234,7 @@ def panel_sampling_design(ax, overall: pd.DataFrame, labels: Sequence[str]) -> p
     return shares
 
 
-def panel_overall(ax, overall: pd.DataFrame, labels: Sequence[str]) -> pd.DataFrame:
+def panel_lowvis_event_skill(ax, overall: pd.DataFrame, labels: Sequence[str]) -> pd.DataFrame:
     metrics = [
         ("low_vis_csi", "CSI"),
         ("low_vis_recall", "Recall"),
@@ -269,7 +269,7 @@ def panel_overall(ax, overall: pd.DataFrame, labels: Sequence[str]) -> pd.DataFr
     ax.set_xticklabels([name for _, name in metrics])
     ax.set_ylabel("Score")
     ax.set_ylim(0, 1.0)
-    ax.set_title("Low-vis event skill")
+    ax.set_title("Low-vis event skill metrics")
     ax.grid(axis="y", color=GRID_COLOR, lw=0.6)
     ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.03), ncol=1, frameon=False)
     return pd.DataFrame(rows)
@@ -294,7 +294,7 @@ def panel_fpr(ax, overall: pd.DataFrame, labels: Sequence[str]) -> pd.DataFrame:
     ax.set_xticklabels([short_label(label) for label in labels])
     ax.set_ylim(0, min(1.0, ymax))
     ax.set_ylabel("False-positive rate")
-    ax.set_title("Clear-condition false positives")
+    ax.set_title("Clear-condition false-positive rate")
     ax.grid(axis="y", color=GRID_COLOR, lw=0.6)
     ax.text(0.98, 0.96, "lower is better", transform=ax.transAxes, ha="right", va="top", fontsize=8.4, color="#555555")
     return pd.DataFrame(
@@ -466,8 +466,8 @@ def write_caption(out_dir: Path, stem: str) -> None:
     text = (
         "Figure caption draft\n"
         "Sampling targets for Ultra-low and Moderate-low classes in the no-oversampling and Low-vis event oversampling settings. "
-        "A separate panel reports test-set Low-vis event CSI, recall and precision. "
-        "Clear-condition false-positive rate is reported as its own panel, with lower values indicating fewer clear samples misclassified as Low-vis event. "
+        "A separate benefit-metric panel reports test-set Low-vis event CSI, recall and precision only. "
+        "Clear-condition false-positive rate is intentionally reported in its own panel, with lower values indicating fewer clear samples misclassified as Low-vis event. "
         "A third panel reports Ultra-low and Moderate-low CSI, recall and precision separately, showing whether changes in aggregate Low-vis event skill are driven by one class. "
         "The prediction-mix panel shows the distribution of predictions among observed Low-vis event samples, where the Clear segment corresponds to missed Low-vis events.\n"
     )
@@ -486,11 +486,18 @@ def save_split_panels(
 ) -> None:
     panels = [
         ("sampling_design", (4.0, 3.0), lambda ax: panel_sampling_design(ax, overall, labels)),
-        ("lowvis_event_metrics", (4.7, 3.05), lambda ax: panel_overall(ax, overall, labels)),
+        ("lowvis_event_metrics", (4.7, 3.05), lambda ax: panel_lowvis_event_skill(ax, overall, labels)),
         ("clear_fpr", (3.65, 2.85), lambda ax: panel_fpr(ax, overall, labels)),
         ("ultra_moderate_metrics", (5.0, 3.1), lambda ax: panel_ultra_moderate(ax, per_class, labels)),
         ("lowvis_prediction_mix", (4.1, 3.0), lambda ax: panel_lowvis_mix(ax, confusion, labels)),
     ]
+    notes_by_suffix = {
+        "sampling_design": "Sampling-ratio design figure for the Static-RNN sampling-method ablation.",
+        "lowvis_event_metrics": "Benefit metrics only: Low-vis event CSI, recall, and precision. Clear FPR is excluded.",
+        "clear_fpr": "Clear-condition false-positive rate only; lower values are better.",
+        "ultra_moderate_metrics": "Separate Ultra-low and Moderate-low CSI, recall, and precision.",
+        "lowvis_prediction_mix": "Prediction mix among observed Low-vis event samples.",
+    }
     for suffix, figsize, draw in panels:
         fig, ax = plt.subplots(figsize=figsize, constrained_layout=True)
         source_data = draw(ax)
@@ -501,7 +508,7 @@ def save_split_panels(
             dpi,
             sources,
             source_data.assign(panel=suffix),
-            f"Separate {suffix.replace('_', ' ')} figure for the Static-RNN sampling-method ablation.",
+            notes_by_suffix[suffix],
         )
         plt.close(fig)
 
