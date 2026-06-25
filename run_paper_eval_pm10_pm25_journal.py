@@ -2331,6 +2331,13 @@ def plot_event_footprint(
                 return pd.Timestamp(times.min())
         return pd.NaT
 
+    def _count_col(df: pd.DataFrame, preferred: str, fallback: str) -> Optional[str]:
+        if preferred in df:
+            return preferred
+        if fallback in df:
+            return fallback
+        return None
+
     event_items = []
     for p in hourly_paths:
         if p.exists():
@@ -2351,7 +2358,15 @@ def plot_event_footprint(
     setup_journal_style()
     ymax = 0
     for df in dfs:
-        for col in ("obs_low_vis_count", "pmst_low_vis_count", "ifs_low_vis_count"):
+        count_cols = [
+            "obs_low_vis_count",
+            "pmst_low_vis_count",
+            "ifs_low_vis_count",
+            _count_col(df, "obs_ultralow_count", "obs_fog_count"),
+            _count_col(df, "pmst_ultralow_count", "pmst_fog_count"),
+            _count_col(df, "ifs_ultralow_count", "ifs_fog_count"),
+        ]
+        for col in count_cols:
             if col in df:
                 vals = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=float)
                 vals = vals[np.isfinite(vals)]
@@ -2361,13 +2376,16 @@ def plot_event_footprint(
     for i, (ax, df) in enumerate(zip(axes.ravel(), dfs), start=1):
         x = df["hour_offset"].to_numpy(dtype=float)
         line_specs = [
-            ("obs_low_vis_count", "#111111", "o", "Observed Low-vis event"),
-            ("pmst_low_vis_count", PMST_COLOR, "s", "PMST Low-vis event"),
-            ("ifs_low_vis_count", IFS_DIAG_COLOR, "^", "IFS Low-vis event"),
+            (_count_col(df, "obs_ultralow_count", "obs_fog_count"), "#111111", "o", 1.9, "-", "Obs Ultra-low"),
+            ("obs_low_vis_count", "#111111", "o", 1.2, "--", "Obs Low-vis event"),
+            (_count_col(df, "pmst_ultralow_count", "pmst_fog_count"), PMST_COLOR, "s", 1.9, "-", "PMST Ultra-low"),
+            ("pmst_low_vis_count", PMST_COLOR, "s", 1.2, "--", "PMST Low-vis event"),
+            (_count_col(df, "ifs_ultralow_count", "ifs_fog_count"), IFS_DIAG_COLOR, "^", 1.9, "-", "IFS Ultra-low"),
+            ("ifs_low_vis_count", IFS_DIAG_COLOR, "^", 1.2, "--", "IFS Low-vis event"),
         ]
-        for col, color, marker, label in line_specs:
+        for col, color, marker, lw, ls, label in line_specs:
             if col in df:
-                ax.plot(x, df[col], color=color, marker=marker, lw=1.9, label=label)
+                ax.plot(x, df[col], color=color, marker=marker, lw=lw, ls=ls, label=label)
         ax.axvline(0, color="#333333", lw=1.0, ls=":")
         peak_label = f"Event {i}"
         if "time" in df and "hour_offset" in df:
@@ -2395,7 +2413,7 @@ def plot_event_footprint(
         "fig9_events_ultralow_lowvis_counts_1x3",
         manifest,
         list(dict.fromkeys([*footprint_sources, *sources])),
-        notes="Low-vis event station-count growth/decay from hourly station counts; panels are sorted by event peak time.",
+        notes="Ultra-low and Low-vis event footprint growth/decay from hourly station counts; panels are sorted by event peak time.",
     )
 
 
