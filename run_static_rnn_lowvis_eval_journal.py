@@ -63,6 +63,7 @@ try:
         Manifest,
         TIME_OF_DAY_LOCAL_ORDER,
         REGION_DEFS,
+        _ordered_events_for_display,
         add_scenario_columns,
         aggregate_station_model_vs_ifs_metrics,
         aggregate_station_metrics,
@@ -793,6 +794,69 @@ def run_static_feature_importance(
     return imp_df
 
 
+def try_reuse_static_48h_outputs(
+    args: argparse.Namespace,
+    base: Path,
+    out_dir: Path,
+    manifest: Manifest,
+) -> bool:
+    reuse_value = str(getattr(args, "reuse_inference_dir", "") or "").strip()
+    if not reuse_value:
+        return False
+    reuse_dir = as_abs_under(base, reuse_value)
+    init_names = [
+        "metrics_by_display_lead_hour_48h_model.csv",
+        "metrics_by_display_lead_hour_init00Z.csv",
+        "metrics_by_display_lead_hour_init12Z.csv",
+    ]
+    init_paths = [reuse_dir / name for name in init_names]
+    if not all(path.is_file() for path in init_paths):
+        return False
+
+    print(f"[48h] reusing display lead tables from {reuse_dir}", flush=True)
+
+    def load_and_copy_table(name: str) -> Tuple[pd.DataFrame, Path, Path]:
+        src = reuse_dir / name
+        df = pd.read_csv(src)
+        dst = out_dir / name
+        if src.resolve() != dst.resolve():
+            df.to_csv(dst, index=False, float_format="%.6f")
+        return df, src, dst
+
+    pooled, pooled_src, pooled_dst = load_and_copy_table("metrics_by_display_lead_hour_48h_model.csv")
+    lead00, lead00_src, lead00_dst = load_and_copy_table("metrics_by_display_lead_hour_init00Z.csv")
+    lead12, lead12_src, lead12_dst = load_and_copy_table("metrics_by_display_lead_hour_init12Z.csv")
+    plot_fig11_lead_init(
+        pooled,
+        lead00,
+        lead12,
+        out_dir,
+        manifest,
+        [str(pooled_src), str(lead00_src), str(lead12_src), str(pooled_dst), str(lead00_dst), str(lead12_dst)],
+    )
+
+    cmp_name = "model_vs_ifs_metrics_by_display_lead_hour_48h.csv"
+    cmp_src = reuse_dir / cmp_name
+    if cmp_src.is_file():
+        cmp_df, _, cmp_dst = load_and_copy_table(cmp_name)
+        plot_fig11_48h_model_vs_ifs(
+            cmp_df,
+            out_dir,
+            manifest,
+            [str(cmp_src), str(cmp_dst)],
+            mark_filled_segment=False,
+        )
+        plot_fig11_48h_model_vs_ifs_delta_heatmap(
+            cmp_df,
+            out_dir,
+            manifest,
+            [str(cmp_src), str(cmp_dst)],
+        )
+    else:
+        print(f"[48h] reusable model-vs-IFS display table not found: {cmp_src}; skipped IFS lead figures.", flush=True)
+    return True
+
+
 def run_static_48h_optional(
     args: argparse.Namespace,
     target: EvalTarget,
@@ -809,6 +873,8 @@ def run_static_48h_optional(
 ) -> None:
     if args.skip_48h or bool(getattr(args, "skip_static_48h", False)):
         print("[48h] skipped by --skip_48h/--skip_static_48h", flush=True)
+        return
+    if try_reuse_static_48h_outputs(args, base, out_dir, manifest):
         return
     data_48h = as_abs_under(base, args.data_48h_dir)
     if not data_48h.is_dir():
@@ -1441,12 +1507,7 @@ def plot_event_environment_grid(
     pm10_sm = plt.cm.ScalarMappable(norm=pm10_norm, cmap="YlOrRd")
     pm10_sm.set_array([])
     rank = int(event_row.get("event_rank", 1))
-    actual_peak = event_row.get("actual_peak_time", "")
     title = f"Event {rank}: {center_time:%Y-%m-%d %H:00 UTC}"
-    if "actual_peak_time" in event_row and pd.notna(actual_peak):
-        actual_ts = _event_timestamp(actual_peak)
-        if actual_ts != center_time:
-            title += f" window center; true peak {actual_ts:%Y-%m-%d %H:00 UTC}"
     fig.suptitle(title, x=0.5, y=0.988, fontsize=12, fontweight="bold")
     fig.subplots_adjust(left=0.088, right=0.994, top=0.94, bottom=0.18, wspace=0.012, hspace=0.035)
     fig.canvas.draw()
@@ -1496,7 +1557,14 @@ def plot_event_environment_grids(
     max_events = max(0, int(getattr(args, "event_env_max_events", 3) or 0))
     if max_events <= 0:
         return
-    for _, event_row in event_df.head(max_events).iterrows():
+    if _ordered_events_for_display is not None:
+        events = _ordered_events_for_display(event_df, n=max_events).copy()
+    else:
+        events = event_df.copy()
+        events["__peak_time_sort"] = pd.to_datetime(events["peak_time"], errors="coerce")
+        events = events.sort_values("__peak_time_sort").drop(columns=["__peak_time_sort"]).head(max_events).reset_index(drop=True)
+        events["event_rank"] = np.arange(1, len(events) + 1)
+    for _, event_row in events.iterrows():
         try:
             plot_event_environment_grid(args, base, eval_df, event_row, out_dir, manifest, sources, shp_gdf=shp_gdf)
         except Exception as exc:

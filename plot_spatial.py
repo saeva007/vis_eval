@@ -763,29 +763,33 @@ def _ordered_events_for_display(event_df, n=None):
     out = event_df.copy()
     sort_cols = []
     ascending = []
-    if "event_rank" in out:
-        out["__event_rank_sort"] = pd.to_numeric(out["event_rank"], errors="coerce")
-        sort_cols.append("__event_rank_sort")
+    if "peak_time" in out:
+        out["__peak_time_sort"] = pd.to_datetime(out["peak_time"], errors="coerce")
+        sort_cols.append("__peak_time_sort")
         ascending.append(True)
-    elif "selection_order" in out:
+    if "selection_order" in out:
         out["__selection_order_sort"] = pd.to_numeric(out["selection_order"], errors="coerce")
         sort_cols.append("__selection_order_sort")
+        ascending.append(True)
+    elif "event_rank" in out:
+        out["__event_rank_sort"] = pd.to_numeric(out["event_rank"], errors="coerce")
+        sort_cols.append("__event_rank_sort")
         ascending.append(True)
     elif {"selection_tier_rank", "event_score"}.issubset(out.columns):
         out["__selection_tier_sort"] = pd.to_numeric(out["selection_tier_rank"], errors="coerce")
         out["__event_score_sort"] = pd.to_numeric(out["event_score"], errors="coerce")
         sort_cols.extend(["__selection_tier_sort", "__event_score_sort"])
         ascending.extend([True, False])
-    if "peak_time" in out:
-        out["__peak_time_sort"] = pd.to_datetime(out["peak_time"], errors="coerce")
-        sort_cols.append("__peak_time_sort")
-        ascending.append(True)
     if sort_cols:
         out = out.sort_values(sort_cols, ascending=ascending)
         out = out.drop(columns=[c for c in out.columns if c.startswith("__")])
     if n is not None:
         out = out.head(n)
-    return out.reset_index(drop=True)
+    out = out.reset_index(drop=True)
+    if "event_rank" in out.columns and "selection_rank" not in out.columns:
+        out["selection_rank"] = pd.to_numeric(out["event_rank"], errors="coerce")
+    out["event_rank"] = np.arange(1, len(out) + 1)
+    return out
 
 
 def _chronological_events(event_df, n=None):
@@ -794,10 +798,6 @@ def _chronological_events(event_df, n=None):
 def _format_event_label(event_row):
     peak_time = pd.Timestamp(event_row["peak_time"])
     prefix = f"{peak_time:%Y-%m-%d %H:00} UTC"
-    if "actual_peak_time" in event_row and pd.notna(event_row.get("actual_peak_time")):
-        actual_peak = pd.Timestamp(event_row["actual_peak_time"])
-        if actual_peak != peak_time:
-            prefix = f"{prefix} window center; true peak {actual_peak:%Y-%m-%d %H:00} UTC"
     return (
         f"{prefix} | peak Ultra-low={int(event_row.get('peak_ultralow_count', event_row['peak_fog_count']))} | "
         f"regions={int(event_row['peak_region_count'])} | "

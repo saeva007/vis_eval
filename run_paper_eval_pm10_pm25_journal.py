@@ -2216,24 +2216,24 @@ def plot_station_recall_delta_map(
     fig.subplots_adjust(left=0.08, right=0.98, top=0.91, bottom=0.18)
     cb = fig.colorbar(sc, ax=ax, orientation="horizontal", fraction=0.055, pad=0.045, extend="both")
     cb.set_ticks(np.linspace(-lim, lim, 5))
-    cb.set_label("Recall difference (PMST - IFS diagnostic VIS)")
+    cb.set_label("Recall difference (PMST - IFS diagnostic VIS)", labelpad=8)
     cb.ax.text(
         0.0,
-        -1.35,
+        1.68,
         "IFS better",
         transform=cb.ax.transAxes,
         ha="left",
-        va="top",
+        va="bottom",
         fontsize=9,
         color="#9E1F36",
     )
     cb.ax.text(
         1.0,
-        -1.35,
+        1.68,
         "PMST better",
         transform=cb.ax.transAxes,
         ha="right",
-        va="top",
+        va="bottom",
         fontsize=9,
         color="#08306B",
     )
@@ -2319,8 +2319,7 @@ def plot_event_peak_grid(
             if col_idx == 0:
                 ax.text(-0.18, 0.5, row_label, transform=ax.transAxes, rotation=90, va="center", ha="center", fontsize=11.5, fontweight="bold")
     handles = [Patch(facecolor=CLASS_COLORS[i], label=CLASS_NAMES[i]) for i in range(3)]
-    handles.append(Patch(facecolor="#D3D3D3", label="IFS missing"))
-    fig.legend(handles=handles, loc="lower center", ncol=4, frameon=False)
+    fig.legend(handles=handles, loc="lower center", ncol=3, frameon=False)
     finish_figure_layout(fig, rect=(0.02, 0.09, 0.98, 0.98), h_pad=1.1, w_pad=0.7)
     save_fig_pair(
         fig,
@@ -2519,9 +2518,9 @@ def plot_fig11_lead_init(
     ]
     for ax, (metric, title), letter in zip(axes.ravel(), specs, "abcdef"):
         plotted = False
-        plotted = _plot_lead_metric_series(ax, lead_pooled, metric, "#111827", "Pooled", "o", 2.2, 3) or plotted
-        plotted = _plot_lead_metric_series(ax, lead00, metric, "#0F766E", "00Z", "o", 1.5, 4) or plotted
-        plotted = _plot_lead_metric_series(ax, lead12, metric, "#C2410C", "12Z", "s", 1.5, 4) or plotted
+        plotted = _plot_lead_metric_series(ax, lead_pooled, metric, "#111827", "Pooled", "o", 2.2, 3, distinguish_fill=False) or plotted
+        plotted = _plot_lead_metric_series(ax, lead00, metric, "#0F766E", "00Z", "o", 1.5, 4, distinguish_fill=False) or plotted
+        plotted = _plot_lead_metric_series(ax, lead12, metric, "#C2410C", "12Z", "s", 1.5, 4, distinguish_fill=False) or plotted
         if not plotted:
             ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center", color="#6B7280")
         ax.set_title(title)
@@ -2529,7 +2528,6 @@ def plot_fig11_lead_init(
         ax.set_ylabel("Score")
         ax.set_ylim(0, 1.0)
         ax.set_xlim(-0.5, 48.5)
-        ax.axvspan(-0.5, 12.0, color="#EEF7F0", alpha=0.55, zorder=-10)
         ax.grid(axis="y", alpha=0.25)
         ax.grid(axis="x", alpha=0.10)
         add_panel_label(ax, letter)
@@ -2540,15 +2538,6 @@ def plot_fig11_lead_init(
             break
     if handles:
         fig.legend(handles, labels, loc="upper center", ncol=3, frameon=False, bbox_to_anchor=(0.5, 0.985))
-    fig.text(
-        0.995,
-        0.01,
-        "Dotted 0-12 h segment is filled from the previous initialization's 12-24 h verification window.",
-        ha="right",
-        va="bottom",
-        fontsize=9,
-        color="#3F4A3F",
-    )
     finish_figure_layout(fig, rect=(0.02, 0.06, 0.98, 0.93), h_pad=1.25)
     save_fig_pair(
         fig,
@@ -2933,7 +2922,7 @@ def plot_fig11_48h_model_vs_ifs(
     out_dir: Path,
     manifest: Manifest,
     sources: Sequence[str],
-    mark_filled_segment: bool = True,
+    mark_filled_segment: bool = False,
 ) -> None:
     if cmp_df.empty:
         print("  [WARN] Empty 48h model-vs-IFS lead table; skip figure.", flush=True)
@@ -3168,25 +3157,25 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
     cb.set_ticks(np.linspace(-lim, lim, 5))
     cb.ax.text(
         0.0,
-        -1.38,
+        1.70,
         "IFS better",
         transform=cb.ax.transAxes,
         ha="left",
-        va="top",
+        va="bottom",
         fontsize=9,
         color="#9E1F36",
     )
     cb.ax.text(
         1.0,
-        -1.38,
+        1.70,
         "PMST better",
         transform=cb.ax.transAxes,
         ha="right",
-        va="top",
+        va="bottom",
         fontsize=9,
         color="#08306B",
     )
-    cb.set_label("PMST - IFS diagnostic VIS (percentage points)", fontsize=9.5)
+    cb.set_label("PMST - IFS diagnostic VIS (percentage points)", fontsize=9.5, labelpad=8)
     fig.text(
         0.995,
         0.01,
@@ -3364,6 +3353,7 @@ def run_48h_optional(
                         out_dir,
                         manifest,
                         [str(x_path), str(data_48h / "meta_test.csv"), str(ifs_48h_nc), str(cmp_display_path)],
+                        mark_filled_segment=False,
                     )
                 else:
                     print("[48h IFS] fewer than 50 matched rows; skip model-vs-IFS lead figure.", flush=True)
