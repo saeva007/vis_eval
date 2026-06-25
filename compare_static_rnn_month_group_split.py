@@ -23,14 +23,16 @@ import numpy as np
 import pandas as pd
 
 
-KEY_METRICS = [
+SKILL_METRICS = [
     ("Fog_CSI", "Ultra-low CSI", "higher"),
     ("Mist_CSI", "Moderate-low CSI", "higher"),
     ("low_vis_csi", "Low-vis event CSI", "higher"),
     ("low_vis_recall", "Low-vis event recall", "higher"),
     ("low_vis_precision", "Low-vis event precision", "higher"),
-    ("false_positive_rate", "Clear FPR", "lower"),
 ]
+
+FPR_METRIC = ("false_positive_rate", "Clear FPR", "lower")
+KEY_METRICS = [*SKILL_METRICS, FPR_METRIC]
 
 
 def parse_args() -> argparse.Namespace:
@@ -148,7 +150,8 @@ def setup_style() -> None:
 
 def plot_comparison(delta: pd.DataFrame, out_dir: Path, stem: str, current_label: str, month_group_label: str) -> None:
     setup_style()
-    skill_delta = delta[delta["metric"].astype(str) != "false_positive_rate"].copy()
+    skill_names = {metric for metric, _, _ in SKILL_METRICS}
+    skill_delta = delta[delta["metric"].astype(str).isin(skill_names)].copy()
     metrics = skill_delta["display_metric"].tolist()
     cur_vals = skill_delta[current_label].astype(float).to_numpy()
     alt_vals = skill_delta[month_group_label].astype(float).to_numpy()
@@ -161,7 +164,7 @@ def plot_comparison(delta: pd.DataFrame, out_dir: Path, stem: str, current_label
     ax.set_xticklabels(metrics, rotation=25, ha="right")
     ax.set_ylabel("Metric value")
     ax.set_ylim(0, max(1.0, float(np.nanmax([cur_vals, alt_vals])) * 1.12))
-    ax.set_title("Static-RNN split-protocol comparison")
+    ax.set_title("Static-RNN split-protocol skill metrics")
     ax.grid(axis="y", color="#E5E7EB", lw=0.6)
     ax.legend(loc="upper left", frameon=False)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -193,7 +196,7 @@ def plot_comparison(delta: pd.DataFrame, out_dir: Path, stem: str, current_label
         ax.set_xticklabels([current_label, month_group_label], rotation=20, ha="right")
         ax.set_ylim(0, min(1.0, ymax))
         ax.set_ylabel("False-positive rate")
-        ax.set_title("Clear-condition false positives")
+        ax.set_title("Clear-condition false-positive rate")
         ax.grid(axis="y", color="#E5E7EB", lw=0.6)
         ax.text(0.98, 0.96, "lower is better", transform=ax.transAxes, ha="right", va="top", fontsize=8.4, color="#555555")
         fig.tight_layout()

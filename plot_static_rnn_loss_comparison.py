@@ -139,7 +139,7 @@ def panel_soft_targets(ax) -> None:
     ax.grid(axis="y", color="#E5E7EB", lw=0.6)
 
 
-def panel_overall(ax, overall: pd.DataFrame, labels: Sequence[str]) -> None:
+def panel_lowvis_event_skill(ax, overall: pd.DataFrame, labels: Sequence[str]) -> None:
     metrics = [
         ("low_vis_csi", "CSI"),
         ("low_vis_recall", "Recall"),
@@ -162,7 +162,7 @@ def panel_overall(ax, overall: pd.DataFrame, labels: Sequence[str]) -> None:
     ax.set_xticklabels([name for _, name in metrics])
     ax.set_ylabel("Score")
     ax.set_ylim(0, 1.0)
-    ax.set_title("Low-vis event skill")
+    ax.set_title("Low-vis event skill metrics")
     ax.grid(axis="y", color="#E5E7EB", lw=0.6)
     ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.03), ncol=1, frameon=False)
 
@@ -180,7 +180,7 @@ def panel_fpr(ax, overall: pd.DataFrame, labels: Sequence[str]) -> None:
     ymax = max(0.04, float(np.nanmax(vals)) * 1.35) if np.isfinite(vals).any() else 0.1
     ax.set_ylim(0, min(1.0, ymax))
     ax.set_ylabel("False-positive rate")
-    ax.set_title("Clear-condition false positives")
+    ax.set_title("Clear-condition false-positive rate")
     ax.grid(axis="y", color="#E5E7EB", lw=0.6)
     ax.text(0.98, 0.96, "lower is better", transform=ax.transAxes, ha="right", va="top", fontsize=8.4, color="#555555")
 
@@ -350,13 +350,13 @@ def save_split_figures(
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(4.7, 3.15), constrained_layout=True)
-    panel_overall(ax, overall, labels)
+    panel_lowvis_event_skill(ax, overall, labels)
     save_figure(
         fig,
         out_dir,
         f"{figure_stem}_panel_b_lowvis_metrics",
         sources,
-        "Standalone panel b: aggregate low-vis event CSI, recall and precision.",
+        "Standalone panel b: aggregate Low-vis event CSI, recall and precision only; Clear FPR is excluded.",
     )
     plt.close(fig)
 
@@ -367,7 +367,7 @@ def save_split_figures(
         out_dir,
         f"{figure_stem}_panel_b_clear_fpr",
         sources,
-        "Standalone false-positive-rate panel for clear-condition samples.",
+        "Standalone Clear false-positive-rate panel for clear-condition samples; lower values are better.",
     )
     plt.close(fig)
 
@@ -409,8 +409,8 @@ def write_caption(out_dir: Path, stem: str) -> None:
     text = (
         "Figure caption draft\n"
         "a, Visibility-aware soft targets used by the proposed rare-event focal objective around the 500 m and 1000 m operational thresholds. "
-        "b, Test-set Low-vis event CSI, recall and precision. "
-        "A separate false-positive-rate panel reports clear-condition samples incorrectly predicted as Low-vis event; lower values are better. "
+        "b, Test-set Low-vis event CSI, recall and precision only. "
+        "Clear-condition false-positive rate is intentionally reported in its own panel; lower values indicate fewer clear samples incorrectly predicted as Low-vis event. "
         "An additional standalone panel reports Ultra-low and Moderate-low CSI, recall, precision and false-alarm ratio separately, avoiding reliance on the aggregate low-vis event score alone. "
         "c, Class-wise critical success index for Ultra-low, Moderate-low and Clear. "
         "d, Accuracy inside the two threshold-neighbour visibility bands where hard classification and direct regression are expected to be most fragile.\n"
@@ -445,7 +445,7 @@ def main() -> None:
     ax_d = fig.add_subplot(gs[1, 1])
 
     panel_soft_targets(ax_a)
-    panel_overall(ax_b, overall, labels)
+    panel_lowvis_event_skill(ax_b, overall, labels)
     panel_class_heatmap(ax_c, per_class, labels)
     panel_boundary(ax_d, boundary, labels)
 
@@ -455,7 +455,13 @@ def main() -> None:
         fig.suptitle(args.title, y=1.02, fontsize=11)
 
     sources = [overall_path, per_class_path, boundary_path]
-    save_figure(fig, out_dir, args.figure_stem, sources)
+    save_figure(
+        fig,
+        out_dir,
+        args.figure_stem,
+        sources,
+        "Composite loss-function ablation figure. The Low-vis event panel contains CSI, recall and precision only; Clear FPR is exported as a standalone figure.",
+    )
     save_split_figures(out_dir, args.figure_stem, overall, per_class, boundary, labels, sources)
     write_caption(out_dir, args.figure_stem)
     plt.close(fig)
