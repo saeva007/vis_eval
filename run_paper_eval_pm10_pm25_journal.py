@@ -2217,26 +2217,6 @@ def plot_station_recall_delta_map(
     cb = fig.colorbar(sc, ax=ax, orientation="horizontal", fraction=0.055, pad=0.045, extend="both")
     cb.set_ticks(np.linspace(-lim, lim, 5))
     cb.set_label("Recall difference (PMST - IFS diagnostic VIS)", labelpad=8)
-    cb.ax.text(
-        0.0,
-        1.68,
-        "IFS better",
-        transform=cb.ax.transAxes,
-        ha="left",
-        va="bottom",
-        fontsize=9,
-        color="#9E1F36",
-    )
-    cb.ax.text(
-        1.0,
-        1.68,
-        "PMST better",
-        transform=cb.ax.transAxes,
-        ha="right",
-        va="bottom",
-        fontsize=9,
-        color="#08306B",
-    )
     notes = (
         f"Station-level {label.lower()} deltas on finite IFS-matched rows; "
         "blue means PMST recall exceeds IFS diagnostic visibility recall, "

@@ -12,3 +12,13 @@
 
 - Keep class definitions aligned with the project guide: Fog is `0 <= visibility < 500 m`, Mist is `500 <= visibility < 1000 m`, and Clear is `visibility >= 1000 m`.
 - Before changing thresholds, model paths, data versions, IFS baseline paths, or reported metrics, verify the current values in the relevant source files or result artifacts.
+
+## Figure/Layout Regression Pitfalls
+
+- Do not treat a visible overlap in one PNG as a one-line fontsize problem. First inspect every function that writes the same figure family, shared legend/colorbar helpers, and any merge-only or rerun scripts that can redraw the same output from cached CSVs.
+- After label or font-size changes, check for stale visible strings across all related figures: obsolete class names, redundant axis labels on shared panels, old event wording such as `true peak`, old legend entries such as `IFS missing`, and notes that no longer match the rendered line style.
+- Event figures have two different concepts of order: selection priority and chronological display. Paper-facing event files and titles should use the display order intended by the manuscript; if chronological order is required, sort by `peak_time` and renumber display `event_rank` instead of relying on old CSV rank values.
+- For colorbars with direction labels such as `IFS better` and `PMST better`, never place those labels on the same side as the colorbar xlabel. Put endpoint labels above the bar or reserve a separate axis, then run a bounding-box or rendered-image check. If the labels still collide after one layout attempt, delete the optional endpoint labels rather than repeatedly moving them around.
+- For 48 h lead-time figures, do not mark the first 0-12 h segment as stitched unless the current manuscript explicitly wants that visual encoding. Keep `fig11_48h_lead_init_00Z_12Z` and model-vs-IFS lead curves continuous when the stitched segment should be hidden.
+- Reuse completed inference whenever possible. `REUSE_INFERENCE_DIR` should skip main test inference via `probs.npy`; if a figure is driven by derived CSVs such as 48 h display-lead tables, add a CSV-reuse path instead of silently recomputing model outputs.
+- Verification should include both syntax checks and semantic grep/AST assertions for removed labels, ordering, and output paths. If local `py_compile` writes fail because of a locked or permission-restricted `__pycache__`, use no-write AST parsing rather than deleting cache files.
