@@ -56,6 +56,16 @@ def parse_args() -> argparse.Namespace:
 
     p.add_argument("--sampling_run_prefix", "--matrix_run_prefix", dest="sampling_run_prefix", default=os.environ.get("SAMPLING_RUN_PREFIX", os.environ.get("LOWVIS_RNN_RUN_PREFIX", "")))
     p.add_argument(
+        "--current_main_run_id",
+        default=os.environ.get("CURRENT_MAIN_RUN_ID", os.environ.get("MAIN_RUN_ID", "")),
+        help="Existing mainline run id to use as experiment 1/current_stratified instead of retraining it.",
+    )
+    p.add_argument(
+        "--current_main_ckpt",
+        default=os.environ.get("CURRENT_MAIN_CKPT", os.environ.get("MAIN_CKPT", "")),
+        help="Existing mainline checkpoint path to use as experiment 1/current_stratified.",
+    )
+    p.add_argument(
         "--experiments",
         "--matrix_experiments",
         dest="experiments",
@@ -135,17 +145,29 @@ def discover_latest_prefix(ckpt_dir: Path, stage_tag: str, exp_ids: Sequence[int
 
 def build_targets(
     sampling_run_prefix: str,
+    base: Path,
     ckpt_dir: Path,
     stage_tag: str,
     exp_ids: Sequence[int],
     allow_missing: bool,
+    current_main_run_id: str = "",
+    current_main_ckpt: str = "",
 ) -> List[journal.EvalTarget]:
     targets: List[journal.EvalTarget] = []
     spec = journal.VARIANTS[0]
     for exp_id in exp_ids:
         name = SAMPLING_EXPERIMENTS[exp_id]
-        run_id = f"{sampling_run_prefix}_{exp_id}_{name}"
-        checkpoint = ckpt_dir / f"{run_id}_{stage_tag}_best_score.pt"
+        if exp_id == 1 and (str(current_main_run_id).strip() or str(current_main_ckpt).strip()):
+            if str(current_main_ckpt).strip():
+                checkpoint = journal.as_abs_under(base, str(current_main_ckpt).strip())
+                suffix = f"_{stage_tag}_best_score.pt"
+                run_id = str(current_main_run_id).strip() or checkpoint.name.removesuffix(suffix)
+            else:
+                run_id = str(current_main_run_id).strip()
+                checkpoint = ckpt_dir / f"{run_id}_{stage_tag}_best_score.pt"
+        else:
+            run_id = f"{sampling_run_prefix}_{exp_id}_{name}"
+            checkpoint = ckpt_dir / f"{run_id}_{stage_tag}_best_score.pt"
         if not checkpoint.exists():
             if allow_missing:
                 print(f"[skip] missing checkpoint: {checkpoint}", flush=True)
@@ -506,7 +528,11 @@ def main() -> None:
         args.sampling_run_prefix = discover_latest_prefix(ckpt_dir, args.stage_tag, exp_ids) or ""
         if args.sampling_run_prefix:
             print(f"[auto] sampling_run_prefix={args.sampling_run_prefix}", flush=True)
-    if not args.sampling_run_prefix:
+    needs_sampling_prefix = any(exp_id != 1 for exp_id in exp_ids) or not (
+        str(getattr(args, "current_main_run_id", "") or "").strip()
+        or str(getattr(args, "current_main_ckpt", "") or "").strip()
+    )
+    if needs_sampling_prefix and not args.sampling_run_prefix:
         raise ValueError("Pass --sampling_run_prefix, or leave auto-detect enabled with matching checkpoints in --ckpt_dir.")
 
     x_path, y_cls, y_raw, meta = journal.load_main_data(
@@ -518,7 +544,16 @@ def main() -> None:
     mod = journal.load_static_rnn_module(train_dir)
     layout = mod.Layout(window_size=args.window_size, dyn_vars=dyn, fe_dim=fe)
     device = journal.resolve_device(args.device)
-    targets = build_targets(args.sampling_run_prefix, ckpt_dir, args.stage_tag, exp_ids, args.allow_missing)
+    targets = build_targets(
+        args.sampling_run_prefix,
+        base,
+        ckpt_dir,
+        args.stage_tag,
+        exp_ids,
+        args.allow_missing,
+        current_main_run_id=getattr(args, "current_main_run_id", ""),
+        current_main_ckpt=getattr(args, "current_main_ckpt", ""),
+    )
     if not targets:
         raise FileNotFoundError("No sampling-ablation checkpoints were selected for evaluation.")
 
@@ -576,6 +611,8 @@ def main() -> None:
 
     run_config = {
         "sampling_run_prefix": args.sampling_run_prefix,
+        "current_main_run_id": str(getattr(args, "current_main_run_id", "") or ""),
+        "current_main_ckpt": str(getattr(args, "current_main_ckpt", "") or ""),
         "experiments": {str(k): SAMPLING_EXPERIMENTS[k] for k in exp_ids},
         "labels": SAMPLING_LABELS,
         "base": str(base),

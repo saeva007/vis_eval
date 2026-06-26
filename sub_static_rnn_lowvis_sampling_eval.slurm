@@ -41,6 +41,8 @@ BASE="${BASE:-/public/home/putianshu/vis_mlp}"
 TRAIN_DIR="${TRAIN_DIR:-/public/home/putianshu/vis_mlp/train}"
 OUT_DIR="${OUT_DIR:-static_rnn_sampling_eval_results}"
 SAMPLING_RUN_PREFIX="${SAMPLING_RUN_PREFIX:-${LOWVIS_RNN_RUN_PREFIX:-}}"
+CURRENT_MAIN_RUN_ID="${CURRENT_MAIN_RUN_ID:-${MAIN_RUN_ID:-}}"
+CURRENT_MAIN_CKPT="${CURRENT_MAIN_CKPT:-${MAIN_CKPT:-}}"
 EXPERIMENTS="${EXPERIMENTS:-${LOWVIS_RNN_SAMPLING_EXPERIMENTS:-0 1}}"
 DEVICE="${DEVICE:-cpu}"
 LIMIT_SAMPLES="${LIMIT_SAMPLES:-}"
@@ -69,6 +71,12 @@ CMD=(
 
 if [[ -n "${SAMPLING_RUN_PREFIX}" ]]; then
     CMD+=(--sampling_run_prefix "${SAMPLING_RUN_PREFIX}")
+fi
+if [[ -n "${CURRENT_MAIN_RUN_ID}" ]]; then
+    CMD+=(--current_main_run_id "${CURRENT_MAIN_RUN_ID}")
+fi
+if [[ -n "${CURRENT_MAIN_CKPT}" ]]; then
+    CMD+=(--current_main_ckpt "${CURRENT_MAIN_CKPT}")
 fi
 if [[ -n "${LIMIT_SAMPLES}" ]]; then
     CMD+=(--limit_samples "${LIMIT_SAMPLES}")
