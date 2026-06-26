@@ -10,9 +10,9 @@ import matplotlib as mpl
 
 # Internal keys keep the historical class names; display labels use threshold bins.
 PALETTE = {
-    "Fog":   "#2E5A87",  # deep blue
-    "Mist":  "#E69F00",  # amber
-    "Clear": "#7F7F7F",  # neutral gray
+    "Fog":   "#B2182B",  # high-salience red for ultra-low visibility
+    "Mist":  "#F4A582",  # lighter warm tone for moderate-low visibility
+    "Clear": "#F7F7F7",  # near-white neutral for clear conditions
 }
 CLASS_COLORS = [PALETTE["Fog"], PALETTE["Mist"], PALETTE["Clear"]]
 CLASS_NAMES  = ["Ultra-low (<500 m)", "Moderate-low (500–1000 m)", "Clear (≥1000 m)"]

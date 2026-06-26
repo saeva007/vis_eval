@@ -374,11 +374,26 @@ def infer_layout_from_x(x_path: Path, window_size: int):
     if len(shape) != 2:
         raise ValueError(f"{x_path} must be 2D [N,D], got {shape}")
     rest = int(shape[1]) - 6
-    for dyn in (27, 26, 25, 24):
+    for dyn in (27, 26, 25, 24, 21, 19, 18, 17):
         fe = rest - dyn * int(window_size)
-        if 20 <= fe <= 64:
+        if 8 <= fe <= 64:
             return dyn, fe
     raise ValueError(f"Cannot infer static-RNN layout from {x_path}: shape={shape}, window={window_size}")
+
+
+def read_dataset_build_config(data_dir: Path) -> Dict[str, object]:
+    cfg_path = data_dir / "dataset_build_config.json"
+    if not cfg_path.exists():
+        return {}
+    with open(cfg_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def config_dynamic_order(cfg: Dict[str, object], dyn_vars_count: int) -> Optional[List[str]]:
+    order = cfg.get("dynamic_feature_order")
+    if isinstance(order, list) and len(order) == int(dyn_vars_count):
+        return [str(v) for v in order]
+    return None
 
 
 def load_static_rnn_module(train_dir: Path):
@@ -708,12 +723,13 @@ def run_static_feature_importance(
     layout,
     mod,
     decision_meta: Dict[str, object],
+    dynamic_feature_order: Optional[List[str]] = None,
 ) -> Optional[pd.DataFrame]:
     if not bool(getattr(args, "run_feature_importance", False)):
         return None
     imp_dir = out_dir / "feature_importance"
     imp_dir.mkdir(parents=True, exist_ok=True)
-    rows_catalog = catalog_rows(layout.dyn_vars, layout.fe_dim)
+    rows_catalog = catalog_rows(layout.dyn_vars, layout.fe_dim, dynamic_feature_order)
     catalog_csv = imp_dir / "feature_catalog_pm10_pm25.csv"
     catalog_md = imp_dir / "feature_catalog_pm10_pm25.md"
     write_catalog(rows_catalog, catalog_csv, catalog_md)
@@ -738,12 +754,13 @@ def run_static_feature_importance(
                 "data_dir": str(data_dir),
                 "decision": decision_meta,
                 "layout": asdict(layout),
+                "dynamic_feature_order": dynamic_feature_order or [],
             },
             f,
             ensure_ascii=False,
             indent=2,
         )
-    groups = permutation_groups(layout.window_size, layout.dyn_vars, layout.fe_dim)
+    groups = permutation_groups(layout.window_size, layout.dyn_vars, layout.fe_dim, dynamic_feature_order)
     if int(args.importance_max_groups or 0) > 0:
         groups = groups[: int(args.importance_max_groups)]
     rng = np.random.default_rng(int(args.importance_seed))
@@ -1405,7 +1422,8 @@ def _draw_visibility_class_panel(
             s=5.2,
             cmap=CLASS_CMAP,
             norm=CLASS_NORM,
-            linewidths=0,
+            linewidths=0.06,
+            edgecolors="#6B7280",
             alpha=0.93,
             zorder=4,
         )
@@ -1691,7 +1709,14 @@ def evaluate_target(
     x_path, y_cls, y_raw, meta = load_main_data(
         data_dir, args.limit_samples, getattr(args, "meta_time_shift_hours", 0.0)
     )
-    dyn, fe = infer_layout_from_x(x_path, args.window_size)
+    dataset_cfg = read_dataset_build_config(data_dir)
+    cfg_dyn = int(dataset_cfg.get("dyn_vars") or 0)
+    cfg_fe = int(dataset_cfg.get("fe_dim") or 0)
+    if cfg_dyn > 0 and cfg_fe > 0:
+        dyn, fe = cfg_dyn, cfg_fe
+    else:
+        dyn, fe = infer_layout_from_x(x_path, args.window_size)
+    dynamic_feature_order = config_dynamic_order(dataset_cfg, dyn)
     layout = mod.Layout(window_size=args.window_size, dyn_vars=dyn, fe_dim=fe)
     ckpt_dir = as_abs_under(base, args.ckpt_dir)
     scaler_path = resolve_scaler_path(base, ckpt_dir, target.run_id, layout, target.variant.use_pm, target.scaler_path)
@@ -1793,6 +1818,7 @@ def evaluate_target(
             layout,
             mod,
             decision_meta,
+            dynamic_feature_order,
         )
 
     if args.plots != "none":

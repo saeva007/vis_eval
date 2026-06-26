@@ -79,11 +79,26 @@ def infer_layout_from_x(x_path: Path, window_size: int) -> Tuple[int, int]:
         raise ValueError(f"{x_path} must be 2D [N,D], got {shape}")
     total_dim = int(shape[1])
     rest = total_dim - 6
-    for dyn in (27, 26, 25, 24):
+    for dyn in (27, 26, 25, 24, 21, 19, 18, 17):
         fe = rest - dyn * int(window_size)
-        if 20 <= fe <= 64:
+        if 8 <= fe <= 64:
             return dyn, fe
     raise ValueError(f"Cannot infer dyn/FE layout from {x_path}: total_dim={total_dim}")
+
+
+def read_dataset_build_config(data_dir: Path) -> Dict[str, object]:
+    cfg_path = data_dir / "dataset_build_config.json"
+    if not cfg_path.exists():
+        return {}
+    with open(cfg_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def config_dynamic_order(cfg: Dict[str, object], dyn_vars_count: int) -> Optional[List[str]]:
+    order = cfg.get("dynamic_feature_order")
+    if isinstance(order, list) and len(order) == int(dyn_vars_count):
+        return [str(v) for v in order]
+    return None
 
 
 def eval_helpers():
@@ -375,8 +390,14 @@ def main() -> None:
 
     data_dir = abs_under_base(base, args.data_dir)
     x_path = data_dir / "X_test.npy"
+    dataset_cfg = read_dataset_build_config(data_dir)
+    cfg_dyn = int(dataset_cfg.get("dyn_vars") or 0)
+    cfg_fe = int(dataset_cfg.get("fe_dim") or 0)
     if x_path.exists():
-        dyn_inferred, fe_inferred = infer_layout_from_x(x_path, args.window_size)
+        if cfg_dyn > 0 and cfg_fe > 0:
+            dyn_inferred, fe_inferred = cfg_dyn, cfg_fe
+        else:
+            dyn_inferred, fe_inferred = infer_layout_from_x(x_path, args.window_size)
         args.dyn_vars_count = int(args.dyn_vars_count or dyn_inferred)
         args.extra_feat_dim = int(args.extra_feat_dim or fe_inferred)
     elif args.catalog_only and args.dyn_vars_count and args.extra_feat_dim:
@@ -385,8 +406,11 @@ def main() -> None:
     else:
         raise FileNotFoundError(f"Missing required input: {x_path}")
     print(f"[layout] dyn_vars_count={args.dyn_vars_count}, extra_feat_dim={args.extra_feat_dim}", flush=True)
+    dynamic_feature_order = config_dynamic_order(dataset_cfg, args.dyn_vars_count)
+    if dynamic_feature_order:
+        print("[layout] using dataset_build_config dynamic_feature_order", flush=True)
 
-    rows_catalog = catalog_rows(args.dyn_vars_count, args.extra_feat_dim)
+    rows_catalog = catalog_rows(args.dyn_vars_count, args.extra_feat_dim, dynamic_feature_order)
     catalog_csv = out_dir / "feature_catalog_pm10_pm25.csv"
     catalog_md = out_dir / "feature_catalog_pm10_pm25.md"
     write_catalog(rows_catalog, catalog_csv, catalog_md)
@@ -432,6 +456,7 @@ def main() -> None:
                 "mist_th": float(args.mist_th),
                 "dyn_vars_count": int(args.dyn_vars_count),
                 "extra_feat_dim": int(args.extra_feat_dim),
+                "dynamic_feature_order": dynamic_feature_order or [],
             },
             f,
             indent=2,
@@ -439,7 +464,7 @@ def main() -> None:
         )
     print(f"[baseline] {baseline_metrics}", flush=True)
 
-    groups = permutation_groups(args.window_size, args.dyn_vars_count, args.extra_feat_dim)
+    groups = permutation_groups(args.window_size, args.dyn_vars_count, args.extra_feat_dim, dynamic_feature_order)
     imp_df = run_permutation_importance(
         rows,
         y_sample,

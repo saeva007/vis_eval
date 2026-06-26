@@ -57,12 +57,12 @@ def build_event_visibility_cmap():
     Continuous visibility colormap aligned with class colors.
 
     Design:
-    - very low visibility -> Ultra-low blue
-    - 1000 m -> Moderate-low amber
-    - high visibility -> Clear gray
+    - very low visibility -> high-salience Ultra-low red
+    - 1000 m -> lighter Moderate-low warm tone
+    - high visibility -> near-white Clear neutral
     This keeps the first row semantically consistent with the class-color rows.
     """
-    fog_side = "#7291B1"  # lighter blue for the mid ultra-low range
+    fog_side = "#D6604D"  # lighter red for the mid ultra-low range
     mist_pos = (1000.0 - VIS_MIN_EVENT) / (VIS_MAX_EVENT - VIS_MIN_EVENT)
     anchors = [
         (0.00, PALETTE["Fog"]),
@@ -1044,7 +1044,7 @@ def plot_widespread_event_panels(
                     norm=CLASS_NORM,
                     s=9,
                     linewidths=0.05,
-                    edgecolors="#FFFFFF",
+                    edgecolors="#8A939F",
                     zorder=3,
                     alpha=0.95,
                 )
@@ -1080,7 +1080,7 @@ def plot_widespread_event_panels(
     from matplotlib.patches import Patch
 
     fig.legend(
-        handles=[Patch(facecolor=CLASS_COLORS[i], edgecolor="none", label=CLASS_SHORT_NAMES[i]) for i in range(3)],
+        handles=[Patch(facecolor=CLASS_COLORS[i], edgecolor="#8A939F", linewidth=0.45, label=CLASS_SHORT_NAMES[i]) for i in range(3)],
         loc="lower center",
         ncol=3,
         frameon=True,
@@ -1183,7 +1183,7 @@ def plot_three_events_footprint_row(
                         norm=CLASS_NORM,
                         s=8,
                         linewidths=0.05,
-                        edgecolors="#FFFFFF",
+                        edgecolors="#8A939F",
                         zorder=3,
                         alpha=0.95,
                     )
@@ -1212,7 +1212,7 @@ def plot_three_events_footprint_row(
     from matplotlib.patches import Patch
 
     fig.legend(
-        handles=[Patch(facecolor=CLASS_COLORS[i], edgecolor="none", label=CLASS_SHORT_NAMES[i]) for i in range(3)],
+        handles=[Patch(facecolor=CLASS_COLORS[i], edgecolor="#8A939F", linewidth=0.45, label=CLASS_SHORT_NAMES[i]) for i in range(3)],
         loc="lower center",
         ncol=3,
         frameon=True,

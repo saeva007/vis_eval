@@ -51,7 +51,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, ListedColormap, Normalize, TwoSlopeNorm
-from matplotlib.patches import Patch
+from matplotlib.patches import Patch, Rectangle
 from sklearn.metrics import confusion_matrix
 
 
@@ -108,9 +108,10 @@ except Exception:
 # ---------------------------------------------------------------------------
 
 
-FOG_COLOR = "#2E5A87"
-MIST_COLOR = "#E69F00"
-CLEAR_COLOR = "#7F7F7F"
+FOG_COLOR = "#B2182B"
+MIST_COLOR = "#F4A582"
+CLEAR_COLOR = "#F7F7F7"
+CLASS_EDGE_COLOR = "#6B7280"
 PMST_COLOR = "#2E5A87"
 IFS_PMST_COLOR = "#2A9D8F"
 IFS_DIAG_COLOR = "#5B5B5B"
@@ -1223,6 +1224,30 @@ def plot_confusion_pmst_vs_ifs(
             for j in range(3):
                 txt = f"{cm_norm[i, j]:.2f}\n{cm[i, j]:,}"
                 ax.text(j, i, txt, ha="center", va="center", fontsize=9.5, color="#111111")
+        for diag_idx in range(3):
+            ax.add_patch(
+                Rectangle(
+                    (diag_idx - 0.5, diag_idx - 0.5),
+                    1.0,
+                    1.0,
+                    fill=False,
+                    edgecolor="#238443",
+                    linewidth=2.0,
+                    zorder=5,
+                )
+            )
+        ax.add_patch(
+            Rectangle(
+                (-0.5, -0.5),
+                3.0,
+                2.0,
+                fill=False,
+                edgecolor="#238443",
+                linewidth=2.0,
+                linestyle=(0, (4, 2)),
+                zorder=6,
+            )
+        )
     cbar = fig.colorbar(
         im,
         ax=axes.ravel().tolist(),
@@ -2289,7 +2314,8 @@ def plot_event_peak_grid(
                 s=7,
                 cmap=CLASS_CMAP,
                 norm=CLASS_NORM,
-                linewidths=0,
+                linewidths=0.08,
+                edgecolors=CLASS_EDGE_COLOR,
                 alpha=0.95,
                 zorder=3,
             )
@@ -2298,7 +2324,7 @@ def plot_event_peak_grid(
                 ax.set_title(f"Event {int(ev.get('event_rank', col_idx + 1))}\n{peak:%Y-%m-%d %H:00 UTC}")
             if col_idx == 0:
                 ax.text(-0.18, 0.5, row_label, transform=ax.transAxes, rotation=90, va="center", ha="center", fontsize=11.5, fontweight="bold")
-    handles = [Patch(facecolor=CLASS_COLORS[i], label=CLASS_NAMES[i]) for i in range(3)]
+    handles = [Patch(facecolor=CLASS_COLORS[i], edgecolor=CLASS_EDGE_COLOR, linewidth=0.45, label=CLASS_NAMES[i]) for i in range(3)]
     fig.legend(handles=handles, loc="lower center", ncol=3, frameon=False)
     finish_figure_layout(fig, rect=(0.02, 0.09, 0.98, 0.98), h_pad=1.1, w_pad=0.7)
     save_fig_pair(
@@ -3133,16 +3159,30 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
         return
 
     source_path = out_dir / "fig11_48h_model_vs_ifs_delta_heatmap_source.csv"
+
+    norm_matrix = np.full_like(matrix, np.nan, dtype=float)
+    row_scales = np.full(len(specs), np.nan, dtype=float)
+    for row_idx in range(len(specs)):
+        row_vals = matrix[row_idx, :]
+        row_finite = row_vals[np.isfinite(row_vals)]
+        if row_finite.size == 0:
+            continue
+        row_scale = float(np.nanmax(np.abs(row_finite)))
+        if not np.isfinite(row_scale) or row_scale <= 0:
+            row_scale = 1.0
+        row_scales[row_idx] = row_scale
+        norm_matrix[row_idx, :] = np.clip(row_vals / row_scale, -1.0, 1.0)
+    scale_by_metric = {metric: row_scales[idx] for idx, (metric, _) in enumerate(specs)}
+    for row in source_rows:
+        scale = float(scale_by_metric.get(str(row.get("metric")), math.nan))
+        row["row_normalization_scale_pp"] = scale
+        delta = float(row.get("skill_delta_percentage_points", math.nan))
+        row["row_normalized_skill_delta"] = float(np.clip(delta / scale, -1.0, 1.0)) if np.isfinite(delta) and np.isfinite(scale) and scale > 0 else math.nan
     pd.DataFrame(source_rows).to_csv(source_path, index=False, float_format="%.6f")
 
-    raw_lim = float(np.nanpercentile(np.abs(finite_vals), 92.0))
-    if not np.isfinite(raw_lim) or raw_lim <= 0:
-        raw_lim = float(np.nanmax(np.abs(finite_vals))) if finite_vals.size else 5.0
-    step = 2.5 if raw_lim <= 15.0 else 5.0 if raw_lim <= 40.0 else 10.0
-    lim = min(100.0, max(5.0, math.ceil(raw_lim / step) * step))
     cmap = _pmst_ifs_delta_cmap()
-    norm = TwoSlopeNorm(vmin=-lim, vcenter=0.0, vmax=lim)
-    extend = "both"
+    norm = TwoSlopeNorm(vmin=-1.0, vcenter=0.0, vmax=1.0)
+    extend = "neither"
     cmap.set_bad("#ECEFF3")
 
     fig, ax = plt.subplots(figsize=(12.2, 5.2))
@@ -3151,7 +3191,7 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
     mesh = ax.pcolormesh(
         x_edges,
         y_edges,
-        np.ma.masked_invalid(matrix),
+        np.ma.masked_invalid(norm_matrix),
         cmap=cmap,
         norm=norm,
         shading="flat",
@@ -3178,7 +3218,7 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
         spine.set_linewidth(0.75)
 
     cb = fig.colorbar(mesh, ax=ax, orientation="horizontal", fraction=0.075, pad=0.20, extend=extend)
-    cb.set_ticks(np.linspace(-lim, lim, 5))
+    cb.set_ticks(np.linspace(-1.0, 1.0, 5))
     cb.ax.text(
         0.0,
         1.70,
@@ -3199,11 +3239,11 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
         fontsize=9,
         color="#08306B",
     )
-    cb.set_label("PMST - IFS diagnostic VIS (percentage points)", fontsize=9.5, labelpad=8)
+    cb.set_label("Row-normalized PMST - IFS diagnostic VIS skill gain", fontsize=9.5, labelpad=8)
     fig.text(
         0.995,
         0.01,
-        f"Color scale is centered at zero and clipped at +/-{lim:g} percentage points to preserve lead-time contrast.",
+        "Each metric row is scaled by its own maximum absolute percentage-point delta; source data retain raw deltas.",
         ha="right",
         va="bottom",
         fontsize=9,
@@ -3218,9 +3258,9 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
         [*sources, str(source_path)],
         notes=(
             "Heat map of 48h lead-time PMST minus IFS diagnostic VIS skill gain; "
-            "rows are CSI/recall metrics, columns are display lead hours, and the "
-            "diverging color scale is clipped robustly in percentage points to keep "
-            "near-zero IFS metrics from dominating the visual contrast."
+            "rows are CSI/recall metrics, columns are display lead hours, and each "
+            "row is normalized by its own maximum absolute percentage-point delta "
+            "so small-magnitude metrics remain visible on a fixed -1 to +1 scale."
         ),
     )
 

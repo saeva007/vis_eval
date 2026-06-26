@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence
 
 
 BASE_DYNAMIC_FEATURES: List[Dict[str, str]] = [
@@ -640,6 +640,27 @@ def dynamic_features_for_count(dyn_vars_count: int) -> List[Dict[str, str]]:
     return features[:dyn_vars_count]
 
 
+def dynamic_features_from_order(dynamic_feature_order: Sequence[str]) -> List[Dict[str, str]]:
+    catalog = {item["feature"].upper(): item for item in (BASE_DYNAMIC_FEATURES + DYNAMIC_APPEND_FEATURES)}
+    out: List[Dict[str, str]] = []
+    for raw in dynamic_feature_order:
+        name = str(raw)
+        key = name.upper()
+        if key in catalog:
+            out.append(dict(catalog[key]))
+        else:
+            out.append(
+                {
+                    "feature": name,
+                    "block": "dynamic_12h",
+                    "based_on": f"{name} at each hour in the dynamic window",
+                    "calculation": "Read from dataset_build_config.json dynamic_feature_order.",
+                    "scientific_meaning": "Dataset-specific dynamic predictor; inspect the data-build config for source availability.",
+                }
+            )
+    return out
+
+
 def fe_features_for_dim(extra_feat_dim: int) -> List[Dict[str, str]]:
     main = BASE_FOG_FEATURES + TIME_FEATURES
     vera = BASE_FOG_FEATURES + VERA_FEATURES + TIME_FEATURES
@@ -661,10 +682,19 @@ def fe_features_for_dim(extra_feat_dim: int) -> List[Dict[str, str]]:
     return out
 
 
-def catalog_rows(dyn_vars_count: int = 27, extra_feat_dim: int = 36) -> List[Dict[str, str]]:
+def catalog_rows(
+    dyn_vars_count: int = 27,
+    extra_feat_dim: int = 36,
+    dynamic_feature_order: Optional[Sequence[str]] = None,
+) -> List[Dict[str, str]]:
     rows: List[Dict[str, str]] = []
     position = 0
-    for item in dynamic_features_for_count(dyn_vars_count):
+    dyn_features = (
+        dynamic_features_from_order(dynamic_feature_order)
+        if dynamic_feature_order is not None
+        else dynamic_features_for_count(dyn_vars_count)
+    )
+    for item in dyn_features:
         row = dict(item)
         row.update(
             {
@@ -700,9 +730,18 @@ def catalog_rows(dyn_vars_count: int = 27, extra_feat_dim: int = 36) -> List[Dic
     return rows
 
 
-def permutation_groups(window_size: int, dyn_vars_count: int, extra_feat_dim: int) -> List[Dict[str, object]]:
+def permutation_groups(
+    window_size: int,
+    dyn_vars_count: int,
+    extra_feat_dim: int,
+    dynamic_feature_order: Optional[Sequence[str]] = None,
+) -> List[Dict[str, object]]:
     groups: List[Dict[str, object]] = []
-    dyn_features = dynamic_features_for_count(dyn_vars_count)
+    dyn_features = (
+        dynamic_features_from_order(dynamic_feature_order)
+        if dynamic_feature_order is not None
+        else dynamic_features_for_count(dyn_vars_count)
+    )
     for i, item in enumerate(dyn_features):
         cols = [t * dyn_vars_count + i for t in range(window_size)]
         groups.append(
@@ -780,6 +819,7 @@ __all__ = [
     "VERA_FEATURES",
     "TIME_FEATURES",
     "catalog_rows",
+    "dynamic_features_from_order",
     "dynamic_features_for_count",
     "fe_features_for_dim",
     "permutation_groups",
