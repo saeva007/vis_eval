@@ -22,6 +22,7 @@ SAMPLING_EXPERIMENTS: Dict[int, str] = {
     1: "current_stratified",
     2: "light_lowvis_oversample",
     3: "heavy_lowvis_oversample",
+    4: "mild_lowvis_oversample",
 }
 
 SAMPLING_LABELS: Dict[str, str] = {
@@ -29,6 +30,7 @@ SAMPLING_LABELS: Dict[str, str] = {
     "current_stratified": "With Low-vis event oversampling",
     "light_lowvis_oversample": "Light Low-vis event oversampling",
     "heavy_lowvis_oversample": "Heavy Low-vis event oversampling",
+    "mild_lowvis_oversample": "Mild Low-vis event oversampling",
 }
 
 CLASS_NAMES = ("Fog", "Mist", "Clear")
@@ -66,6 +68,31 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--threshold_source", choices=["checkpoint", "cli", "argmax"], default="argmax")
     p.add_argument("--fog_th", type=float, default=0.5)
     p.add_argument("--mist_th", type=float, default=0.5)
+    p.add_argument("--ifs_vis_nc", default="VIS_IDW_KDTree_20250101_20251231.nc")
+    p.add_argument("--ifs_vis_var", default="VIS")
+    p.add_argument("--shp_path", default="/public/home/putianshu/中华人民共和国/中华人民共和国.shp")
+    p.add_argument("--run_event_eval", action="store_true", help="Run main-eval style widespread event detection and peak-case figures for each sampling experiment.")
+    p.add_argument("--event_top_k", type=int, default=3)
+    p.add_argument("--event_window_hours", type=int, default=3)
+    p.add_argument("--event_min_fog_stations", type=int, default=80)
+    p.add_argument("--event_min_regions", type=int, default=3)
+    p.add_argument("--event_min_lon_span", type=float, default=10.0)
+    p.add_argument("--event_min_lat_span", type=float, default=4.0)
+    p.add_argument("--event_gap_hours", type=int, default=24)
+    p.add_argument("--event_preferred_times", default="10-30 22:00")
+    p.add_argument("--event_env_source", choices=["grid", "none"], default="none")
+    p.add_argument("--event_env_max_events", type=int, default=3)
+    p.add_argument("--event_env_rh2m_var", default="rh2m")
+    p.add_argument("--event_env_rh2m_vmin", type=float, default=40.0)
+    p.add_argument("--event_env_rh2m_vmax", type=float, default=100.0)
+    p.add_argument(
+        "--event_env_tianji_template",
+        default="/tj01/sd3op/userpp/pp_data/{init_yyyymmddhh}/stage26Q/multi_model_sources/{init_yyyymmddhh}/{variable}.nc",
+    )
+    p.add_argument("--event_env_pm10_dir", default="pm10_data")
+    p.add_argument("--event_env_pm10_var", default="pm10")
+    p.add_argument("--event_env_pm10_vmin", type=float, default=0.0)
+    p.add_argument("--event_env_pm10_vmax", type=float, default=240.0)
     p.add_argument("--rank_metric", default="low_vis_csi")
     p.add_argument("--save_outputs", action="store_true", help="Save per-experiment probability arrays for debugging.")
     return p.parse_args()
@@ -247,13 +274,15 @@ def evaluate_target(
     experiment_id: int,
     x_path: Path,
     y_cls: np.ndarray,
+    y_raw: np.ndarray,
+    meta: pd.DataFrame,
     base: Path,
     ckpt_dir: Path,
     out_dir: Path,
     mod,
     layout,
     device,
-) -> Tuple[Dict[str, object], List[Dict[str, object]], List[Dict[str, object]]]:
+) -> Tuple[Dict[str, object], List[Dict[str, object]], List[Dict[str, object]], List[Dict[str, object]]]:
     import joblib
 
     print(f"\n=== Evaluating sampling experiment {experiment_id}: {target.label} ===", flush=True)
@@ -301,11 +330,129 @@ def evaluate_target(
         "ckpt_step": ckpt_meta.get("step") if isinstance(ckpt_meta, dict) else None,
         "ckpt_threshold_mode": ckpt_meta.get("threshold_mode") if isinstance(ckpt_meta, dict) else None,
     }
+    event_rows = []
+    if bool(getattr(args, "run_event_eval", False)):
+        event_rows = run_event_eval_for_target(
+            args=args,
+            target=target,
+            experiment_id=experiment_id,
+            base=base,
+            out_dir=out_dir,
+            x_path=x_path,
+            y_cls=y_cls,
+            y_raw=y_raw,
+            meta=meta,
+            pred=pred,
+            probs=probs,
+            scaler_path=scaler_path,
+        )
     return (
         overall,
         class_metric_rows(target.label, target.run_id, experiment_id, cm, decision_meta),
         confusion_rows(target.label, target.run_id, experiment_id, cm),
+        event_rows,
     )
+
+
+def run_event_eval_for_target(
+    args: argparse.Namespace,
+    target: journal.EvalTarget,
+    experiment_id: int,
+    base: Path,
+    out_dir: Path,
+    x_path: Path,
+    y_cls: np.ndarray,
+    y_raw: np.ndarray,
+    meta: pd.DataFrame,
+    pred: np.ndarray,
+    probs: np.ndarray,
+    scaler_path: Path,
+) -> List[Dict[str, object]]:
+    event_dir = out_dir / f"{experiment_id}_{target.label}_event_eval"
+    event_dir.mkdir(parents=True, exist_ok=True)
+    ifs_nc = journal.as_abs_under(base, args.ifs_vis_nc)
+    manifest = journal.Manifest(event_dir)
+    sources = [
+        str(x_path),
+        str(journal.as_abs_under(base, args.data_dir) / "y_test.npy"),
+        str(journal.as_abs_under(base, args.data_dir) / "meta_test.csv"),
+        str(target.checkpoint),
+        str(scaler_path),
+    ]
+
+    ifs_pred = ifs_vis = ifs_valid = None
+    if ifs_nc.exists():
+        try:
+            ifs_pred, ifs_vis, ifs_valid = journal.load_ifs_diagnostic(meta, ifs_nc, args.ifs_vis_var)
+            sources.append(str(ifs_nc))
+        except Exception as exc:
+            print(f"[events] IFS diagnostic baseline skipped for {target.label}: {exc}", flush=True)
+            ifs_valid = np.zeros(len(y_cls), dtype=bool)
+    else:
+        print(f"[events] IFS diagnostic NetCDF not found: {ifs_nc}; event metrics will be skipped.", flush=True)
+        ifs_valid = np.zeros(len(y_cls), dtype=bool)
+
+    np.save(event_dir / "probs.npy", probs.astype(np.float32))
+    eval_df = journal.export_per_sample(
+        event_dir / "per_sample_eval.csv",
+        meta,
+        y_cls,
+        y_raw,
+        pred,
+        probs,
+        ifs_pred=ifs_pred,
+        ifs_vis=ifs_vis,
+        ifs_valid=ifs_valid,
+    )
+
+    if ifs_pred is not None and ifs_vis is not None and ifs_valid is not None and int(np.sum(ifs_valid)) > 0:
+        shp = journal.read_shapefile(args.shp_path) if str(getattr(args, "shp_path", "") or "") else None
+        journal.run_event_plots(
+            args,
+            base,
+            event_dir,
+            manifest,
+            meta,
+            y_cls,
+            y_raw,
+            pred,
+            eval_df,
+            ifs_nc,
+            ifs_valid,
+            shp,
+        )
+    manifest.add(
+        "per_sample_eval.csv",
+        sources,
+        notes="Per-sample sampling-ablation predictions used for optional widespread-event case evaluation.",
+        n=int(len(y_cls)),
+        matched_ifs=int(np.sum(ifs_valid)) if ifs_valid is not None else None,
+    )
+    manifest.write()
+
+    run_config = {
+        "experiment_id": int(experiment_id),
+        "label": target.label,
+        "display_label": SAMPLING_LABELS.get(target.label, target.label),
+        "run_id": target.run_id,
+        "event_dir": str(event_dir),
+        "ifs_vis_nc": str(ifs_nc),
+        "event_top_k": int(args.event_top_k),
+        "event_window_hours": int(args.event_window_hours),
+        "event_env_source": str(args.event_env_source),
+    }
+    (event_dir / "event_eval_config.json").write_text(json.dumps(run_config, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    summary_path = event_dir / "fig9_event_summary_metrics.csv"
+    if not summary_path.exists():
+        return []
+    event_df = pd.read_csv(summary_path)
+    event_df.insert(0, "event_eval_dir", str(event_dir))
+    event_df.insert(0, "run_id", target.run_id)
+    event_df.insert(0, "display_label", SAMPLING_LABELS.get(target.label, target.label))
+    event_df.insert(0, "label", target.label)
+    event_df.insert(0, "experiment_id", int(experiment_id))
+    return event_df.to_dict("records")
 
 
 def write_markdown_summary(out_dir: Path, overall: pd.DataFrame, per_class: pd.DataFrame, rank_metric: str) -> None:
@@ -362,7 +509,7 @@ def main() -> None:
     if not args.sampling_run_prefix:
         raise ValueError("Pass --sampling_run_prefix, or leave auto-detect enabled with matching checkpoints in --ckpt_dir.")
 
-    x_path, y_cls, _y_raw, _meta = journal.load_main_data(
+    x_path, y_cls, y_raw, meta = journal.load_main_data(
         data_dir,
         args.limit_samples,
         getattr(args, "meta_time_shift_hours", 0.0),
@@ -388,15 +535,18 @@ def main() -> None:
     overall_rows: List[Dict[str, object]] = []
     class_rows: List[Dict[str, object]] = []
     cm_rows: List[Dict[str, object]] = []
+    event_rows: List[Dict[str, object]] = []
     id_by_label = {name: exp_id for exp_id, name in SAMPLING_EXPERIMENTS.items()}
     for target in targets:
         exp_id = id_by_label[target.label]
-        overall, per_class, confusion = evaluate_target(
+        overall, per_class, confusion, events = evaluate_target(
             args,
             target,
             exp_id,
             x_path,
             y_cls,
+            y_raw,
+            meta,
             base,
             ckpt_dir,
             out_dir,
@@ -407,6 +557,7 @@ def main() -> None:
         overall_rows.append(overall)
         class_rows.extend(per_class)
         cm_rows.extend(confusion)
+        event_rows.extend(events)
 
     overall_df = pd.DataFrame(overall_rows).sort_values("experiment_id")
     per_class_df = pd.DataFrame(class_rows).sort_values(["experiment_id", "class_id"])
@@ -418,6 +569,9 @@ def main() -> None:
     overall_df.to_csv(overall_path, index=False, float_format="%.8f")
     per_class_df.to_csv(per_class_path, index=False, float_format="%.8f")
     cm_df.to_csv(cm_path, index=False, float_format="%.8f")
+    event_summary_path = out_dir / "sampling_ablation_event_summary_metrics.csv"
+    if event_rows:
+        pd.DataFrame(event_rows).sort_values(["experiment_id", "event_rank"]).to_csv(event_summary_path, index=False, float_format="%.8f")
     write_markdown_summary(out_dir, overall_df, per_class_df, args.rank_metric)
 
     run_config = {
@@ -434,6 +588,9 @@ def main() -> None:
         "threshold_source": args.threshold_source,
         "fog_th": float(args.fog_th),
         "mist_th": float(args.mist_th),
+        "run_event_eval": bool(args.run_event_eval),
+        "ifs_vis_nc": str(journal.as_abs_under(base, args.ifs_vis_nc)),
+        "event_env_source": str(args.event_env_source),
         "limit_samples": int(args.limit_samples),
         "meta_time_shift_hours": float(getattr(args, "meta_time_shift_hours", 0.0) or 0.0),
         "outputs": {
@@ -441,6 +598,7 @@ def main() -> None:
             "per_class_metrics": str(per_class_path),
             "confusion_counts": str(cm_path),
             "summary_md": str(out_dir / "sampling_ablation_metrics_summary.md"),
+            "event_summary_metrics": str(event_summary_path) if event_rows else "",
         },
     }
     (out_dir / "run_config.json").write_text(json.dumps(run_config, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -448,6 +606,8 @@ def main() -> None:
     print(f"[table] {overall_path}", flush=True)
     print(f"[table] {per_class_path}", flush=True)
     print(f"[table] {cm_path}", flush=True)
+    if event_rows:
+        print(f"[table] {event_summary_path}", flush=True)
 
 
 if __name__ == "__main__":

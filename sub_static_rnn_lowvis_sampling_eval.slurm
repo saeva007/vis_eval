@@ -45,6 +45,11 @@ EXPERIMENTS="${EXPERIMENTS:-${LOWVIS_RNN_SAMPLING_EXPERIMENTS:-0 1}}"
 DEVICE="${DEVICE:-cpu}"
 LIMIT_SAMPLES="${LIMIT_SAMPLES:-}"
 THRESHOLD_SOURCE="${THRESHOLD_SOURCE:-argmax}"
+RUN_EVENT_EVAL="${RUN_EVENT_EVAL:-0}"
+IFS_VIS_NC="${IFS_VIS_NC:-VIS_IDW_KDTree_20250101_20251231.nc}"
+IFS_VIS_VAR="${IFS_VIS_VAR:-VIS}"
+SHP_PATH="${SHP_PATH:-/public/home/putianshu/中华人民共和国/中华人民共和国.shp}"
+EVENT_ENV_SOURCE="${EVENT_ENV_SOURCE:-none}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 CMD=(
@@ -56,6 +61,10 @@ CMD=(
     --experiments "${EXPERIMENTS}"
     --device "${DEVICE}"
     --threshold_source "${THRESHOLD_SOURCE}"
+    --ifs_vis_nc "${IFS_VIS_NC}"
+    --ifs_vis_var "${IFS_VIS_VAR}"
+    --shp_path "${SHP_PATH}"
+    --event_env_source "${EVENT_ENV_SOURCE}"
 )
 
 if [[ -n "${SAMPLING_RUN_PREFIX}" ]]; then
@@ -63,6 +72,9 @@ if [[ -n "${SAMPLING_RUN_PREFIX}" ]]; then
 fi
 if [[ -n "${LIMIT_SAMPLES}" ]]; then
     CMD+=(--limit_samples "${LIMIT_SAMPLES}")
+fi
+if [[ "${RUN_EVENT_EVAL}" = "1" ]]; then
+    CMD+=(--run_event_eval)
 fi
 if [[ -n "${EXTRA_ARGS}" ]]; then
     # shellcheck disable=SC2206
