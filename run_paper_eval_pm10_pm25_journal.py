@@ -796,10 +796,14 @@ def load_main_data(
     data_dir: Path,
     limit_samples: int = 0,
     meta_time_shift_hours: float = 0.0,
+    split: str = "test",
 ) -> Tuple[Path, np.ndarray, np.ndarray, pd.DataFrame]:
-    x_path = data_dir / "X_test.npy"
-    y_path = data_dir / "y_test.npy"
-    meta_path = data_dir / "meta_test.csv"
+    split = str(split).strip().lower()
+    if split not in {"train", "val", "test"}:
+        raise ValueError(f"split must be train, val, or test; got {split!r}")
+    x_path = data_dir / f"X_{split}.npy"
+    y_path = data_dir / f"y_{split}.npy"
+    meta_path = data_dir / f"meta_{split}.csv"
     for p in (x_path, y_path, meta_path):
         if not p.exists():
             raise FileNotFoundError(f"Missing required input: {p}")

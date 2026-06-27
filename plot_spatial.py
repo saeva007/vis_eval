@@ -815,20 +815,47 @@ def _compute_case_metrics(y_true, y_pred):
             "fog_recall": np.nan,
             "fog_far": np.nan,
             "low_vis_recall": np.nan,
+            "low_vis_precision": np.nan,
+            "low_vis_far": np.nan,
+            "low_vis_csi": np.nan,
+            "low_vis_fpr": np.nan,
+            "low_vis_tp": 0,
+            "low_vis_fp": 0,
+            "low_vis_fn": 0,
+            "low_vis_tn": 0,
+            "low_vis_area_ratio": np.nan,
+            "clear_to_fog_fp": 0,
+            "clear_to_mist_fp": 0,
         }
 
     fog_metrics = binary_metrics_from_preds((y_true == 0).astype(int), (y_pred == 0).astype(int))
     low_vis_pred = y_pred <= 1
     low_vis_true = y_true <= 1
-    low_vis_recall = (
-        (low_vis_true & low_vis_pred).sum() / low_vis_true.sum()
-        if low_vis_true.sum() > 0 else np.nan
-    )
+    tp = int(np.sum(low_vis_true & low_vis_pred))
+    fp = int(np.sum(~low_vis_true & low_vis_pred))
+    fn = int(np.sum(low_vis_true & ~low_vis_pred))
+    tn = int(np.sum(~low_vis_true & ~low_vis_pred))
+    low_vis_recall = tp / (tp + fn) if (tp + fn) else np.nan
+    low_vis_precision = tp / (tp + fp) if (tp + fp) else np.nan
+    low_vis_csi = tp / (tp + fp + fn) if (tp + fp + fn) else np.nan
+    low_vis_fpr = fp / (fp + tn) if (fp + tn) else np.nan
+    area_ratio = int(low_vis_pred.sum()) / int(low_vis_true.sum()) if low_vis_true.sum() else np.nan
     return {
         "fog_csi": fog_metrics["csi"],
         "fog_recall": fog_metrics["pod"],
         "fog_far": fog_metrics["far"],
         "low_vis_recall": low_vis_recall,
+        "low_vis_precision": low_vis_precision,
+        "low_vis_far": 1.0 - low_vis_precision if np.isfinite(low_vis_precision) else np.nan,
+        "low_vis_csi": low_vis_csi,
+        "low_vis_fpr": low_vis_fpr,
+        "low_vis_tp": tp,
+        "low_vis_fp": fp,
+        "low_vis_fn": fn,
+        "low_vis_tn": tn,
+        "low_vis_area_ratio": area_ratio,
+        "clear_to_fog_fp": int(np.sum((y_true == 2) & (y_pred == 0))),
+        "clear_to_mist_fp": int(np.sum((y_true == 2) & (y_pred == 1))),
     }
 
 
@@ -1384,15 +1411,66 @@ def summarize_event_metrics(hourly_df, event_row):
     peak_mask = hourly_df["hour_offset"] == 0
 
     def _safe_mean(series_name):
+        if series_name not in hourly_df:
+            return np.nan
         vals = hourly_df[series_name].to_numpy(dtype=float)
         return float(np.nanmean(vals)) if np.isfinite(vals).any() else np.nan
 
     def _safe_peak(series_name):
+        if series_name not in hourly_df:
+            return np.nan
         vals = hourly_df.loc[peak_mask, series_name].to_numpy(dtype=float)
         return float(np.nanmean(vals)) if len(vals) and np.isfinite(vals).any() else np.nan
 
+    def _safe_sum(series_name):
+        if series_name not in hourly_df:
+            return 0
+        vals = pd.to_numeric(hourly_df[series_name], errors="coerce").to_numpy(dtype=float)
+        return int(np.nansum(vals)) if np.isfinite(vals).any() else 0
+
+    def _window_metrics(prefix):
+        tp = _safe_sum(f"{prefix}_low_vis_tp")
+        fp = _safe_sum(f"{prefix}_low_vis_fp")
+        fn = _safe_sum(f"{prefix}_low_vis_fn")
+        tn = _safe_sum(f"{prefix}_low_vis_tn")
+        return {
+            f"{prefix}_low_vis_precision_window": tp / (tp + fp) if (tp + fp) else np.nan,
+            f"{prefix}_low_vis_recall_window": tp / (tp + fn) if (tp + fn) else np.nan,
+            f"{prefix}_low_vis_csi_window": tp / (tp + fp + fn) if (tp + fp + fn) else np.nan,
+            f"{prefix}_low_vis_far_window": fp / (tp + fp) if (tp + fp) else np.nan,
+            f"{prefix}_low_vis_fpr_window": fp / (fp + tn) if (fp + tn) else np.nan,
+            f"{prefix}_clear_to_fog_fp_window": _safe_sum(f"{prefix}_clear_to_fog_fp"),
+            f"{prefix}_clear_to_mist_fp_window": _safe_sum(f"{prefix}_clear_to_mist_fp"),
+        }
+
+    def _timing_metrics(prefix):
+        offsets = pd.to_numeric(hourly_df["hour_offset"], errors="coerce").to_numpy(dtype=float)
+        obs = pd.to_numeric(hourly_df["obs_low_vis_count"], errors="coerce").to_numpy(dtype=float)
+        pred = pd.to_numeric(hourly_df[f"{prefix}_low_vis_count"], errors="coerce").to_numpy(dtype=float)
+        finite_obs = np.isfinite(offsets) & np.isfinite(obs)
+        if not finite_obs.any():
+            return {
+                f"{prefix}_onset_error_h": np.nan,
+                f"{prefix}_cessation_error_h": np.nan,
+                f"{prefix}_timing_footprint_threshold": np.nan,
+            }
+        threshold = max(1.0, 0.25 * float(np.nanmax(obs[finite_obs])))
+        obs_active = finite_obs & (obs >= threshold)
+        pred_active = np.isfinite(offsets) & np.isfinite(pred) & (pred >= threshold)
+        if not obs_active.any() or not pred_active.any():
+            onset_error = np.nan
+            cessation_error = np.nan
+        else:
+            onset_error = float(np.min(offsets[pred_active]) - np.min(offsets[obs_active]))
+            cessation_error = float(np.max(offsets[pred_active]) - np.max(offsets[obs_active]))
+        return {
+            f"{prefix}_onset_error_h": onset_error,
+            f"{prefix}_cessation_error_h": cessation_error,
+            f"{prefix}_timing_footprint_threshold": threshold,
+        }
+
     peak_time = pd.Timestamp(event_row["peak_time"])
-    return {
+    row = {
         "event_rank": int(event_row["event_rank"]),
         "peak_time": peak_time,
         "peak_fog_count": int(event_row["peak_fog_count"]),
@@ -1409,6 +1487,16 @@ def summarize_event_metrics(hourly_df, event_row):
         "ifs_ultralow_recall_mean": _safe_mean("ifs_ultralow_recall"),
         "pmst_low_vis_recall_mean": _safe_mean("pmst_low_vis_recall"),
         "ifs_low_vis_recall_mean": _safe_mean("ifs_low_vis_recall"),
+        "pmst_low_vis_precision_mean": _safe_mean("pmst_low_vis_precision"),
+        "ifs_low_vis_precision_mean": _safe_mean("ifs_low_vis_precision"),
+        "pmst_low_vis_far_mean": _safe_mean("pmst_low_vis_far"),
+        "ifs_low_vis_far_mean": _safe_mean("ifs_low_vis_far"),
+        "pmst_low_vis_csi_mean": _safe_mean("pmst_low_vis_csi"),
+        "ifs_low_vis_csi_mean": _safe_mean("ifs_low_vis_csi"),
+        "pmst_low_vis_fpr_mean": _safe_mean("pmst_low_vis_fpr"),
+        "ifs_low_vis_fpr_mean": _safe_mean("ifs_low_vis_fpr"),
+        "pmst_low_vis_area_ratio_mean": _safe_mean("pmst_low_vis_area_ratio"),
+        "ifs_low_vis_area_ratio_mean": _safe_mean("ifs_low_vis_area_ratio"),
         "pmst_fog_csi_peak": _safe_peak("pmst_fog_csi"),
         "pmst_ultralow_csi_peak": _safe_peak("pmst_ultralow_csi"),
         "ifs_fog_csi_peak": _safe_peak("ifs_fog_csi"),
@@ -1420,6 +1508,11 @@ def summarize_event_metrics(hourly_df, event_row):
         "pmst_low_vis_recall_peak": _safe_peak("pmst_low_vis_recall"),
         "ifs_low_vis_recall_peak": _safe_peak("ifs_low_vis_recall"),
     }
+    row.update(_window_metrics("pmst"))
+    row.update(_window_metrics("ifs"))
+    row.update(_timing_metrics("pmst"))
+    row.update(_timing_metrics("ifs"))
+    return row
 
 
 def plot_event_summary_comparison(summary_df, output_path):

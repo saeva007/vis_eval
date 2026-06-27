@@ -396,8 +396,8 @@ def run_event_eval_for_target(
     manifest = journal.Manifest(event_dir)
     sources = [
         str(x_path),
-        str(journal.as_abs_under(base, args.data_dir) / "y_test.npy"),
-        str(journal.as_abs_under(base, args.data_dir) / "meta_test.csv"),
+        str(journal.as_abs_under(base, args.data_dir) / f"y_{getattr(args, 'eval_split', 'test')}.npy"),
+        str(journal.as_abs_under(base, args.data_dir) / f"meta_{getattr(args, 'eval_split', 'test')}.csv"),
         str(target.checkpoint),
         str(scaler_path),
     ]
