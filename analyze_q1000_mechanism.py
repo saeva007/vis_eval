@@ -99,6 +99,28 @@ FEATURE_META = {
     "Q1000_MINUS_Q925": {"label": "Q1000-Q925", "unit": "g kg-1", "valid": (-30.0, 30.0)},
 }
 
+SOURCE_STYLE = {
+    "tianji": {"color": "#2878A5", "marker": "o"},
+    "ifs": {"color": "#C47A1D", "marker": "^"},
+    "era5": {"color": "#6C7280", "marker": "D"},
+    "pangu": {"color": "#7651A8", "marker": "P"},
+}
+
+CASE_LABELS = {
+    "numerical_hit_pangu_miss": "Numerical hit\nPangu miss",
+    "both_hit": "Both hit",
+    "both_miss": "Both miss",
+    "pangu_hit_numerical_miss": "Pangu hit\nNumerical miss",
+}
+
+
+def source_style(tag: str, label: str = "") -> Dict[str, str]:
+    text = f"{tag} {label}".lower()
+    for family in ("pangu", "tianji", "era5", "ifs"):
+        if family in text:
+            return SOURCE_STYLE[family]
+    return SOURCE_STYLE["era5"]
+
 
 @dataclass
 class SourceSpec:
@@ -122,7 +144,7 @@ def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         description=(
             "Compare Q1000/DP1000 quality and low-visibility informativeness "
-            "across Tianji, T2ND, IFS, ERA5 reference analysis, and Pangu."
+            "across Tianji, IFS, ERA5 reference analysis, and Pangu."
         )
     )
     ap.add_argument(
@@ -187,6 +209,12 @@ def parse_sources(value: str) -> List[SourceSpec]:
     dup = sorted({t for t in tags if tags.count(t) > 1})
     if dup:
         raise ValueError(f"Duplicate source tag(s): {dup}")
+    t2nd = [s.tag for s in specs if "t2nd" in f"{s.tag} {s.label}".lower()]
+    if t2nd:
+        raise ValueError(
+            "Tianji T2ND differs from Tianji only through RH2M and must not be "
+            f"duplicated in Q1000 analysis. Remove source(s): {t2nd}."
+        )
     return specs
 
 
@@ -796,6 +824,23 @@ def read_eval_sample(eval_dir: Path, tag: str) -> Optional[pd.DataFrame]:
     return df
 
 
+def date_block_mean_ci(values: np.ndarray, times: Sequence[object], iters: int, seed: int) -> Tuple[float, float]:
+    vals = np.asarray(values, dtype=np.float64)
+    dates = pd.to_datetime(pd.Series(times), errors="coerce").dt.floor("D").to_numpy()
+    mask = np.isfinite(vals) & pd.notna(dates)
+    vals = vals[mask]
+    dates = dates[mask]
+    unique, codes = np.unique(dates, return_inverse=True)
+    if iters <= 0 or len(unique) < 3 or not vals.size:
+        return math.nan, math.nan
+    counts = np.bincount(codes, minlength=len(unique)).astype(np.float64)
+    sums = np.bincount(codes, weights=vals, minlength=len(unique)).astype(np.float64)
+    rng = np.random.default_rng(seed)
+    draws = rng.integers(0, len(unique), size=(int(iters), len(unique)))
+    replicate = sums[draws].sum(axis=1) / counts[draws].sum(axis=1)
+    return float(np.nanpercentile(replicate, 2.5)), float(np.nanpercentile(replicate, 97.5))
+
+
 def case_control_table(
     common: Dict[str, pd.DataFrame],
     labels: Dict[str, str],
@@ -804,6 +849,8 @@ def case_control_table(
     pangu_tag: str,
     numerical_tags: Sequence[str],
     features: Sequence[str],
+    bootstrap_iters: int,
+    bootstrap_seed: int,
 ) -> pd.DataFrame:
     if not eval_dir:
         return pd.DataFrame()
@@ -823,7 +870,9 @@ def case_control_table(
         if num_eval is None:
             print(f"[warn] missing per_sample_{num_tag}.csv; skip this numerical source.", file=sys.stderr)
             continue
-        num_eval = num_eval[["_key", "y_cls", "pred"]].rename(columns={"pred": "num_pred", "y_cls": "y_cls_num"})
+        num_eval = num_eval[["_key", "time", "y_cls", "pred"]].rename(
+            columns={"time": "valid_time", "pred": "num_pred", "y_cls": "y_cls_num"}
+        )
         merged = num_eval.merge(pangu_eval, on="_key", how="inner")
         if merged.empty:
             continue
@@ -871,6 +920,20 @@ def case_control_table(
                     else np.full(len(sub), np.nan)
                 )
                 finite = np.isfinite(num_v) | np.isfinite(pangu_v)
+                diff_num = pangu_v - num_v
+                diff_ref = pangu_v - ref_v
+                num_lo, num_hi = date_block_mean_ci(
+                    diff_num,
+                    sub["valid_time"],
+                    bootstrap_iters,
+                    bootstrap_seed + len(rows) * 17,
+                )
+                ref_lo, ref_hi = date_block_mean_ci(
+                    diff_ref,
+                    sub["valid_time"],
+                    bootstrap_iters,
+                    bootstrap_seed + len(rows) * 17 + 3,
+                )
                 rows.append(
                     {
                         "numerical_source": num_tag,
@@ -885,15 +948,19 @@ def case_control_table(
                         "pangu_mean": float(np.nanmean(pangu_v)) if np.isfinite(pangu_v).any() else math.nan,
                         "reference_mean": float(np.nanmean(ref_v)) if np.isfinite(ref_v).any() else math.nan,
                         "pangu_minus_numerical": (
-                            float(np.nanmean(pangu_v - num_v))
-                            if np.isfinite(pangu_v - num_v).any()
+                            float(np.nanmean(diff_num))
+                            if np.isfinite(diff_num).any()
                             else math.nan
                         ),
+                        "pangu_minus_numerical_ci_low": num_lo,
+                        "pangu_minus_numerical_ci_high": num_hi,
                         "pangu_minus_reference": (
-                            float(np.nanmean(pangu_v - ref_v))
-                            if np.isfinite(pangu_v - ref_v).any()
+                            float(np.nanmean(diff_ref))
+                            if np.isfinite(diff_ref).any()
                             else math.nan
                         ),
+                        "pangu_minus_reference_ci_low": ref_lo,
+                        "pangu_minus_reference_ci_high": ref_hi,
                     }
                 )
     return pd.DataFrame(rows)
@@ -901,31 +968,68 @@ def case_control_table(
 
 def savefig_all(fig: plt.Figure, out_dir: Path, stem: str) -> None:
     for ext in ("png", "pdf", "svg"):
-        fig.savefig(out_dir / f"{stem}.{ext}", dpi=220, bbox_inches="tight")
+        fig.savefig(out_dir / f"{stem}.{ext}", dpi=600 if ext == "png" else None, bbox_inches="tight")
+    fig.savefig(out_dir / f"{stem}.tiff", dpi=600, bbox_inches="tight")
+
+
+def set_plot_style() -> None:
+    plt.rcParams.update(
+        {
+            "font.family": "sans-serif",
+            "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans", "sans-serif"],
+            "svg.fonttype": "none",
+            "pdf.fonttype": 42,
+            "font.size": 8,
+            "axes.labelsize": 8,
+            "axes.titlesize": 9,
+            "axes.spines.top": False,
+            "axes.spines.right": False,
+            "axes.linewidth": 0.8,
+            "legend.frameon": False,
+            "legend.fontsize": 7.5,
+            "xtick.labelsize": 7.5,
+            "ytick.labelsize": 7.5,
+        }
+    )
 
 
 def plot_reference_quality(df: pd.DataFrame, out_dir: Path) -> None:
     sub = df[(df["scope"] == "all") & (df["feature"].isin(["Q_1000", "DP_1000", "Q1000_MINUS_Q925"]))].copy()
     if sub.empty:
         return
-    labels = sub["source_label"].drop_duplicates().tolist()
     features = [f for f in ["Q_1000", "DP_1000", "Q1000_MINUS_Q925"] if f in set(sub["feature"])]
-    x = np.arange(len(labels))
-    width = 0.8 / max(len(features), 1)
-    fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.2), sharex=True)
-    for j, feat in enumerate(features):
+    labels = sub["source_label"].drop_duplicates().tolist()
+    set_plot_style()
+    fig, axes = plt.subplots(len(features), 2, figsize=(7.2, 2.0 + 1.55 * len(features)), squeeze=False)
+    y = np.arange(len(labels))
+    for row_idx, feat in enumerate(features):
         cur = sub[sub["feature"] == feat].set_index("source_label").reindex(labels)
-        axes[0].bar(x + (j - (len(features) - 1) / 2) * width, cur["mae"], width, label=FEATURE_META.get(feat, {}).get("label", feat))
-        axes[1].bar(x + (j - (len(features) - 1) / 2) * width, cur["p95_delta"], width, label=FEATURE_META.get(feat, {}).get("label", feat))
-    axes[0].set_ylabel("MAE vs ERA5 reference")
-    axes[1].set_ylabel("P95(source) - P95(reference)")
-    for ax in axes:
-        ax.axhline(0.0, color="0.3", lw=0.8)
-        ax.set_xticks(x)
-        ax.set_xticklabels(labels, rotation=30, ha="right")
-        ax.grid(axis="y", alpha=0.25)
-    axes[0].legend(frameon=False, fontsize=8)
-    fig.suptitle("Q1000 reference-analysis quality")
+        unit = str(FEATURE_META.get(feat, {}).get("unit", ""))
+        for idx, label in enumerate(labels):
+            source = str(cur.loc[label, "source"])
+            style = source_style(source, label)
+            for col_idx, metric in enumerate(("mae", "p95_delta")):
+                value = float(cur.loc[label, metric])
+                lo = float(cur.loc[label, f"{metric}_ci_low"]) if f"{metric}_ci_low" in cur else math.nan
+                hi = float(cur.loc[label, f"{metric}_ci_high"]) if f"{metric}_ci_high" in cur else math.nan
+                xerr = np.array([[value - lo], [hi - value]]) if np.isfinite(lo) and np.isfinite(hi) else None
+                axes[row_idx, col_idx].errorbar(
+                    value, idx, xerr=xerr, fmt=style["marker"], ms=5.2,
+                    color=style["color"], capsize=2.4, lw=1.0,
+                )
+        feature_label = FEATURE_META.get(feat, {}).get("label", feat)
+        axes[row_idx, 0].set_ylabel(str(feature_label))
+        axes[row_idx, 0].set_xlabel(f"MAE ({unit}; lower is better)")
+        axes[row_idx, 1].set_xlabel(f"P95 source - reference ({unit})")
+        axes[row_idx, 1].axvline(0.0, color="#202124", lw=0.8)
+        for ax in axes[row_idx]:
+            ax.set_yticks(y)
+            ax.set_yticklabels(labels if ax is axes[row_idx, 0] else [])
+            ax.invert_yaxis()
+    axes[0, 0].set_title("a  Overall agreement with ERA5 reference")
+    axes[0, 1].set_title("b  Upper-tail displacement")
+    fig.suptitle("Low-level moisture quality on the common sample", fontsize=10, y=1.01)
+    fig.tight_layout()
     savefig_all(fig, out_dir, "fig_q1000_reference_quality")
     plt.close(fig)
 
@@ -934,24 +1038,44 @@ def plot_informativeness(df: pd.DataFrame, out_dir: Path) -> None:
     sub = df[df["feature"].isin(["Q_1000", "DP_1000", "Q1000_MINUS_Q925"])].copy()
     if sub.empty:
         return
-    labels = sub["source_label"].drop_duplicates().tolist()
     features = [f for f in ["Q_1000", "DP_1000", "Q1000_MINUS_Q925"] if f in set(sub["feature"])]
+    labels = sub["source_label"].drop_duplicates().tolist()
+    set_plot_style()
+    fig, axes = plt.subplots(len(features), 2, figsize=(7.2, 2.0 + 1.55 * len(features)), squeeze=False)
     x = np.arange(len(labels))
-    width = 0.8 / max(len(features), 1)
-    fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.2), sharex=True)
-    for j, feat in enumerate(features):
+    colors = [source_style(str(sub[sub["source_label"] == label]["source"].iloc[0]), label)["color"] for label in labels]
+    for row_idx, feat in enumerate(features):
         cur = sub[sub["feature"] == feat].set_index("source_label").reindex(labels)
-        axes[0].bar(x + (j - (len(features) - 1) / 2) * width, cur["ap"], width, label=FEATURE_META.get(feat, {}).get("label", feat))
-        axes[1].bar(x + (j - (len(features) - 1) / 2) * width, cur["monthly_enrichment_ratio"], width, label=FEATURE_META.get(feat, {}).get("label", feat))
-    axes[0].set_ylabel("Average precision for low-vis")
-    axes[1].set_ylabel("Monthly top-decile enrichment")
-    axes[1].axhline(1.0, color="0.3", lw=0.8)
-    for ax in axes:
-        ax.set_xticks(x)
-        ax.set_xticklabels(labels, rotation=30, ha="right")
-        ax.grid(axis="y", alpha=0.25)
-    axes[0].legend(frameon=False, fontsize=8)
-    fig.suptitle("Q1000 low-visibility informativeness")
+        for col_idx, metric in enumerate(("ap", "monthly_enrichment_ratio")):
+            values = cur[metric].to_numpy(dtype=float)
+            lo_col = f"{metric}_ci_low"
+            hi_col = f"{metric}_ci_high"
+            if lo_col in cur and hi_col in cur:
+                lo = cur[lo_col].to_numpy(dtype=float)
+                hi = cur[hi_col].to_numpy(dtype=float)
+                valid = np.isfinite(values) & np.isfinite(lo) & np.isfinite(hi)
+                yerr = np.vstack([np.where(valid, values - lo, 0.0), np.where(valid, hi - values, 0.0)])
+            else:
+                yerr = None
+            axes[row_idx, col_idx].bar(
+                x,
+                values,
+                color=colors,
+                width=0.68,
+                yerr=yerr,
+                error_kw={"ecolor": "#202124", "elinewidth": 0.8, "capsize": 2},
+            )
+        axes[row_idx, 1].axhline(1.0, color="#202124", lw=0.8)
+        axes[row_idx, 0].set_ylabel(str(FEATURE_META.get(feat, {}).get("label", feat)))
+        for ax in axes[row_idx]:
+            ax.set_xticks(x)
+            ax.set_xticklabels(labels, rotation=26, ha="right")
+        axes[row_idx, 0].set_ylim(bottom=0)
+        axes[row_idx, 1].set_ylim(bottom=0)
+    axes[0, 0].set_title("a  Average precision for observed low visibility")
+    axes[0, 1].set_title("b  Monthly top-decile enrichment")
+    fig.suptitle("Low-visibility information retained by moisture variables", fontsize=10, y=1.01)
+    fig.tight_layout()
     savefig_all(fig, out_dir, "fig_q1000_lowvis_enrichment")
     plt.close(fig)
 
@@ -959,32 +1083,40 @@ def plot_informativeness(df: pd.DataFrame, out_dir: Path) -> None:
 def plot_case_control(df: pd.DataFrame, out_dir: Path) -> None:
     if df.empty:
         return
-    sub = df[
-        (df["case"] == "numerical_hit_pangu_miss")
-        & (df["feature"].isin(["Q_1000", "DP_1000", "Q1000_MINUS_Q925"]))
-    ].copy()
+    sub = df[df["feature"].isin(["Q_1000", "DP_1000", "Q1000_MINUS_Q925"])].copy()
     if sub.empty:
         return
-    labels = sub["numerical_label"].drop_duplicates().tolist()
     features = [f for f in ["Q_1000", "DP_1000", "Q1000_MINUS_Q925"] if f in set(sub["feature"])]
-    x = np.arange(len(labels))
-    width = 0.8 / max(len(features), 1)
-    fig, ax = plt.subplots(figsize=(8.5, 4.2))
-    for j, feat in enumerate(features):
-        cur = sub[sub["feature"] == feat].set_index("numerical_label").reindex(labels)
-        ax.bar(
-            x + (j - (len(features) - 1) / 2) * width,
-            cur["pangu_minus_numerical"],
-            width,
-            label=FEATURE_META.get(feat, {}).get("label", feat),
-        )
-    ax.axhline(0.0, color="0.3", lw=0.8)
-    ax.set_ylabel("Pangu - numerical source")
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=30, ha="right")
-    ax.grid(axis="y", alpha=0.25)
-    ax.legend(frameon=False, fontsize=8)
-    ax.set_title("Pangu misses where numerical-source model hits")
+    numerical_labels = sub["numerical_label"].drop_duplicates().tolist()
+    cases = [case for case in CASE_LABELS if case in set(sub["case"])]
+    set_plot_style()
+    fig, axes = plt.subplots(len(features), 1, figsize=(7.2, 1.8 + 1.65 * len(features)), squeeze=False)
+    x = np.arange(len(cases))
+    offsets = np.linspace(-0.18, 0.18, max(len(numerical_labels), 1))
+    for row_idx, feat in enumerate(features):
+        ax = axes[row_idx, 0]
+        for offset, numerical_label in zip(offsets, numerical_labels):
+            cur = sub[(sub["feature"] == feat) & (sub["numerical_label"] == numerical_label)].set_index("case").reindex(cases)
+            source_tag = str(cur["numerical_source"].dropna().iloc[0]) if cur["numerical_source"].notna().any() else numerical_label
+            style = source_style(source_tag, numerical_label)
+            values = cur["pangu_minus_numerical"].to_numpy(dtype=float)
+            lo = cur["pangu_minus_numerical_ci_low"].to_numpy(dtype=float) if "pangu_minus_numerical_ci_low" in cur else np.full(len(cur), np.nan)
+            hi = cur["pangu_minus_numerical_ci_high"].to_numpy(dtype=float) if "pangu_minus_numerical_ci_high" in cur else np.full(len(cur), np.nan)
+            valid_ci = np.isfinite(values) & np.isfinite(lo) & np.isfinite(hi)
+            yerr = np.vstack([np.where(valid_ci, values - lo, 0.0), np.where(valid_ci, hi - values, 0.0)])
+            ax.errorbar(
+                x + offset, values, yerr=yerr, linestyle="none",
+                marker=style["marker"], ms=5.2, color=style["color"],
+                capsize=2.2, lw=0.9, label=numerical_label,
+            )
+        unit = str(FEATURE_META.get(feat, {}).get("unit", ""))
+        ax.axhline(0.0, color="#202124", lw=0.8)
+        ax.set_ylabel(f"{FEATURE_META.get(feat, {}).get('label', feat)}\nPangu - numerical ({unit})")
+        ax.set_xticks(x)
+        ax.set_xticklabels([CASE_LABELS[case] for case in cases])
+    axes[0, 0].legend(ncol=min(3, len(numerical_labels)), loc="best")
+    fig.suptitle("Moisture differences conditional on low-visibility forecast outcomes", fontsize=10, y=1.01)
+    fig.tight_layout()
     savefig_all(fig, out_dir, "fig_q1000_pangu_case_control")
     plt.close(fig)
 
@@ -1003,6 +1135,7 @@ def write_summary(
     lines.append(f"- Common valid-time/station subset size: {common_n}")
     lines.append(f"- ERA5 handling: `{args.reference_source}` is used as reference analysis, not truth.")
     lines.append("- Pangu handling: no RH2M is derived from Q_1000; only Q_1000, DP_1000 and Q_1000-Q_925 are analyzed.")
+    lines.append("- DP1000 is treated as a monotonic moisture-coordinate consistency check at fixed pressure, not as evidence independent of Q1000.")
     lines.append(f"- Bootstrap iterations: {args.bootstrap_iters}")
     lines.append("")
     lines.append("## Outputs")
@@ -1021,6 +1154,8 @@ def write_summary(
     lines.append("## Method references for manuscript text")
     lines.append("")
     lines.append("- ERA5 reference analysis: Hersbach et al. 2020, QJRMS, doi:10.1002/qj.3803.")
+    lines.append("- Distribution distance: Panaretos and Zemel 2019, Annual Review of Statistics and Its Application, doi:10.1146/annurev-statistics-030718-104938.")
+    lines.append("- ROC/AP interpretation: Mason and Graham 2002, QJRMS, doi:10.1256/003590002320603584; Saito and Rehmsmeier 2015, PLOS ONE, doi:10.1371/journal.pone.0118432.")
     lines.append("- Model reliance / grouped permutation: Fisher, Rudin and Dominici 2019, JMLR 20:177.")
     lines.append("- Conditional permutation under correlated predictors: Strobl et al. 2008, BMC Bioinformatics 9:307.")
     lines.append("- ALE curves for correlated features: Apley and Zhu 2020, JRSS-B 82:1059-1086.")
@@ -1095,6 +1230,8 @@ def main() -> None:
         args.pangu_tag,
         numerical_tags,
         features,
+        args.bootstrap_iters,
+        args.bootstrap_seed,
     )
 
     quality.to_csv(out_dir / "q1000_reference_quality_metrics.csv", index=False)
