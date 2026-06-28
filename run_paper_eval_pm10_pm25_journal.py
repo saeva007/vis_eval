@@ -1223,7 +1223,7 @@ def plot_confusion_pmst_vs_ifs(
         else:
             ax.tick_params(axis="y", which="both", left=False, labelleft=False)
         ax.set_xlabel("Predicted class")
-        ax.set_title(title, pad=10)
+        ax.set_title(title, pad=28)
         for i in range(3):
             for j in range(3):
                 txt = f"{cm_norm[i, j]:.2f}\n{cm[i, j]:,}"
@@ -1235,20 +1235,22 @@ def plot_confusion_pmst_vs_ifs(
                     1.0,
                     1.0,
                     fill=False,
-                    edgecolor="#238443",
-                    linewidth=2.0,
+                    edgecolor="#16783F",
+                    linewidth=3.2,
                     zorder=5,
                 )
             )
+        low_vis_box_pad = 0.14
         ax.add_patch(
             Rectangle(
-                (-0.5, -0.5),
-                3.0,
-                2.0,
+                (-0.5 - low_vis_box_pad, -0.5 - low_vis_box_pad),
+                3.0 + 2.0 * low_vis_box_pad,
+                2.0 + 2.0 * low_vis_box_pad,
                 fill=False,
-                edgecolor="#238443",
-                linewidth=2.0,
-                linestyle=(0, (4, 2)),
+                edgecolor="#16783F",
+                linewidth=2.8,
+                linestyle=(0, (5, 3)),
+                clip_on=False,
                 zorder=6,
             )
         )
@@ -2563,12 +2565,12 @@ def plot_fig11_lead_init(
         return
     fig, axes = plt.subplots(2, 3, figsize=(13.4, 7.8), sharex=True)
     specs = [
-        ("Fog_CSI", "Ultra-low CSI"),
-        ("Fog_R", "Ultra-low recall"),
-        ("Mist_CSI", "Moderate-low CSI"),
-        ("Mist_R", "Moderate-low recall"),
-        ("low_vis_csi", "Low-vis event CSI"),
-        ("low_vis_recall", "Low-vis event recall"),
+        ("Fog_CSI", "Ultra-low", "CSI"),
+        ("Mist_CSI", "Moderate-low", "CSI"),
+        ("low_vis_csi", "Low-vis event", "CSI"),
+        ("Fog_R", "Ultra-low", "Recall"),
+        ("Mist_R", "Moderate-low", "Recall"),
+        ("low_vis_recall", "Low-vis event", "Recall"),
     ]
     for ax, (metric, title), letter in zip(axes.ravel(), specs, "abcdef"):
         plotted = False
@@ -2983,12 +2985,12 @@ def plot_fig11_48h_model_vs_ifs(
         return
     setup_journal_style()
     specs = [
-        ("Fog_CSI", "Ultra-low CSI"),
-        ("Fog_R", "Ultra-low recall"),
-        ("Mist_CSI", "Moderate-low CSI"),
-        ("Mist_R", "Moderate-low recall"),
-        ("low_vis_csi", "Low-vis event CSI"),
-        ("low_vis_recall", "Low-vis event recall"),
+        ("Fog_CSI", "Ultra-low", "CSI"),
+        ("Mist_CSI", "Moderate-low", "CSI"),
+        ("low_vis_csi", "Low-vis event", "CSI"),
+        ("Fog_R", "Ultra-low", "Recall"),
+        ("Mist_R", "Moderate-low", "Recall"),
+        ("low_vis_recall", "Low-vis event", "Recall"),
     ]
 
     def _adaptive_ylim(values: Sequence[float]) -> float:
@@ -3006,7 +3008,8 @@ def plot_fig11_48h_model_vs_ifs(
         return min(1.0, max(step * 3, math.ceil(padded / step) * step))
 
     fig, axes = plt.subplots(2, 3, figsize=(13.4, 7.8), sharex=True)
-    for ax, (metric, title), letter in zip(axes.ravel(), specs, "abcdef"):
+    for panel_idx, (ax, (metric, category, score_name), letter) in enumerate(zip(axes.ravel(), specs, "abcdef")):
+        row_idx, col_idx = divmod(panel_idx, 3)
         model_col = f"{metric}_model"
         ifs_col = f"{metric}_ifs"
         panel_values: List[float] = []
@@ -3042,9 +3045,12 @@ def plot_fig11_48h_model_vs_ifs(
             ) or plotted
         if not plotted:
             ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center", color="#6B7280")
-        ax.set_title(title)
-        ax.set_xlabel("Display lead time (h)")
-        ax.set_ylabel("Score")
+        ax.set_title(category if row_idx == 0 else "", pad=9)
+        if row_idx == 1:
+            ax.set_xlabel("Display lead time (h)")
+        else:
+            ax.tick_params(axis="x", labelbottom=False)
+        ax.set_ylabel(score_name if col_idx == 0 else "")
         ax.set_ylim(-0.02, _adaptive_ylim(panel_values))
         ax.set_xlim(-0.5, 48.5)
         if mark_filled_segment:
@@ -3107,10 +3113,10 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
     setup_journal_style()
     specs = [
         ("Fog_CSI", "Ultra-low CSI"),
-        ("Fog_R", "Ultra-low recall"),
         ("Mist_CSI", "Moderate-low CSI"),
-        ("Mist_R", "Moderate-low recall"),
         ("low_vis_csi", "Low-vis event CSI"),
+        ("Fog_R", "Ultra-low recall"),
+        ("Mist_R", "Moderate-low recall"),
         ("low_vis_recall", "Low-vis event recall"),
     ]
     lead_col = "display_lead_hour" if "display_lead_hour" in cmp_df else "lead_hour"
@@ -3166,6 +3172,32 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
 
     norm_matrix = np.full_like(matrix, np.nan, dtype=float)
     row_scales = np.full(len(specs), np.nan, dtype=float)
+    row_min_pp = np.full(len(specs), np.nan, dtype=float)
+    row_max_pp = np.full(len(specs), np.nan, dtype=float)
+
+    def _signed_within_row_display(values: np.ndarray) -> np.ndarray:
+        """Spread each sign separately while keeping zero neutral and sign meaningful."""
+
+        out = np.full_like(values, np.nan, dtype=float)
+        finite = np.isfinite(values)
+        out[finite & (values == 0)] = 0.0
+        for sign in (1.0, -1.0):
+            mask = finite & ((values * sign) > 0)
+            if not np.any(mask):
+                continue
+            magnitudes = np.abs(values[mask])
+            lo = float(np.nanmin(magnitudes))
+            hi = float(np.nanmax(magnitudes))
+            if not np.isfinite(hi) or hi <= 0:
+                continue
+            floor = min(0.18, lo / hi)
+            if math.isclose(lo, hi, rel_tol=1e-12, abs_tol=1e-12):
+                scaled = np.full_like(magnitudes, 0.65)
+            else:
+                scaled = floor + (1.0 - floor) * (magnitudes - lo) / (hi - lo)
+            out[mask] = sign * scaled
+        return out
+
     for row_idx in range(len(specs)):
         row_vals = matrix[row_idx, :]
         row_finite = row_vals[np.isfinite(row_vals)]
@@ -3175,13 +3207,31 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
         if not np.isfinite(row_scale) or row_scale <= 0:
             row_scale = 1.0
         row_scales[row_idx] = row_scale
-        norm_matrix[row_idx, :] = np.clip(row_vals / row_scale, -1.0, 1.0)
+        row_min_pp[row_idx] = float(np.nanmin(row_finite))
+        row_max_pp[row_idx] = float(np.nanmax(row_finite))
+        norm_matrix[row_idx, :] = _signed_within_row_display(row_vals)
     scale_by_metric = {metric: row_scales[idx] for idx, (metric, _) in enumerate(specs)}
+    min_by_metric = {metric: row_min_pp[idx] for idx, (metric, _) in enumerate(specs)}
+    max_by_metric = {metric: row_max_pp[idx] for idx, (metric, _) in enumerate(specs)}
     for row in source_rows:
-        scale = float(scale_by_metric.get(str(row.get("metric")), math.nan))
+        metric = str(row.get("metric"))
+        scale = float(scale_by_metric.get(metric, math.nan))
         row["row_normalization_scale_pp"] = scale
         delta = float(row.get("skill_delta_percentage_points", math.nan))
         row["row_normalized_skill_delta"] = float(np.clip(delta / scale, -1.0, 1.0)) if np.isfinite(delta) and np.isfinite(scale) and scale > 0 else math.nan
+        row["row_display_min_pp"] = float(min_by_metric.get(metric, math.nan))
+        row["row_display_max_pp"] = float(max_by_metric.get(metric, math.nan))
+    display_by_metric_lead = {
+        (metric, float(lead)): float(norm_matrix[row_idx, col_idx])
+        for row_idx, (metric, _) in enumerate(specs)
+        for col_idx, lead in enumerate(leads)
+        if np.isfinite(norm_matrix[row_idx, col_idx])
+    }
+    for row in source_rows:
+        row["within_row_display_value"] = display_by_metric_lead.get(
+            (str(row.get("metric")), float(row.get("display_lead_hour", math.nan))),
+            math.nan,
+        )
     pd.DataFrame(source_rows).to_csv(source_path, index=False, float_format="%.6f")
 
     cmap = _pmst_ifs_delta_cmap()
@@ -3189,7 +3239,7 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
     extend = "neither"
     cmap.set_bad("#ECEFF3")
 
-    fig, ax = plt.subplots(figsize=(12.2, 5.2))
+    fig, ax = plt.subplots(figsize=(13.2, 5.35))
     x_edges = _lead_center_edges(leads)
     y_edges = np.arange(len(specs) + 1, dtype=float) - 0.5
     mesh = ax.pcolormesh(
@@ -3199,8 +3249,8 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
         cmap=cmap,
         norm=norm,
         shading="flat",
-        linewidth=0.15,
-        edgecolors="#F8FAFC",
+        linewidth=0.0,
+        edgecolors="none",
     )
     ax.set_ylim(len(specs) - 0.5, -0.5)
     ax.set_yticks(np.arange(len(specs)))
@@ -3209,17 +3259,43 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
     if major_ticks:
         ax.set_xticks(major_ticks)
     ax.set_xlabel("Display lead time (h)")
-    ax.set_title("48h lead-time skill gain over IFS", fontsize=12, fontweight="bold", pad=8)
-    for sep in (1.5, 3.5):
-        ax.axhline(sep, color="#334155", lw=0.7, alpha=0.75)
-    for lead_line in (12, 24, 36):
+    ax.set_title("48 h lead-time skill gain over IFS", fontsize=12, fontweight="bold", pad=21)
+    if float(np.nanmin(finite_vals)) > 0:
+        ax.text(
+            0.5,
+            1.035,
+            "PMST outperforms IFS at every evaluated lead hour",
+            transform=ax.transAxes,
+            ha="center",
+            va="bottom",
+            fontsize=9.3,
+            color="#1F4E79",
+        )
+    ax.axhline(2.5, color="#334155", lw=1.1, alpha=0.82)
+    for lead_line in (6, 12, 18, 24, 30, 36, 42):
         if leads.min() <= lead_line <= leads.max():
-            ax.axvline(lead_line, color="#334155", lw=0.55, alpha=0.38)
+            ax.axvline(lead_line, color="#F8FAFC", lw=0.8, alpha=0.78)
     ax.tick_params(axis="both", labelsize=9.5)
     ax.grid(False)
     for spine in ax.spines.values():
         spine.set_color("#111827")
         spine.set_linewidth(0.75)
+
+    ax.text(1.012, 1.035, "Raw gain range", transform=ax.transAxes, ha="left", va="bottom", fontsize=8.6, fontweight="bold")
+    for row_idx in range(len(specs)):
+        if not np.isfinite(row_min_pp[row_idx]) or not np.isfinite(row_max_pp[row_idx]):
+            continue
+        ax.text(
+            1.012,
+            row_idx,
+            f"{row_min_pp[row_idx]:+.1f} to {row_max_pp[row_idx]:+.1f} pp",
+            transform=ax.get_yaxis_transform(),
+            ha="left",
+            va="center",
+            fontsize=8.2,
+            color="#334155",
+            clip_on=False,
+        )
 
     cb = fig.colorbar(mesh, ax=ax, orientation="horizontal", fraction=0.075, pad=0.20, extend=extend)
     cb.set_ticks(np.linspace(-1.0, 1.0, 5))
@@ -3243,17 +3319,8 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
         fontsize=9,
         color="#08306B",
     )
-    cb.set_label("Row-normalized PMST - IFS diagnostic VIS skill gain", fontsize=9.5, labelpad=8)
-    fig.text(
-        0.995,
-        0.01,
-        "Each metric row is scaled by its own maximum absolute percentage-point delta; source data retain raw deltas.",
-        ha="right",
-        va="bottom",
-        fontsize=9,
-        color="#475569",
-    )
-    finish_figure_layout(fig, rect=(0.04, 0.12, 0.98, 0.96), h_pad=1.2)
+    cb.set_label("Within-metric normalized PMST - IFS diagnostic VIS skill gain", fontsize=9.5, labelpad=8)
+    finish_figure_layout(fig, rect=(0.04, 0.08, 0.87, 0.94), h_pad=1.0)
     save_fig_pair(
         fig,
         out_dir,
@@ -3262,9 +3329,10 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
         [*sources, str(source_path)],
         notes=(
             "Heat map of 48h lead-time PMST minus IFS diagnostic VIS skill gain; "
-            "rows are CSI/recall metrics, columns are display lead hours, and each "
-            "row is normalized by its own maximum absolute percentage-point delta "
-            "so small-magnitude metrics remain visible on a fixed -1 to +1 scale."
+            "rows are ordered as CSI then recall metrics, columns are display lead hours, "
+            "and colour uses sign-preserving within-row range normalization so temporal "
+            "variation remains visible on a fixed -1 to +1 display scale. Raw percentage-"
+            "point gain ranges are printed beside each row and retained in source data."
         ),
     )
 
