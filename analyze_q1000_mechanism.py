@@ -172,6 +172,13 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--bootstrap_iters", type=int, default=0)
     ap.add_argument("--bootstrap_seed", type=int, default=20260626)
     ap.add_argument("--min_pairs", type=int, default=100)
+    ap.add_argument("--density_bins", type=int, default=320)
+    ap.add_argument("--density_smooth_sigma_bins", type=float, default=1.5)
+    ap.add_argument(
+        "--distribution_only",
+        action="store_true",
+        help="Only write the paired Q1000/DP1000 probability-distribution figure and source-data tables.",
+    )
     return ap.parse_args()
 
 
@@ -1268,6 +1275,199 @@ def set_plot_style() -> None:
     )
 
 
+def _smooth_histogram_density(
+    values: np.ndarray,
+    edges: np.ndarray,
+    sigma_bins: float,
+) -> Tuple[np.ndarray, np.ndarray, int]:
+    vals = np.asarray(values, dtype=np.float64)
+    vals = vals[np.isfinite(vals)]
+    counts, _ = np.histogram(vals, bins=edges)
+    centers = (edges[:-1] + edges[1:]) / 2.0
+    width = float(edges[1] - edges[0])
+    in_range_n = int(counts.sum())
+    if in_range_n <= 0 or width <= 0:
+        return centers, np.full(len(centers), np.nan, dtype=np.float64), in_range_n
+    density = counts.astype(np.float64) / (in_range_n * width)
+    sigma = float(sigma_bins)
+    if sigma > 0:
+        radius = max(1, int(math.ceil(4.0 * sigma)))
+        offsets = np.arange(-radius, radius + 1, dtype=np.float64)
+        kernel = np.exp(-0.5 * (offsets / sigma) ** 2)
+        kernel /= kernel.sum()
+        density = np.convolve(density, kernel, mode="same")
+        if hasattr(np, "trapezoid"):
+            area = float(np.trapezoid(density, centers))
+        else:
+            area = float(np.trapz(density, centers))
+        if np.isfinite(area) and area > 0:
+            density /= area
+    return centers, density, in_range_n
+
+
+def _distribution_display_label(tag: str, label: str, reference_source: str) -> str:
+    text = f"{tag} {label}".lower()
+    if tag == reference_source or "era5" in text:
+        return "ERA5 reference analysis"
+    if "pangu" in text:
+        return "Pangu-2025"
+    if "tianji" in text:
+        return "Tianji"
+    if "ifs" in text:
+        return "IFS"
+    return label
+
+
+def plot_probability_distributions(
+    common: Dict[str, pd.DataFrame],
+    labels: Dict[str, str],
+    reference_source: str,
+    out_dir: Path,
+    bins: int,
+    smooth_sigma_bins: float,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    features = [feat for feat in ("Q_1000", "DP_1000") if any(feat in df for df in common.values())]
+    if not features:
+        return pd.DataFrame(), pd.DataFrame()
+    family_rank = {"tianji": 0, "ifs": 1, "pangu": 2, "era5": 3}
+
+    def order_key(tag: str) -> Tuple[int, str]:
+        text = f"{tag} {labels.get(tag, tag)}".lower()
+        rank = next((family_rank[name] for name in family_rank if name in text), 99)
+        return rank, tag
+
+    source_order = sorted(common, key=order_key)
+    line_styles = {"tianji": "-", "ifs": "--", "pangu": "-.", "era5": "-"}
+    set_plot_style()
+    fig, axes = plt.subplots(len(features), 1, figsize=(7.2, 2.35 * len(features) + 0.7), squeeze=False)
+    density_rows: List[Dict[str, object]] = []
+    quantile_rows: List[Dict[str, object]] = []
+
+    for feature_i, feat in enumerate(features):
+        ax = axes[feature_i, 0]
+        source_values: Dict[str, np.ndarray] = {}
+        lower_candidates: List[float] = []
+        upper_candidates: List[float] = []
+        for tag in source_order:
+            if feat not in common[tag]:
+                continue
+            values = common[tag][feat].to_numpy(dtype=np.float64)
+            values = values[np.isfinite(values)]
+            if values.size == 0:
+                continue
+            source_values[tag] = values
+            lower_candidates.append(float(np.nanpercentile(values, 0.05)))
+            upper_candidates.append(float(np.nanpercentile(values, 99.95)))
+        if not source_values:
+            ax.set_axis_off()
+            continue
+        lo = min(lower_candidates)
+        hi = max(upper_candidates)
+        valid_range = FEATURE_META.get(feat, {}).get("valid")
+        span = max(hi - lo, 1.0e-6)
+        lo -= 0.035 * span
+        hi += 0.035 * span
+        if valid_range is not None:
+            lo = max(lo, float(valid_range[0]))
+            hi = min(hi, float(valid_range[1]))
+        if hi <= lo:
+            hi = lo + 1.0
+        edges = np.linspace(lo, hi, max(int(bins), 40) + 1)
+        curves: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
+        for tag in source_order:
+            if tag not in source_values:
+                continue
+            centers, density, in_range_n = _smooth_histogram_density(
+                source_values[tag], edges, smooth_sigma_bins
+            )
+            curves[tag] = (centers, density)
+            label = _distribution_display_label(tag, labels.get(tag, tag), reference_source)
+            style = source_style(tag, labels.get(tag, tag))
+            family = next((name for name in line_styles if name in f"{tag} {label}".lower()), "era5")
+            is_reference = tag == reference_source or "era5" in f"{tag} {label}".lower()
+            if is_reference:
+                ax.fill_between(centers, 0.0, density, color=style["color"], alpha=0.10, linewidth=0)
+            ax.plot(
+                centers,
+                density,
+                color=style["color"],
+                linestyle=line_styles[family],
+                linewidth=2.05 if is_reference else 1.75,
+                label=label,
+                zorder=3 if is_reference else 4,
+            )
+            quantiles = np.nanpercentile(source_values[tag], [50, 90, 95, 99])
+            quantile_rows.append(
+                {
+                    "feature": feat,
+                    "feature_label": FEATURE_META.get(feat, {}).get("label", feat),
+                    "unit": FEATURE_META.get(feat, {}).get("unit", ""),
+                    "source": tag,
+                    "source_label": label,
+                    "n": int(len(source_values[tag])),
+                    "displayed_n": int(in_range_n),
+                    "p50": float(quantiles[0]),
+                    "p90": float(quantiles[1]),
+                    "p95": float(quantiles[2]),
+                    "p99": float(quantiles[3]),
+                    "display_min": float(lo),
+                    "display_max": float(hi),
+                }
+            )
+            p95_y = float(np.interp(quantiles[2], centers, density))
+            ax.scatter(
+                [quantiles[2]],
+                [p95_y],
+                marker="v",
+                s=25,
+                facecolor=style["color"],
+                edgecolor="white",
+                linewidth=0.45,
+                zorder=6,
+            )
+            for x_value, y_value in zip(centers, density):
+                density_rows.append(
+                    {
+                        "feature": feat,
+                        "feature_label": FEATURE_META.get(feat, {}).get("label", feat),
+                        "unit": FEATURE_META.get(feat, {}).get("unit", ""),
+                        "source": tag,
+                        "source_label": label,
+                        "grid_value": float(x_value),
+                        "probability_density": float(y_value),
+                        "display_min": float(lo),
+                        "display_max": float(hi),
+                        "bin_width": float(edges[1] - edges[0]),
+                    }
+                )
+        unit = "g kg$^{-1}$" if feat == "Q_1000" else "$^{\\circ}$C"
+        long_label = "Specific humidity at 1000 hPa" if feat == "Q_1000" else "Dew-point temperature at 1000 hPa"
+        ax.set_xlim(lo, hi)
+        ax.set_ylim(bottom=0)
+        ax.set_xlabel(f"{long_label} ({unit})")
+        ax.set_ylabel("Probability density")
+        ax.set_title(f"{chr(97 + feature_i)}  {FEATURE_META.get(feat, {}).get('label', feat)} distribution", loc="left", fontweight="bold")
+        ax.text(0.99, 0.92, "triangles: P95", transform=ax.transAxes, ha="right", va="top", fontsize=7, color="#555B66")
+        ax.grid(False)
+    handles, legend_labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        legend_labels,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.005),
+        ncol=min(4, len(legend_labels)),
+        frameon=False,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.93))
+    savefig_all(fig, out_dir, "fig_q1000_dp1000_probability_distribution")
+    plt.close(fig)
+    density_df = pd.DataFrame(density_rows)
+    quantile_df = pd.DataFrame(quantile_rows)
+    density_df.to_csv(out_dir / "q1000_dp1000_probability_density.csv", index=False)
+    quantile_df.to_csv(out_dir / "q1000_dp1000_distribution_quantiles.csv", index=False)
+    return density_df, quantile_df
+
+
 def plot_reference_quality(df: pd.DataFrame, out_dir: Path) -> None:
     sub = df[(df["scope"] == "all") & (df["feature"].isin(["Q_1000", "DP_1000", "Q1000_MINUS_Q925"]))].copy()
     if sub.empty:
@@ -1478,6 +1678,8 @@ def write_summary(
     lines.append("## Outputs")
     lines.append("")
     lines.append("- `q1000_reference_quality_metrics.csv`: paired Q1000/DP1000 metrics against reference analysis.")
+    lines.append("- `q1000_dp1000_probability_density.csv`: common-sample probability-density source data for Q1000 and DP1000.")
+    lines.append("- `q1000_dp1000_distribution_quantiles.csv`: source-specific P50/P90/P95/P99 values used with the distribution figure.")
     lines.append("- `q1000_reference_tail_metrics.csv`: month-wise P90/P95/P99 tail hit/miss diagnostics.")
     lines.append("- `q1000_reference_tail_summary.csv`: seasonally controlled pooled tail hit, miss, false-extreme and tail-magnitude diagnostics.")
     lines.append("- `q1000_extreme_spatiotemporal_metrics.csv`: same-station/same-valid-time extreme verification using exact-reference and quantile-matched monthly thresholds.")
@@ -1570,6 +1772,38 @@ def main() -> None:
     common_keys = common_key_subset(sources)
     common = {tag: filter_common(src, common_keys) for tag, src in sources.items()}
     labels = {src.spec.tag: src.spec.label for src in sources.values()}
+    density, distribution_quantiles = plot_probability_distributions(
+        common,
+        labels,
+        args.reference_source,
+        out_dir,
+        args.density_bins,
+        args.density_smooth_sigma_bins,
+    )
+    if args.distribution_only:
+        with open(out_dir / "q1000_distribution_run_config.json", "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "sources": [
+                        {"tag": s.tag, "data_dir": str(s.data_dir), "label": s.label, "group": s.group}
+                        for s in specs
+                    ],
+                    "reference_source": args.reference_source,
+                    "features": ["Q_1000", "DP_1000"],
+                    "common_sample_count": len(common_keys),
+                    "limit_samples": args.limit_samples,
+                    "density_bins": args.density_bins,
+                    "density_smooth_sigma_bins": args.density_smooth_sigma_bins,
+                    "density_rows": int(len(density)),
+                    "quantile_rows": int(len(distribution_quantiles)),
+                    "display_range": "common across sources, bounded by pooled source P0.05-P99.95 plus 3.5% margin",
+                    "era5": "reference analysis, not truth",
+                },
+                f,
+                indent=2,
+            )
+        print(f"[OK] wrote Q1000/DP1000 probability distributions to {out_dir}", flush=True)
+        return
     label_tag = args.label_source or args.reference_source
     if label_tag not in common:
         label_tag = next(iter(common))
@@ -1651,6 +1885,8 @@ def main() -> None:
                 "bootstrap_iters": args.bootstrap_iters,
                 "bootstrap_seed": args.bootstrap_seed,
                 "require_case_control": args.require_case_control,
+                "density_bins": args.density_bins,
+                "density_smooth_sigma_bins": args.density_smooth_sigma_bins,
                 "method_notes": {
                     "era5": "reference analysis, not truth",
                     "pangu": "no RH2M derived from Q_1000",
