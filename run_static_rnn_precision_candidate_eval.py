@@ -60,7 +60,15 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_targets(args: argparse.Namespace, base: Path) -> List[tuple[str, str, journal.EvalTarget]]:
-    manifest = pd.read_csv(args.manifest, sep="\t", dtype=str).fillna("")
+    manifest_path = Path(args.manifest).expanduser()
+    if not manifest_path.is_absolute() and not manifest_path.is_file():
+        train_relative = base / "train" / manifest_path
+        if train_relative.is_file():
+            manifest_path = train_relative
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"Precision-loss manifest not found: {manifest_path}")
+    args.manifest = str(manifest_path.resolve())
+    manifest = pd.read_csv(manifest_path, sep="\t", dtype=str).fillna("")
     required = {"candidate_id", "candidate_label", "run_id", "s2_checkpoint"}
     missing = required.difference(manifest.columns)
     if missing:

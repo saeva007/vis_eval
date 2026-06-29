@@ -13,16 +13,6 @@
 
 set -euo pipefail
 
-module purge
-module load compiler/devtoolset/7.3.1
-module load mpi/hpcx/2.11.0/gcc-7.3.1
-source /public/home/xichen/ncydata/dtk/dtk-24.04.1/env.sh
-export LD_LIBRARY_PATH=/public/home/xichen/.conda/envs/py310_ppy/openssl/lib:$LD_LIBRARY_PATH
-export CONDA_NO_PLUGINS=true
-export CONDA_SOLVER=classic
-source /public/home/putianshu/miniconda3/bin/activate
-conda activate torch
-
 export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-32}"
 export OPENBLAS_NUM_THREADS="${SLURM_CPUS_PER_TASK:-32}"
@@ -30,7 +20,23 @@ export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-32}"
 
 BASE="${BASE:-/public/home/putianshu/vis_mlp}"
 SCRIPT_PATH="${SCRIPT_PATH:-${BASE}/paper_eval/run_static_rnn_precision_candidate_eval.py}"
-MANIFEST="${MANIFEST:?Set MANIFEST to the precision-loss TSV manifest}"
+PYTHON_BIN="${PYTHON_BIN:-/public/home/putianshu/miniconda3/envs/torch/bin/python}"
+MANIFEST_RAW="${MANIFEST:?Set MANIFEST to the precision-loss TSV manifest}"
+if [[ "${MANIFEST_RAW}" = /* ]]; then
+    MANIFEST="${MANIFEST_RAW}"
+elif [[ -f "${BASE}/train/${MANIFEST_RAW}" ]]; then
+    MANIFEST="${BASE}/train/${MANIFEST_RAW}"
+elif [[ -f "${MANIFEST_RAW}" ]]; then
+    MANIFEST="$(readlink -f "${MANIFEST_RAW}")"
+else
+    echo "ERROR: manifest not found: ${MANIFEST_RAW}" >&2
+    echo "Checked: ${BASE}/train/${MANIFEST_RAW}" >&2
+    exit 2
+fi
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+    echo "ERROR: Python executable not found: ${PYTHON_BIN}" >&2
+    exit 2
+fi
 SPLIT="${SPLIT:-val}"
 OUT_DIR="${OUT_DIR:-${BASE}/static_rnn_precision_candidate_eval/${SPLIT}_${SLURM_JOB_ID}}"
 DEVICE="${DEVICE:-cpu}"
@@ -38,7 +44,7 @@ RUN_EVENT_EVAL="${RUN_EVENT_EVAL:-1}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 CMD=(
-    python "${SCRIPT_PATH}"
+    "${PYTHON_BIN}" "${SCRIPT_PATH}"
     --manifest "${MANIFEST}"
     --split "${SPLIT}"
     --base "${BASE}"
