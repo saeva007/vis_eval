@@ -120,6 +120,14 @@ CLASS_NAMES = ["Ultra-low", "Moderate-low", "Clear"]
 CLASS_LONG = ["Ultra-low (<500 m)", "Moderate-low (500-1000 m)", "Clear (>=1000 m)"]
 CLASS_CMAP = ListedColormap(CLASS_COLORS)
 CLASS_NORM = BoundaryNorm([-0.5, 0.5, 1.5, 2.5], CLASS_CMAP.N)
+FIG11_METRIC_GRID_SPECS = (
+    ("Fog_CSI", "Ultra-low", "CSI"),
+    ("Mist_CSI", "Moderate-low", "CSI"),
+    ("low_vis_csi", "Low-vis event", "CSI"),
+    ("Fog_R", "Ultra-low", "Recall"),
+    ("Mist_R", "Moderate-low", "Recall"),
+    ("low_vis_recall", "Low-vis event", "Recall"),
+)
 LOCAL_TIME_OFFSET_HOURS = 8
 SEASON_MAP = {
     12: "DJF",
@@ -2564,24 +2572,22 @@ def plot_fig11_lead_init(
         print("  [WARN] Empty 48h lead tables; skip init-hour figure.", flush=True)
         return
     fig, axes = plt.subplots(2, 3, figsize=(13.4, 7.8), sharex=True)
-    specs = [
-        ("Fog_CSI", "Ultra-low", "CSI"),
-        ("Mist_CSI", "Moderate-low", "CSI"),
-        ("low_vis_csi", "Low-vis event", "CSI"),
-        ("Fog_R", "Ultra-low", "Recall"),
-        ("Mist_R", "Moderate-low", "Recall"),
-        ("low_vis_recall", "Low-vis event", "Recall"),
-    ]
-    for ax, (metric, title), letter in zip(axes.ravel(), specs, "abcdef"):
+    for panel_idx, (ax, (metric, category, score_name), letter) in enumerate(
+        zip(axes.ravel(), FIG11_METRIC_GRID_SPECS, "abcdef")
+    ):
+        row_idx, col_idx = divmod(panel_idx, 3)
         plotted = False
         plotted = _plot_lead_metric_series(ax, lead_pooled, metric, "#111827", "Pooled", "o", 2.2, 3, distinguish_fill=False) or plotted
         plotted = _plot_lead_metric_series(ax, lead00, metric, "#0F766E", "00Z", "o", 1.5, 4, distinguish_fill=False) or plotted
         plotted = _plot_lead_metric_series(ax, lead12, metric, "#C2410C", "12Z", "s", 1.5, 4, distinguish_fill=False) or plotted
         if not plotted:
             ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center", color="#6B7280")
-        ax.set_title(title)
-        ax.set_xlabel("Display lead time (h)")
-        ax.set_ylabel("Score")
+        ax.set_title(category if row_idx == 0 else "", pad=9)
+        if row_idx == 1:
+            ax.set_xlabel("Display lead time (h)")
+        else:
+            ax.tick_params(axis="x", labelbottom=False)
+        ax.set_ylabel(score_name if col_idx == 0 else "")
         ax.set_ylim(0, 1.0)
         ax.set_xlim(-0.5, 48.5)
         ax.grid(axis="y", alpha=0.25)
@@ -2984,15 +2990,6 @@ def plot_fig11_48h_model_vs_ifs(
         print("  [WARN] Empty 48h model-vs-IFS lead table; skip figure.", flush=True)
         return
     setup_journal_style()
-    specs = [
-        ("Fog_CSI", "Ultra-low", "CSI"),
-        ("Mist_CSI", "Moderate-low", "CSI"),
-        ("low_vis_csi", "Low-vis event", "CSI"),
-        ("Fog_R", "Ultra-low", "Recall"),
-        ("Mist_R", "Moderate-low", "Recall"),
-        ("low_vis_recall", "Low-vis event", "Recall"),
-    ]
-
     def _adaptive_ylim(values: Sequence[float]) -> float:
         arr = np.asarray(values, dtype=float)
         arr = arr[np.isfinite(arr)]
@@ -3008,7 +3005,9 @@ def plot_fig11_48h_model_vs_ifs(
         return min(1.0, max(step * 3, math.ceil(padded / step) * step))
 
     fig, axes = plt.subplots(2, 3, figsize=(13.4, 7.8), sharex=True)
-    for panel_idx, (ax, (metric, category, score_name), letter) in enumerate(zip(axes.ravel(), specs, "abcdef")):
+    for panel_idx, (ax, (metric, category, score_name), letter) in enumerate(
+        zip(axes.ravel(), FIG11_METRIC_GRID_SPECS, "abcdef")
+    ):
         row_idx, col_idx = divmod(panel_idx, 3)
         model_col = f"{metric}_model"
         ifs_col = f"{metric}_ifs"
@@ -3112,12 +3111,8 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
         return
     setup_journal_style()
     specs = [
-        ("Fog_CSI", "Ultra-low CSI"),
-        ("Mist_CSI", "Moderate-low CSI"),
-        ("low_vis_csi", "Low-vis event CSI"),
-        ("Fog_R", "Ultra-low recall"),
-        ("Mist_R", "Moderate-low recall"),
-        ("low_vis_recall", "Low-vis event recall"),
+        (metric, f"{category} {score_name if score_name == 'CSI' else score_name.lower()}")
+        for metric, category, score_name in FIG11_METRIC_GRID_SPECS
     ]
     lead_col = "display_lead_hour" if "display_lead_hour" in cmp_df else "lead_hour"
     df = cmp_df.copy()
