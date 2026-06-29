@@ -262,12 +262,14 @@ def audit_tianji_t2nd_identity(
         return {"status": "not_applicable", "reason": "Tianji/T2ND pair not both present"}
     arrays = []
     layouts = []
+    configs = []
     for entry in (tianji, t2nd):
         data_dir = Path(entry["path"]).expanduser()
         cfg = read_build_config(data_dir)
         x = np.load(data_dir / "X_test.npy", mmap_mode="r")
         layouts.append(infer_layout(data_dir, cfg, x, args))
         arrays.append(x)
+        configs.append(cfg)
     xa, xb = arrays
     window_a, dyn_a, order_a = layouts[0]
     window_b, dyn_b, order_b = layouts[1]
@@ -283,7 +285,19 @@ def audit_tianji_t2nd_identity(
         "rtol": 1e-6,
         "atol": 1e-6,
     }
-    if xa.ndim != xb.ndim or xa.shape[1:] != xb.shape[1:] or window_a != window_b or dyn_a != dyn_b or order_a != order_b:
+    fe_a = int(configs[0].get("fe_dim") or 0)
+    fe_b = int(configs[1].get("fe_dim") or 0)
+    fog_fe_a = int(configs[0].get("fog_fe_dim") or max(fe_a - 4, 0))
+    fog_fe_b = int(configs[1].get("fog_fe_dim") or max(fe_b - 4, 0))
+    if (
+        xa.ndim != xb.ndim
+        or xa.shape[1:] != xb.shape[1:]
+        or window_a != window_b
+        or dyn_a != dyn_b
+        or order_a != order_b
+        or fe_a != fe_b
+        or fog_fe_a != fog_fe_b
+    ):
         result.update({"status": "failed_layout_mismatch", "non_rh2m_identical": False})
         return result
     rh_idx = [i for i, name in enumerate(order_a) if str(name).upper().replace("-", "_") == "RH2M"]
@@ -292,45 +306,94 @@ def audit_tianji_t2nd_identity(
         return result
     rh_idx = rh_idx[0]
     if xa.ndim == 3:
-        keep = np.asarray([i for i in range(dyn_a) if i != rh_idx], dtype=np.int64)
+        strict_keep = np.asarray([i for i in range(dyn_a) if i != rh_idx], dtype=np.int64)
+        fog_keep = np.asarray([], dtype=np.int64)
+        cyc_keep = np.asarray([], dtype=np.int64)
+        stat_dim = 0
     else:
+        dyn_flat = window_a * dyn_a
+        stat_dim = int(xa.shape[1] - dyn_flat - fe_a)
+        if stat_dim < 0:
+            result.update(
+                {
+                    "status": "failed_layout_dimensions",
+                    "non_rh2m_identical": False,
+                    "dyn_flat_dim": dyn_flat,
+                    "fe_dim": fe_a,
+                    "inferred_stat_dim": stat_dim,
+                }
+            )
+            return result
         excluded = {hour * dyn_a + rh_idx for hour in range(window_a)}
-        keep = np.asarray([i for i in range(xa.shape[1]) if i not in excluded], dtype=np.int64)
+        dynamic_keep = [i for i in range(dyn_flat) if i not in excluded]
+        static_keep = list(range(dyn_flat, dyn_flat + stat_dim))
+        strict_keep = np.asarray(dynamic_keep + static_keep, dtype=np.int64)
+        fe_start = dyn_flat + stat_dim
+        fog_keep = np.arange(fe_start, fe_start + fog_fe_a, dtype=np.int64)
+        cyc_keep = np.arange(fe_start + fog_fe_a, fe_start + fe_a, dtype=np.int64)
     rows_a = common[f"row_idx_{tianji['tag']}"] .to_numpy(dtype=np.int64)
     rows_b = common[f"row_idx_{t2nd['tag']}"] .to_numpy(dtype=np.int64)
     mismatch_count = 0
     compared_count = 0
     max_abs_diff = 0.0
+    fog_fe_mismatch_count = 0
+    fog_fe_compared_count = 0
+    cyc_mismatch_count = 0
+    cyc_compared_count = 0
     for start in range(0, len(common), 2048):
         ia = rows_a[start : start + 2048]
         ib = rows_b[start : start + 2048]
         if xa.ndim == 3:
-            a = np.asarray(xa[ia][:, :, keep], dtype=np.float64)
-            b = np.asarray(xb[ib][:, :, keep], dtype=np.float64)
+            a = np.asarray(xa[ia][:, :, strict_keep], dtype=np.float64)
+            b = np.asarray(xb[ib][:, :, strict_keep], dtype=np.float64)
         else:
-            a = np.asarray(xa[ia][:, keep], dtype=np.float64)
-            b = np.asarray(xb[ib][:, keep], dtype=np.float64)
+            a = np.asarray(xa[ia][:, strict_keep], dtype=np.float64)
+            b = np.asarray(xb[ib][:, strict_keep], dtype=np.float64)
         equal = np.isclose(a, b, rtol=1e-6, atol=1e-6, equal_nan=True)
         mismatch_count += int(equal.size - equal.sum())
         compared_count += int(equal.size)
         finite = np.isfinite(a) & np.isfinite(b)
         if finite.any():
             max_abs_diff = max(max_abs_diff, float(np.max(np.abs(a[finite] - b[finite]))))
-    non_rh_identical: Optional[bool] = mismatch_count == 0 if compared_count > 0 else None
+        if xa.ndim == 2 and fog_keep.size:
+            fog_a = np.asarray(xa[ia][:, fog_keep], dtype=np.float64)
+            fog_b = np.asarray(xb[ib][:, fog_keep], dtype=np.float64)
+            fog_equal = np.isclose(fog_a, fog_b, rtol=1e-6, atol=1e-6, equal_nan=True)
+            fog_fe_mismatch_count += int(fog_equal.size - fog_equal.sum())
+            fog_fe_compared_count += int(fog_equal.size)
+        if xa.ndim == 2 and cyc_keep.size:
+            cyc_a = np.asarray(xa[ia][:, cyc_keep], dtype=np.float64)
+            cyc_b = np.asarray(xb[ib][:, cyc_keep], dtype=np.float64)
+            cyc_equal = np.isclose(cyc_a, cyc_b, rtol=1e-6, atol=1e-6, equal_nan=True)
+            cyc_mismatch_count += int(cyc_equal.size - cyc_equal.sum())
+            cyc_compared_count += int(cyc_equal.size)
+    strict_compared_count = compared_count + cyc_compared_count
+    strict_mismatch_count = mismatch_count + cyc_mismatch_count
+    non_rh_identical: Optional[bool] = strict_mismatch_count == 0 if strict_compared_count > 0 else None
     result.update(
         {
             "status": (
                 "not_testable_no_non_rh2m_values"
-                if compared_count == 0
+                if strict_compared_count == 0
                 else "passed"
-                if mismatch_count == 0
+                if strict_mismatch_count == 0
                 else "failed_value_mismatch"
             ),
             "non_rh2m_identical": non_rh_identical,
             "compared_value_count": compared_count,
             "mismatch_count": mismatch_count,
+            "strict_compared_value_count_including_cyclical_fe": strict_compared_count,
+            "strict_mismatch_count_including_cyclical_fe": strict_mismatch_count,
             "max_abs_diff": max_abs_diff,
+            "strictly_compared_blocks": "all non-RH2M dynamic inputs plus all static inputs",
             "excluded_feature": "RH2M at every input hour",
+            "inferred_stat_dim": stat_dim,
+            "fog_fe_dim": fog_fe_a,
+            "fog_fe_compared_count": fog_fe_compared_count,
+            "fog_fe_mismatch_count": fog_fe_mismatch_count,
+            "fog_fe_note": "Differences are expected because fog engineered features may depend deterministically on RH2M.",
+            "cyclical_fe_compared_count": cyc_compared_count,
+            "cyclical_fe_mismatch_count": cyc_mismatch_count,
         }
     )
     return result
@@ -786,6 +849,7 @@ def write_method_summary(out_dir: Path, common: pd.DataFrame, entries: Sequence[
         f"- Common station/valid-time pairs: {len(common)} across {common['date'].nunique()} dates.",
         "- Sources: " + ", ".join(entry["label"] for entry in entries) + ".",
         "- Pangu RH2M proxies are excluded unless --allow_pangu_rh2m_proxy is explicitly set.",
+        "- Tianji/T2ND identity audit is strict for non-RH2M raw dynamic, static and cyclical inputs; RH2M-dependent fog engineered features are reported separately as expected propagation.",
         f"- Uncertainty: paired date-block bootstrap, {args.bootstrap_iters} iterations.",
         "- Overall quality: bias, MAE, RMSE and Pearson correlation.",
         "- Tail magnitude: P50/P75/P90/P95/P98/P99 forecast-minus-observation quantile bias.",

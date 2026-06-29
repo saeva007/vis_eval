@@ -15,7 +15,7 @@ import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -162,6 +162,11 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--features", default=DEFAULT_FEATURES)
     ap.add_argument("--out_dir", required=True)
     ap.add_argument("--eval_dir", default="", help="Optional directory with per_sample_<tag>.csv files.")
+    ap.add_argument(
+        "--require_case_control",
+        action="store_true",
+        help="Fail with the expected per-sample filenames when case-control inputs are unavailable or do not match.",
+    )
     ap.add_argument("--limit_samples", type=int, default=0)
     ap.add_argument("--low_vis_threshold_m", type=float, default=1000.0)
     ap.add_argument("--bootstrap_iters", type=int, default=0)
@@ -519,36 +524,49 @@ def quality_metric_dict(src: np.ndarray, ref: np.ndarray) -> Dict[str, float]:
     return out
 
 
-def bootstrap_ci(
+def add_quality_date_bootstrap(
+    row: Dict[str, object],
     rng: np.random.Generator,
     src: np.ndarray,
     ref: np.ndarray,
-    metric_fn: Callable[[np.ndarray, np.ndarray], float],
+    dates: np.ndarray,
     iters: int,
-) -> Tuple[float, float]:
-    a, b = finite_pair(src, ref)
-    n = len(a)
-    if iters <= 0 or n < 5:
-        return math.nan, math.nan
-    vals = np.empty(int(iters), dtype=np.float64)
-    for i in range(int(iters)):
-        idx = rng.integers(0, n, size=n)
-        vals[i] = metric_fn(a[idx], b[idx])
-    return float(np.nanpercentile(vals, 2.5)), float(np.nanpercentile(vals, 97.5))
-
-
-def add_quality_bootstrap(row: Dict[str, object], rng: np.random.Generator, src: np.ndarray, ref: np.ndarray, iters: int) -> None:
-    metrics: Dict[str, Callable[[np.ndarray, np.ndarray], float]] = {
-        "bias": lambda a, b: float(np.nanmean(a - b)),
-        "mae": lambda a, b: float(np.nanmean(np.abs(a - b))),
-        "rmse": lambda a, b: float(np.sqrt(np.nanmean((a - b) ** 2))),
-        "p95_delta": lambda a, b: float(np.nanpercentile(a, 95) - np.nanpercentile(b, 95)),
-        "p99_delta": lambda a, b: float(np.nanpercentile(a, 99) - np.nanpercentile(b, 99)),
-    }
-    for name, fn in metrics.items():
-        lo, hi = bootstrap_ci(rng, src, ref, fn, iters)
-        row[f"{name}_ci_low"] = lo
-        row[f"{name}_ci_high"] = hi
+) -> None:
+    a = np.asarray(src, dtype=np.float64)
+    b = np.asarray(ref, dtype=np.float64)
+    d = np.asarray(dates)
+    finite = np.isfinite(a) & np.isfinite(b)
+    a, b, d = a[finite], b[finite], d[finite]
+    if iters <= 0 or len(a) < 5:
+        return
+    diff = a - b
+    codes, unique_dates = pd.factorize(pd.Series(d).astype(str), sort=True)
+    n_dates = len(unique_dates)
+    if n_dates < 5:
+        return
+    daily = np.column_stack(
+        [
+            np.bincount(codes, minlength=n_dates),
+            np.bincount(codes, weights=diff, minlength=n_dates),
+            np.bincount(codes, weights=np.abs(diff), minlength=n_dates),
+            np.bincount(codes, weights=diff * diff, minlength=n_dates),
+        ]
+    )
+    values = {"bias": [], "mae": [], "rmse": []}
+    for _ in range(int(iters)):
+        n, err_sum, abs_sum, sq_sum = daily[rng.integers(0, n_dates, size=n_dates)].sum(axis=0)
+        values["bias"].append(err_sum / n)
+        values["mae"].append(abs_sum / n)
+        values["rmse"].append(np.sqrt(sq_sum / n))
+    for name, draws in values.items():
+        arr = np.asarray(draws, dtype=np.float64)
+        row[f"{name}_ci_low"] = float(np.nanpercentile(arr, 2.5))
+        row[f"{name}_ci_high"] = float(np.nanpercentile(arr, 97.5))
+    # Marginal percentile displacement is descriptive. Extreme-event uncertainty
+    # is handled by the date-block contingency analysis below.
+    for name in ("p95_delta", "p99_delta"):
+        row[f"{name}_ci_low"] = math.nan
+        row[f"{name}_ci_high"] = math.nan
 
 
 def reference_quality_tables(
@@ -596,7 +614,8 @@ def reference_quality_tables(
                     **metrics,
                 }
                 if scope == "all" and bootstrap_iters > 0:
-                    add_quality_bootstrap(row, rng, src_v, ref_v, bootstrap_iters)
+                    scope_dates = pd.to_datetime(ref_df.loc[mask, "time"]).dt.strftime("%Y-%m-%d").to_numpy()
+                    add_quality_date_bootstrap(row, rng, src_v, ref_v, scope_dates, bootstrap_iters)
                 rows.append(row)
 
             for month in sorted(ref_df["month"].dropna().unique()):
@@ -625,6 +644,11 @@ def reference_quality_tables(
                             "quantile": q,
                             "n": int(len(a)),
                             "reference_threshold": threshold,
+                            "reference_extreme_count": int(ref_extreme.sum()),
+                            "non_reference_count": int((~ref_extreme).sum()),
+                            "hit_count": hit,
+                            "miss_count": miss,
+                            "false_extreme_count": false,
                             "hit_rate": hit / denom_ref,
                             "miss_rate": miss / denom_ref,
                             "false_extreme_rate": false / denom_non,
@@ -633,6 +657,257 @@ def reference_quality_tables(
                         }
                     )
     return pd.DataFrame(rows), pd.DataFrame(tail_rows)
+
+
+def summarize_reference_tail(tail: pd.DataFrame) -> pd.DataFrame:
+    """Pool month-specific tail diagnostics without mixing seasonal Q1000 levels."""
+    if tail.empty:
+        return pd.DataFrame()
+    rows: List[Dict[str, object]] = []
+    group_cols = ["source", "source_label", "reference_source", "feature", "quantile"]
+    for keys, cur in tail.groupby(group_cols, dropna=False, sort=False):
+        source, source_label, reference_source, feature, quantile = keys
+        if {"hit_count", "miss_count", "false_extreme_count", "reference_extreme_count", "non_reference_count"}.issubset(cur.columns):
+            hit = float(cur["hit_count"].sum())
+            miss = float(cur["miss_count"].sum())
+            false = float(cur["false_extreme_count"].sum())
+            ref_count = float(cur["reference_extreme_count"].sum())
+            non_count = float(cur["non_reference_count"].sum())
+        else:
+            ref_weight = cur["n"].to_numpy(dtype=float) * (1.0 - float(quantile) / 100.0)
+            non_weight = cur["n"].to_numpy(dtype=float) - ref_weight
+            hit = float(np.nansum(cur["hit_rate"].to_numpy(dtype=float) * ref_weight))
+            miss = float(np.nansum(cur["miss_rate"].to_numpy(dtype=float) * ref_weight))
+            false = float(np.nansum(cur["false_extreme_rate"].to_numpy(dtype=float) * non_weight))
+            ref_count = float(np.nansum(ref_weight))
+            non_count = float(np.nansum(non_weight))
+        tail_bias = cur["source_tail_mean"].to_numpy(dtype=float) - cur["reference_tail_mean"].to_numpy(dtype=float)
+        weights = cur.get("reference_extreme_count", cur["n"]).to_numpy(dtype=float)
+        finite = np.isfinite(tail_bias) & np.isfinite(weights) & (weights > 0)
+        rows.append(
+            {
+                "source": source,
+                "source_label": source_label,
+                "reference_source": reference_source,
+                "feature": feature,
+                "quantile": int(quantile),
+                "n": int(cur["n"].sum()),
+                "reference_extreme_count": int(round(ref_count)),
+                "hit_rate": hit / ref_count if ref_count > 0 else math.nan,
+                "miss_rate": miss / ref_count if ref_count > 0 else math.nan,
+                "false_extreme_rate": false / non_count if non_count > 0 else math.nan,
+                "source_minus_reference_tail_mean": (
+                    float(np.average(tail_bias[finite], weights=weights[finite])) if finite.any() else math.nan
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def contingency_scores(hit, miss, false, correct) -> Dict[str, np.ndarray]:
+    """Return deterministic rare-event scores for scalar or array counts."""
+    h = np.asarray(hit, dtype=np.float64)
+    m = np.asarray(miss, dtype=np.float64)
+    f = np.asarray(false, dtype=np.float64)
+    c = np.asarray(correct, dtype=np.float64)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pod = h / (h + m)
+        pofd = f / (f + c)
+        far = f / (h + f)
+        csi = h / (h + m + f)
+        frequency_bias = (h + f) / (h + m)
+        total = h + m + f + c
+        random_hit = (h + m) * (h + f) / total
+        ets = (h - random_hit) / (h + m + f - random_hit)
+    eps = 1.0e-12
+    h_clip = np.clip(pod, eps, 1.0 - eps)
+    f_clip = np.clip(pofd, eps, 1.0 - eps)
+    numerator = np.log(f_clip) - np.log(h_clip) - np.log1p(-f_clip) + np.log1p(-h_clip)
+    denominator = np.log(f_clip) + np.log(h_clip) + np.log1p(-f_clip) + np.log1p(-h_clip)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        sedi = numerator / denominator
+    valid_sedi = (pod > 0.0) & (pod < 1.0) & (pofd > 0.0) & (pofd < 1.0)
+    sedi = np.where(valid_sedi, sedi, np.nan)
+    sedi = np.where((pod == 1.0) & (pofd == 0.0), 1.0, sedi)
+    sedi = np.where((pod == 0.0) & (pofd == 1.0), -1.0, sedi)
+    return {
+        "pod": pod,
+        "pofd": pofd,
+        "far": far,
+        "csi": csi,
+        "ets": ets,
+        "sedi": sedi,
+        "frequency_bias": frequency_bias,
+    }
+
+
+def _daily_extreme_sufficient_statistics(
+    dates: np.ndarray,
+    reference_event: np.ndarray,
+    source_event: np.ndarray,
+    error: np.ndarray,
+) -> pd.DataFrame:
+    day_codes, unique_days = pd.factorize(pd.Series(dates).astype(str), sort=True)
+    n_days = len(unique_days)
+    ref = np.asarray(reference_event, dtype=bool)
+    src = np.asarray(source_event, dtype=bool)
+    err = np.asarray(error, dtype=np.float64)
+
+    def counts(mask: np.ndarray) -> np.ndarray:
+        return np.bincount(day_codes, weights=mask.astype(np.float64), minlength=n_days)
+
+    return pd.DataFrame(
+        {
+            "date": unique_days,
+            "hit": counts(ref & src),
+            "miss": counts(ref & ~src),
+            "false": counts(~ref & src),
+            "correct": counts(~ref & ~src),
+            "reference_count": counts(ref),
+            "error_sum": np.bincount(day_codes, weights=np.where(ref, err, 0.0), minlength=n_days),
+            "abs_error_sum": np.bincount(day_codes, weights=np.where(ref, np.abs(err), 0.0), minlength=n_days),
+            "sq_error_sum": np.bincount(day_codes, weights=np.where(ref, err * err, 0.0), minlength=n_days),
+        }
+    )
+
+
+def _add_date_block_bootstrap(
+    row: Dict[str, object],
+    daily: pd.DataFrame,
+    iters: int,
+    seed: int,
+) -> None:
+    if iters <= 0 or len(daily) < 5:
+        return
+    rng = np.random.default_rng(seed)
+    values = daily[[
+        "hit", "miss", "false", "correct", "reference_count",
+        "error_sum", "abs_error_sum", "sq_error_sum",
+    ]].to_numpy(dtype=np.float64)
+    n_days = len(values)
+    boot: Dict[str, List[float]] = {
+        name: [] for name in (
+            "pod", "pofd", "far", "csi", "ets", "sedi", "frequency_bias",
+            "conditional_bias", "conditional_mae", "conditional_rmse",
+        )
+    }
+    for _ in range(int(iters)):
+        sample = values[rng.integers(0, n_days, size=n_days)].sum(axis=0)
+        h, m, f, c, n_ref, err_sum, abs_sum, sq_sum = sample
+        scores = contingency_scores(h, m, f, c)
+        for name in ("pod", "pofd", "far", "csi", "ets", "sedi", "frequency_bias"):
+            boot[name].append(float(scores[name]))
+        boot["conditional_bias"].append(float(err_sum / n_ref) if n_ref > 0 else math.nan)
+        boot["conditional_mae"].append(float(abs_sum / n_ref) if n_ref > 0 else math.nan)
+        boot["conditional_rmse"].append(float(np.sqrt(sq_sum / n_ref)) if n_ref > 0 else math.nan)
+    for name, vals in boot.items():
+        arr = np.asarray(vals, dtype=np.float64)
+        row[f"{name}_ci_low"] = float(np.nanpercentile(arr, 2.5))
+        row[f"{name}_ci_high"] = float(np.nanpercentile(arr, 97.5))
+
+
+def extreme_spatiotemporal_table(
+    common: Dict[str, pd.DataFrame],
+    labels: Dict[str, str],
+    ref_tag: str,
+    features: Sequence[str],
+    min_pairs: int,
+    bootstrap_iters: int,
+    seed: int,
+) -> pd.DataFrame:
+    """Verify whether upper-tail moisture occurs at the same station and valid time.
+
+    Exact-reference thresholds retain amplitude calibration. Quantile-matched
+    thresholds equalize monthly event frequency and isolate rank/localization.
+    Conditional errors on reference extremes are diagnostics only because
+    outcome-conditioned ranking is vulnerable to the forecaster's dilemma.
+    """
+    if ref_tag not in common:
+        raise KeyError(f"reference_source={ref_tag!r} not found in sources")
+    ref_df = common[ref_tag]
+    rows: List[Dict[str, object]] = []
+    for source_i, (tag, df) in enumerate(common.items()):
+        if tag == ref_tag:
+            continue
+        for feature_i, feat in enumerate(features):
+            if feat not in df or feat not in ref_df:
+                continue
+            src_all = df[feat].to_numpy(dtype=np.float64)
+            ref_all = ref_df[feat].to_numpy(dtype=np.float64)
+            months_all = ref_df["month"].to_numpy(dtype=np.int64)
+            dates_all = pd.to_datetime(ref_df["time"]).dt.strftime("%Y-%m-%d").to_numpy()
+            finite = np.isfinite(src_all) & np.isfinite(ref_all)
+            if int(finite.sum()) < min_pairs:
+                continue
+            src = src_all[finite]
+            ref = ref_all[finite]
+            months = months_all[finite]
+            dates = dates_all[finite]
+            error = src - ref
+            for quantile in (90, 95, 99):
+                reference_event = np.zeros(len(src), dtype=bool)
+                exact_source_event = np.zeros(len(src), dtype=bool)
+                matched_source_event = np.zeros(len(src), dtype=bool)
+                ref_thresholds: List[float] = []
+                src_thresholds: List[float] = []
+                for month in sorted(np.unique(months)):
+                    month_mask = months == month
+                    ref_threshold = float(np.nanpercentile(ref[month_mask], quantile))
+                    src_threshold = float(np.nanpercentile(src[month_mask], quantile))
+                    reference_event[month_mask] = ref[month_mask] >= ref_threshold
+                    exact_source_event[month_mask] = src[month_mask] >= ref_threshold
+                    matched_source_event[month_mask] = src[month_mask] >= src_threshold
+                    ref_thresholds.append(ref_threshold)
+                    src_thresholds.append(src_threshold)
+
+                for mode_i, (event_definition, source_event) in enumerate(
+                    (
+                        ("exact_reference_threshold", exact_source_event),
+                        ("quantile_matched", matched_source_event),
+                    )
+                ):
+                    hit = int(np.sum(reference_event & source_event))
+                    miss = int(np.sum(reference_event & ~source_event))
+                    false = int(np.sum(~reference_event & source_event))
+                    correct = int(np.sum(~reference_event & ~source_event))
+                    scores = contingency_scores(hit, miss, false, correct)
+                    ref_error = error[reference_event]
+                    row: Dict[str, object] = {
+                        "source": tag,
+                        "source_label": labels.get(tag, tag),
+                        "reference_source": ref_tag,
+                        "reference_label": labels.get(ref_tag, ref_tag),
+                        "feature": feat,
+                        "feature_label": FEATURE_META.get(feat, {}).get("label", feat),
+                        "unit": FEATURE_META.get(feat, {}).get("unit", ""),
+                        "quantile": int(quantile),
+                        "threshold_scope": "calendar_month",
+                        "event_definition": event_definition,
+                        "n": int(len(src)),
+                        "n_dates": int(pd.Series(dates).nunique()),
+                        "reference_extreme_count": int(reference_event.sum()),
+                        "source_extreme_count": int(source_event.sum()),
+                        "hit_count": hit,
+                        "miss_count": miss,
+                        "false_alarm_count": false,
+                        "correct_negative_count": correct,
+                        "mean_monthly_reference_threshold": float(np.mean(ref_thresholds)),
+                        "mean_monthly_source_threshold": float(np.mean(src_thresholds)),
+                        "conditional_bias": float(np.mean(ref_error)),
+                        "conditional_mae": float(np.mean(np.abs(ref_error))),
+                        "conditional_rmse": float(np.sqrt(np.mean(ref_error * ref_error))),
+                    }
+                    for name, value in scores.items():
+                        row[name] = float(value)
+                    daily = _daily_extreme_sufficient_statistics(dates, reference_event, source_event, error)
+                    _add_date_block_bootstrap(
+                        row,
+                        daily,
+                        bootstrap_iters,
+                        seed + source_i * 1000 + feature_i * 100 + quantile * 2 + mode_i,
+                    )
+                    rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def auc_rank(y_true: np.ndarray, score: np.ndarray) -> float:
@@ -1080,6 +1355,66 @@ def plot_informativeness(df: pd.DataFrame, out_dir: Path) -> None:
     plt.close(fig)
 
 
+def plot_extreme_spatiotemporal(df: pd.DataFrame, out_dir: Path) -> None:
+    sub = df[df["feature"] == "Q_1000"].copy()
+    if sub.empty:
+        return
+    labels = sub["source_label"].drop_duplicates().tolist()
+    quantiles = [q for q in (90, 95, 99) if q in set(sub["quantile"])]
+    set_plot_style()
+    fig, axes = plt.subplots(1, 3, figsize=(8.4, 2.8))
+    offsets = np.linspace(-0.16, 0.16, max(len(labels), 1))
+    x = np.arange(len(quantiles))
+    for offset, label in zip(offsets, labels):
+        source_rows = sub[sub["source_label"] == label]
+        source_tag = str(source_rows["source"].iloc[0])
+        style = source_style(source_tag, label)
+        exact = source_rows[source_rows["event_definition"] == "exact_reference_threshold"].set_index("quantile").reindex(quantiles)
+        matched = source_rows[source_rows["event_definition"] == "quantile_matched"].set_index("quantile").reindex(quantiles)
+        for ax, cur, metric in (
+            (axes[0], exact, "conditional_mae"),
+            (axes[1], exact, "sedi"),
+            (axes[2], matched, "sedi"),
+        ):
+            values = cur[metric].to_numpy(dtype=float)
+            lo_col, hi_col = f"{metric}_ci_low", f"{metric}_ci_high"
+            yerr = None
+            if lo_col in cur and hi_col in cur:
+                lo = cur[lo_col].to_numpy(dtype=float)
+                hi = cur[hi_col].to_numpy(dtype=float)
+                valid = np.isfinite(values) & np.isfinite(lo) & np.isfinite(hi)
+                yerr = np.vstack([np.where(valid, values - lo, 0.0), np.where(valid, hi - values, 0.0)])
+            ax.errorbar(
+                x + offset,
+                values,
+                yerr=yerr,
+                marker=style["marker"],
+                ms=4.5,
+                color=style["color"],
+                lw=1.0,
+                capsize=2.0,
+                label=label,
+            )
+    axes[0].set_title("a  Error when ERA5 is extreme")
+    axes[0].set_ylabel("Conditional MAE (g kg-1)")
+    axes[1].set_title("b  Absolute-threshold concurrence")
+    axes[1].set_ylabel("SEDI")
+    axes[2].set_title("c  Quantile-matched concurrence")
+    axes[2].set_ylabel("SEDI")
+    for ax in axes:
+        ax.set_xticks(x)
+        ax.set_xticklabels([f"P{q}" for q in quantiles])
+        ax.set_xlabel("ERA5 monthly upper-tail threshold")
+        ax.grid(axis="y", color="#D9D9D9", lw=0.6)
+    axes[1].axhline(0.0, color="#202124", lw=0.7)
+    axes[2].axhline(0.0, color="#202124", lw=0.7)
+    handles, legend_labels = axes[2].get_legend_handles_labels()
+    fig.legend(handles, legend_labels, loc="upper center", bbox_to_anchor=(0.5, 1.03), ncol=min(4, len(labels)))
+    fig.tight_layout(rect=(0, 0, 1, 0.91))
+    savefig_all(fig, out_dir, "fig_q1000_extreme_spatiotemporal")
+    plt.close(fig)
+
+
 def plot_case_control(df: pd.DataFrame, out_dir: Path) -> None:
     if df.empty:
         return
@@ -1126,6 +1461,8 @@ def write_summary(
     args: argparse.Namespace,
     common_n: int,
     quality: pd.DataFrame,
+    tail_summary: pd.DataFrame,
+    extreme_spatiotemporal: pd.DataFrame,
     informativeness: pd.DataFrame,
     case_control: pd.DataFrame,
 ) -> None:
@@ -1142,6 +1479,8 @@ def write_summary(
     lines.append("")
     lines.append("- `q1000_reference_quality_metrics.csv`: paired Q1000/DP1000 metrics against reference analysis.")
     lines.append("- `q1000_reference_tail_metrics.csv`: month-wise P90/P95/P99 tail hit/miss diagnostics.")
+    lines.append("- `q1000_reference_tail_summary.csv`: seasonally controlled pooled tail hit, miss, false-extreme and tail-magnitude diagnostics.")
+    lines.append("- `q1000_extreme_spatiotemporal_metrics.csv`: same-station/same-valid-time extreme verification using exact-reference and quantile-matched monthly thresholds.")
     lines.append("- `q1000_lowvis_informativeness.csv`: AUC/AP, top-decile enrichment, and odds ratios for observed low-vis labels.")
     lines.append("- `q1000_pangu_case_control.csv`: optional paired mechanism comparison for numerical-hit/Pangu-miss samples.")
     lines.append("")
@@ -1159,6 +1498,9 @@ def write_summary(
     lines.append("- Model reliance / grouped permutation: Fisher, Rudin and Dominici 2019, JMLR 20:177.")
     lines.append("- Conditional permutation under correlated predictors: Strobl et al. 2008, BMC Bioinformatics 9:307.")
     lines.append("- ALE curves for correlated features: Apley and Zhu 2020, JRSS-B 82:1059-1086.")
+    lines.append("- Rare-event SEDI and quantile matching: Ferro and Stephenson 2011, Weather and Forecasting 26:699-713.")
+    lines.append("- Extreme-only conditional error caveat: Lerch et al. 2017, Statistical Science 32:106-127.")
+    lines.append("- Date-block resampling rationale: Hamill 1999, Weather and Forecasting 14:155-167.")
     if not quality.empty:
         q = quality[(quality["scope"] == "all") & (quality["feature"] == "Q_1000")]
         if not q.empty:
@@ -1168,6 +1510,38 @@ def write_summary(
                 lines.append(
                     f"- {row['source_label']}: MAE={row['mae']:.3g}, P95 delta={row['p95_delta']:.3g} {row['unit']}."
                 )
+    if not tail_summary.empty:
+        q95 = tail_summary[(tail_summary["feature"] == "Q_1000") & (tail_summary["quantile"] == 95)]
+        if not q95.empty:
+            lines.append("")
+            lines.append("## Tail magnitude versus placement")
+            for _, row in q95.sort_values("hit_rate", ascending=False).iterrows():
+                lines.append(
+                    f"- {row['source_label']}: pooled P95 hit={row['hit_rate']:.3g}, "
+                    f"false-extreme={row['false_extreme_rate']:.3g}, "
+                    f"tail-mean bias={row['source_minus_reference_tail_mean']:.3g}."
+                )
+            lines.append("- A stronger marginal upper tail is not equivalent to better placement of reference extremes or stronger low-visibility information.")
+    if not extreme_spatiotemporal.empty:
+        q95 = extreme_spatiotemporal[
+            (extreme_spatiotemporal["feature"] == "Q_1000")
+            & (extreme_spatiotemporal["quantile"] == 95)
+        ]
+        if not q95.empty:
+            lines.append("")
+            lines.append("## Same-place/same-time P95 verification")
+            exact = q95[q95["event_definition"] == "exact_reference_threshold"]
+            matched = q95[q95["event_definition"] == "quantile_matched"]
+            for label in q95["source_label"].drop_duplicates():
+                e = exact[exact["source_label"] == label]
+                m = matched[matched["source_label"] == label]
+                if e.empty or m.empty:
+                    continue
+                lines.append(
+                    f"- {label}: ERA5-extreme conditional MAE={e.iloc[0]['conditional_mae']:.3g} g kg-1, "
+                    f"absolute-threshold SEDI={e.iloc[0]['sedi']:.3g}, quantile-matched SEDI={m.iloc[0]['sedi']:.3g}."
+                )
+            lines.append("- Conditional MAE is descriptive only; primary extreme-event ranking should use the full contingency table and SEDI, not only ERA5-extreme cases.")
     if not informativeness.empty:
         q = informativeness[informativeness["feature"] == "Q_1000"]
         if not q.empty:
@@ -1209,6 +1583,16 @@ def main() -> None:
         args.bootstrap_iters,
         args.bootstrap_seed,
     )
+    tail_summary = summarize_reference_tail(tail)
+    extreme_spatiotemporal = extreme_spatiotemporal_table(
+        common,
+        labels,
+        args.reference_source,
+        features,
+        args.min_pairs,
+        args.bootstrap_iters,
+        args.bootstrap_seed,
+    )
     info = informativeness_table(
         common,
         labels,
@@ -1233,9 +1617,21 @@ def main() -> None:
         args.bootstrap_iters,
         args.bootstrap_seed,
     )
+    if args.require_case_control and case_control.empty:
+        expected_tags = [args.pangu_tag, *numerical_tags]
+        expected = [str(Path(args.eval_dir) / f"per_sample_{tag}.csv") for tag in expected_tags]
+        existing = sorted(str(path) for path in Path(args.eval_dir).glob("per_sample_*.csv")) if args.eval_dir else []
+        raise FileNotFoundError(
+            "Case-control is required but no paired rows were produced. "
+            f"Expected per-sample files: {expected}. Existing per-sample files: {existing}. "
+            "Generate them first with: NO_PER_SAMPLE_CSV=0 bash "
+            "submit_static_rnn_source_full_argmax_eval.sh figure1_all_sources"
+        )
 
     quality.to_csv(out_dir / "q1000_reference_quality_metrics.csv", index=False)
     tail.to_csv(out_dir / "q1000_reference_tail_metrics.csv", index=False)
+    tail_summary.to_csv(out_dir / "q1000_reference_tail_summary.csv", index=False)
+    extreme_spatiotemporal.to_csv(out_dir / "q1000_extreme_spatiotemporal_metrics.csv", index=False)
     info.to_csv(out_dir / "q1000_lowvis_informativeness.csv", index=False)
     case_control.to_csv(out_dir / "q1000_pangu_case_control.csv", index=False)
     with open(out_dir / "run_config.json", "w", encoding="utf-8") as f:
@@ -1254,10 +1650,20 @@ def main() -> None:
                 "low_vis_threshold_m": args.low_vis_threshold_m,
                 "bootstrap_iters": args.bootstrap_iters,
                 "bootstrap_seed": args.bootstrap_seed,
+                "require_case_control": args.require_case_control,
                 "method_notes": {
                     "era5": "reference analysis, not truth",
                     "pangu": "no RH2M derived from Q_1000",
                     "comparison_subset": "intersection of valid time, station_id and duplicate index across all sources",
+                    "extreme_thresholds": (
+                        "calendar-month ERA5 P90/P95/P99; exact-reference thresholds test amplitude plus concurrence, "
+                        "quantile-matched thresholds test same-station/same-valid-time rank concurrence"
+                    ),
+                    "uncertainty": "95% confidence intervals resample valid dates as blocks",
+                    "overall_error_uncertainty": "bias/MAE/RMSE use valid-date block bootstrap; marginal percentile displacement is descriptive",
+                    "conditional_error_caveat": (
+                        "ERA5-extreme conditional bias/MAE/RMSE are descriptive diagnostics and are not used alone for ranking"
+                    ),
                 },
             },
             f,
@@ -1265,9 +1671,19 @@ def main() -> None:
         )
 
     plot_reference_quality(quality, out_dir)
+    plot_extreme_spatiotemporal(extreme_spatiotemporal, out_dir)
     plot_informativeness(info, out_dir)
     plot_case_control(case_control, out_dir)
-    write_summary(out_dir, args, len(common_keys), quality, info, case_control)
+    write_summary(
+        out_dir,
+        args,
+        len(common_keys),
+        quality,
+        tail_summary,
+        extreme_spatiotemporal,
+        info,
+        case_control,
+    )
     print(f"[OK] wrote Q1000 mechanism outputs to {out_dir}", flush=True)
 
 
