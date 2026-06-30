@@ -174,8 +174,64 @@ def main() -> None:
         rows.append(row)
 
     curve = pd.DataFrame(rows)
+    out_json = Path(args.out_json)
+    out_curve = Path(args.out_curve_csv) if args.out_curve_csv else out_json.with_name(out_json.stem + "_curve.csv")
+    out_json.parent.mkdir(parents=True, exist_ok=True)
+    curve.to_csv(out_curve, index=False, float_format="%.8f")
+
     feasible = curve[curve["passes_constraints"]].copy()
     if feasible.empty:
+        diagnostic = curve.copy()
+        diagnostic["constraint_shortfall"] = (
+            (args.min_event_recall - diagnostic["min_event_low_vis_recall"]).clip(lower=0.0)
+            + (args.min_ultra_recall - diagnostic["Fog_R"]).clip(lower=0.0)
+            + (args.min_moderate_recall - diagnostic["Mist_R"]).clip(lower=0.0)
+            + (args.min_moderate_csi - diagnostic["Mist_CSI"]).clip(lower=0.0)
+        )
+        closest = diagnostic.sort_values(
+            ["constraint_shortfall", "false_positive_rate", "low_vis_csi", "low_vis_gate"],
+            ascending=[True, True, False, False],
+            kind="stable",
+        ).iloc[0]
+        checks = {
+            "min_event_recall": bool(closest["min_event_low_vis_recall"] >= args.min_event_recall),
+            "min_ultra_recall": bool(closest["Fog_R"] >= args.min_ultra_recall),
+            "min_moderate_recall": bool(closest["Mist_R"] >= args.min_moderate_recall),
+            "min_moderate_csi": bool(closest["Mist_CSI"] >= args.min_moderate_csi),
+        }
+        closest_metrics = {
+            key: (value.item() if isinstance(value, np.generic) else value)
+            for key, value in closest.to_dict().items()
+        }
+        failure_payload = {
+            "schema_version": 1,
+            "experiment_status": "offline_candidate_gate",
+            "selection_status": "no_feasible_gate",
+            "deployment_approved": False,
+            "replaces_mainline": False,
+            "selection_source": "validation_only",
+            "checkpoint": str(args.checkpoint),
+            "data_version": str(args.data_version),
+            "temperature": temperature,
+            "low_vis_gate": None,
+            "constraints": {
+                "target_max_fpr": args.target_max_fpr,
+                "min_event_recall": args.min_event_recall,
+                "min_ultra_recall": args.min_ultra_recall,
+                "min_moderate_recall": args.min_moderate_recall,
+                "min_moderate_csi": args.min_moderate_csi,
+            },
+            "failed_constraints_at_closest_gate": [name for name, passed in checks.items() if not passed],
+            "closest_diagnostic_gate": closest_metrics,
+            "calibration": {"nll_before": nll_before, "nll_after": nll_after},
+            "event_summary_csv": str(args.event_summary_csv),
+            "curve_csv": str(out_curve),
+            "test_reselection_forbidden": True,
+        }
+        out_json.write_text(json.dumps(failure_payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        print(json.dumps(failure_payload, indent=2, ensure_ascii=False))
+        print(f"[table] {out_curve}")
+        print(f"[json] {out_json}")
         raise RuntimeError("No gate satisfies all recall/Moderate-low constraints on validation data")
     feasible = feasible.sort_values(
         ["false_positive_rate", "low_vis_csi", "Mist_CSI", "low_vis_gate"],
@@ -184,10 +240,6 @@ def main() -> None:
     )
     best = feasible.iloc[0].to_dict()
 
-    out_json = Path(args.out_json)
-    out_curve = Path(args.out_curve_csv) if args.out_curve_csv else out_json.with_name(out_json.stem + "_curve.csv")
-    out_json.parent.mkdir(parents=True, exist_ok=True)
-    curve.to_csv(out_curve, index=False, float_format="%.8f")
     payload = {
         "schema_version": 1,
         "experiment_status": "offline_candidate_gate",
