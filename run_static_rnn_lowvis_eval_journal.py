@@ -1897,6 +1897,21 @@ def evaluate_target(
             )
             plot_station_metric_map(
                 station_df,
+                "low_vis_recall",
+                "n_low_vis",
+                5,
+                "Station Low-vis Recall",
+                "fig8_station_low_vis_recall",
+                out_dir,
+                manifest,
+                [str(out_dir / "station_metrics.csv")],
+                shp_gdf=shp,
+                cmap="cividis",
+                vmin=0,
+                vmax=1,
+            )
+            plot_station_metric_map(
+                station_df,
                 "low_vis_csi",
                 "n_low_vis",
                 5,
