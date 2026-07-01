@@ -182,14 +182,14 @@ def setup_journal_style() -> None:
             "font.family": "sans-serif",
             "font.sans-serif": ["Arial", "DejaVu Sans", "Liberation Sans"],
             "svg.fonttype": "none",
-            "font.size": 10.5,
-            "axes.labelsize": 11,
-            "axes.titlesize": 11.5,
+            "font.size": 12,
+            "axes.labelsize": 13,
+            "axes.titlesize": 14,
             "axes.titleweight": "bold",
             "axes.labelweight": "bold",
-            "xtick.labelsize": 9.5,
-            "ytick.labelsize": 9.5,
-            "legend.fontsize": 9.5,
+            "xtick.labelsize": 11,
+            "ytick.labelsize": 11,
+            "legend.fontsize": 11.5,
             "figure.dpi": 150,
             "savefig.dpi": 300,
             "savefig.bbox": "tight",
@@ -255,7 +255,7 @@ def add_panel_label(ax, label: str, x: float = -0.10, y: float = 1.03) -> None:
         y,
         f"({label})",
         transform=ax.transAxes,
-        fontsize=12,
+        fontsize=14,
         fontweight="bold",
         va="bottom",
     )
@@ -1235,7 +1235,7 @@ def plot_confusion_pmst_vs_ifs(
         for i in range(3):
             for j in range(3):
                 txt = f"{cm_norm[i, j]:.2f}\n{cm[i, j]:,}"
-                ax.text(j, i, txt, ha="center", va="center", fontsize=9.5, color="#111111")
+                ax.text(j, i, txt, ha="center", va="center", fontsize=11, color="#111111")
         for diag_idx in range(3):
             ax.add_patch(
                 Rectangle(
@@ -1424,7 +1424,10 @@ def plot_scenario_split(
         vals = df[key].astype(float).to_numpy()
         ax.bar(x + (i - (len(metrics) - 1) / 2) * width, vals, width * 0.94, label=label, color=color)
     ax.set_xticks(x)
-    ax.set_xticklabels(df["name"], rotation=25 if len(df) > 4 else 0, ha="right" if len(df) > 4 else "center")
+    display_labels = df["name"].astype(str).tolist()
+    if split == "time_of_day":
+        display_labels = [label.replace(" (", "\n(", 1) for label in display_labels]
+    ax.set_xticklabels(display_labels, rotation=25 if len(df) > 4 else 0, ha="right" if len(df) > 4 else "center")
     ax.set_ylim(0, 1.0)
     ax.set_ylabel("Score")
     title = {"time_of_day": f"Metrics by time of day ({LOCAL_TIME_LABEL})", "season": "Metrics by season", "region": "Metrics by region"}.get(split, split)
@@ -1592,9 +1595,9 @@ def plot_region_detail(
 
     handles, legend_labels = ax.get_legend_handles_labels()
     handles2, legend_labels2 = ax2.get_legend_handles_labels()
-    ax.legend(handles + handles2, legend_labels + legend_labels2, frameon=False, loc="lower right")
+    fig.legend(handles + handles2, legend_labels + legend_labels2, frameon=False, loc="lower center", ncol=2, bbox_to_anchor=(0.5, 0.015))
 
-    finish_figure_layout(fig)
+    finish_figure_layout(fig, rect=(0.02, 0.12, 0.98, 0.96))
     save_fig_pair(
         fig,
         out_dir,
@@ -1654,9 +1657,9 @@ def plot_time_of_day_detail(
 
     handles, legend_labels = ax.get_legend_handles_labels()
     handles2, legend_labels2 = ax2.get_legend_handles_labels()
-    ax.legend(handles + handles2, legend_labels + legend_labels2, frameon=False, loc="lower right")
+    fig.legend(handles + handles2, legend_labels + legend_labels2, frameon=False, loc="lower center", ncol=2, bbox_to_anchor=(0.5, 0.015))
 
-    finish_figure_layout(fig)
+    finish_figure_layout(fig, rect=(0.02, 0.14, 0.98, 0.96))
     save_fig_pair(
         fig,
         out_dir,
@@ -2204,7 +2207,7 @@ def plot_station_recall_delta_map(
     worse = int((df[metric] < 0).sum())
     median_delta = float(np.nanmedian(vals))
     mean_delta = float(np.nanmean(vals))
-    ax.set_title(f"Station-level {label.lower()} difference", fontsize=12, fontweight="bold", pad=8)
+    ax.set_title(f"Station-level {label.lower()} difference", fontsize=14, fontweight="bold", pad=8)
     ax.text(
         0.02,
         0.98,
@@ -2214,7 +2217,7 @@ def plot_station_recall_delta_map(
         transform=ax.transAxes,
         ha="left",
         va="top",
-        fontsize=9.5,
+        fontsize=11,
         color="#1F2937",
         bbox={"facecolor": "white", "edgecolor": "#B8B8B8", "linewidth": 0.4, "alpha": 0.88, "pad": 3.0},
         zorder=8,
@@ -2242,9 +2245,9 @@ def plot_station_recall_delta_map(
     hist_ax.axvline(0.0, color="#C62828", linestyle="--", linewidth=1.0)
     hist_ax.axvline(mean_delta, color="#1F2937", linestyle="-", linewidth=0.9)
     hist_ax.set_xlim(hist_lo, hist_hi)
-    hist_ax.set_xlabel("Delta recall", fontsize=9)
-    hist_ax.set_ylabel("Density", fontsize=9)
-    hist_ax.tick_params(axis="both", labelsize=8.5, length=2.5)
+    hist_ax.set_xlabel("Delta recall", fontsize=10.5)
+    hist_ax.set_ylabel("Density", fontsize=10.5)
+    hist_ax.tick_params(axis="both", labelsize=10, length=2.5)
     hist_ax.grid(alpha=0.18)
     for spine in hist_ax.spines.values():
         spine.set_color("#555555")
@@ -2337,7 +2340,7 @@ def plot_event_peak_grid(
             if row_idx == 0:
                 ax.set_title(f"Event {int(ev.get('event_rank', col_idx + 1))}\n{peak:%Y-%m-%d %H:00 UTC}")
             if col_idx == 0:
-                ax.text(-0.18, 0.5, row_label, transform=ax.transAxes, rotation=90, va="center", ha="center", fontsize=11.5, fontweight="bold")
+                ax.text(-0.18, 0.5, row_label, transform=ax.transAxes, rotation=90, va="center", ha="center", fontsize=13, fontweight="bold")
     handles = [Patch(facecolor=CLASS_COLORS[i], edgecolor=CLASS_EDGE_COLOR, linewidth=0.45, label=CLASS_NAMES[i]) for i in range(3)]
     fig.legend(handles=handles, loc="lower center", ncol=3, frameon=False)
     finish_figure_layout(fig, rect=(0.02, 0.09, 0.98, 0.98), h_pad=1.1, w_pad=0.7)
@@ -3072,7 +3075,7 @@ def plot_fig11_48h_model_vs_ifs(
             "Dotted 0-12 h segment is filled from the previous initialization's 12-24 h verification window.",
             ha="right",
             va="bottom",
-            fontsize=9,
+            fontsize=10.5,
             color="#3F4A3F",
         )
     finish_figure_layout(fig, rect=(0.02, 0.06, 0.98, 0.93), h_pad=1.25)
@@ -3254,7 +3257,7 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
     if major_ticks:
         ax.set_xticks(major_ticks)
     ax.set_xlabel("Display lead time (h)")
-    ax.set_title("48 h lead-time skill gain over IFS", fontsize=12, fontweight="bold", pad=21)
+    ax.set_title("48 h lead-time skill gain over IFS", fontsize=14, fontweight="bold", pad=21)
     if float(np.nanmin(finite_vals)) > 0:
         ax.text(
             0.5,
@@ -3263,20 +3266,20 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
             transform=ax.transAxes,
             ha="center",
             va="bottom",
-            fontsize=9.3,
+            fontsize=10.5,
             color="#1F4E79",
         )
     ax.axhline(2.5, color="#334155", lw=1.1, alpha=0.82)
     for lead_line in (6, 12, 18, 24, 30, 36, 42):
         if leads.min() <= lead_line <= leads.max():
             ax.axvline(lead_line, color="#F8FAFC", lw=0.8, alpha=0.78)
-    ax.tick_params(axis="both", labelsize=9.5)
+    ax.tick_params(axis="both", labelsize=11)
     ax.grid(False)
     for spine in ax.spines.values():
         spine.set_color("#111827")
         spine.set_linewidth(0.75)
 
-    ax.text(1.012, 1.035, "Raw gain range", transform=ax.transAxes, ha="left", va="bottom", fontsize=8.6, fontweight="bold")
+    ax.text(1.012, 1.035, "Raw gain range", transform=ax.transAxes, ha="left", va="bottom", fontsize=10, fontweight="bold")
     for row_idx in range(len(specs)):
         if not np.isfinite(row_min_pp[row_idx]) or not np.isfinite(row_max_pp[row_idx]):
             continue
@@ -3287,7 +3290,7 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
             transform=ax.get_yaxis_transform(),
             ha="left",
             va="center",
-            fontsize=8.2,
+            fontsize=9.5,
             color="#334155",
             clip_on=False,
         )
@@ -3301,7 +3304,7 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
         transform=cb.ax.transAxes,
         ha="left",
         va="bottom",
-        fontsize=9,
+        fontsize=10.5,
         color="#9E1F36",
     )
     cb.ax.text(
@@ -3311,10 +3314,10 @@ def plot_fig11_48h_model_vs_ifs_delta_heatmap(
         transform=cb.ax.transAxes,
         ha="right",
         va="bottom",
-        fontsize=9,
+        fontsize=10.5,
         color="#08306B",
     )
-    cb.set_label("Within-metric normalized PMST - IFS diagnostic VIS skill gain", fontsize=9.5, labelpad=8)
+    cb.set_label("Within-metric normalized PMST - IFS diagnostic VIS skill gain", fontsize=11, labelpad=8)
     finish_figure_layout(fig, rect=(0.04, 0.08, 0.87, 0.94), h_pad=1.0)
     save_fig_pair(
         fig,

@@ -1001,7 +1001,7 @@ def plot_widespread_event_panels(
             ax = axes[row_idx, col_idx]
             _draw_event_basemap(ax, shp_gdf)
             if row_idx == 0:
-                ax.set_title(title, fontsize=9, pad=5, color=PALETTE["Fog"] if offset == 0 else "#202020")
+                ax.set_title(title, fontsize=11, pad=5, color=PALETTE["Fog"] if offset == 0 else "#202020")
             if col_idx == 0:
                 ax.text(
                     -0.08,
@@ -1011,13 +1011,13 @@ def plot_widespread_event_panels(
                     rotation=90,
                     va="center",
                     ha="center",
-                    fontsize=10,
+                    fontsize=12,
                     fontweight="bold",
                 )
 
             if time_mask.sum() == 0:
                 ax.text(0.5, 0.5, "No samples", transform=ax.transAxes,
-                        ha="center", va="center", fontsize=9, color="#666666")
+                        ha="center", va="center", fontsize=11, color="#666666")
                 continue
 
             event_df = meta.loc[time_mask, ["lon", "lat"]].copy()
@@ -1044,7 +1044,7 @@ def plot_widespread_event_panels(
                     0.03,
                     f"median={np.nanmedian(vis_vals):.0f} m",
                     transform=ax.transAxes,
-                    fontsize=8.5,
+                    fontsize=10,
                     bbox=dict(facecolor="white", alpha=0.78, edgecolor="none", pad=1.5),
                 )
             else:
@@ -1082,7 +1082,7 @@ def plot_widespread_event_panels(
                         0.03,
                         f"UL={counts[0]} ML={counts[1]} C={counts[2]}",
                         transform=ax.transAxes,
-                        fontsize=8.5,
+                        fontsize=10,
                         bbox=dict(facecolor="white", alpha=0.78, edgecolor="none", pad=1.5),
                     )
 
@@ -1115,7 +1115,7 @@ def plot_widespread_event_panels(
     )
     fig.suptitle(
         "Widespread Low-vis Event Case\n" + _format_event_label(event_row),
-        fontsize=13,
+        fontsize=15,
         fontweight="bold",
         y=0.98,
     )
@@ -1173,12 +1173,12 @@ def plot_three_events_footprint_row(
                     ttl = t_now.strftime("%m-%d\n%H:00")
                     if off == 0:
                         ttl = t_now.strftime("%m-%d\npeak %H:00")
-                    ax.set_title(ttl, fontsize=9, pad=2)
+                    ax.set_title(ttl, fontsize=11, pad=2)
 
                 if time_mask.sum() == 0:
                     ax.text(
                         0.5, 0.5, "—", transform=ax.transAxes,
-                        ha="center", va="center", fontsize=9, color="#999999",
+                        ha="center", va="center", fontsize=11, color="#999999",
                     )
                     continue
 
@@ -1221,13 +1221,13 @@ def plot_three_events_footprint_row(
             col_title,
             ha="center",
             va="bottom",
-            fontsize=10,
+            fontsize=12,
             fontweight="600",
             transform=fig.transFigure,
         )
 
-    fig.text(0.02, 0.48, "Observed\nvisibility (m)", rotation=90, va="center", ha="center", fontsize=10, fontweight="600")
-    fig.text(0.02, 0.22, "PMST\n(3-class)", rotation=90, va="center", ha="center", fontsize=10, fontweight="600")
+    fig.text(0.02, 0.48, "Observed\nvisibility (m)", rotation=90, va="center", ha="center", fontsize=12, fontweight="600")
+    fig.text(0.02, 0.22, "PMST\n(3-class)", rotation=90, va="center", ha="center", fontsize=12, fontweight="600")
 
     if vis_mappable is not None:
         cax = fig.add_axes([0.24, 0.155, 0.52, 0.026])
@@ -1244,11 +1244,11 @@ def plot_three_events_footprint_row(
         ncol=3,
         frameon=True,
         bbox_to_anchor=(0.5, 0.03),
-        fontsize=9,
+        fontsize=11,
     )
     fig.suptitle(
         "Three Low-vis events — spatial footprint: observed visibility vs PMST forecast",
-        fontsize=12,
+        fontsize=14,
         fontweight="bold",
         y=0.965,
     )
@@ -1280,7 +1280,7 @@ def plot_three_events_peak_row(
     vis_cmap = build_event_visibility_cmap()
     vis_mappable = None
 
-    fig, axes = plt.subplots(1, 3, figsize=(13.8, 5.1), constrained_layout=False)
+    fig, axes = plt.subplots(1, 3, figsize=(14.8, 5.8), constrained_layout=False)
     axes = np.atleast_1d(axes).ravel()
 
     for ax, (_, er) in zip(axes, event_df.iterrows()):
@@ -1290,7 +1290,7 @@ def plot_three_events_peak_row(
         _draw_event_basemap(ax, shp_gdf)
 
         if time_mask.sum() == 0:
-            ax.text(0.5, 0.5, "No samples", transform=ax.transAxes, ha="center", va="center", fontsize=9)
+            ax.text(0.5, 0.5, "No samples", transform=ax.transAxes, ha="center", va="center", fontsize=11)
         else:
             lons = meta.loc[time_mask, "lon"].to_numpy()
             lats = meta.loc[time_mask, "lat"].to_numpy()
@@ -1310,23 +1310,25 @@ def plot_three_events_peak_row(
             )
             pmst = pmst_pred[time_mask]
             ax.set_xlabel(
-                f"PMST peak: Ultra-low={(pmst == 0).sum()} Moderate-low={(pmst == 1).sum()} Clear={(pmst == 2).sum()}",
-                fontsize=8,
+                "PMST peak counts\n"
+                f"Ultra-low={(pmst == 0).sum()} | Moderate-low={(pmst == 1).sum()} | Clear={(pmst == 2).sum()}",
+                fontsize=10,
                 color="#4b5563",
+                linespacing=1.15,
             )
 
         ax.set_title(
             f"E{rank} peak — observed visibility\n{center_time.strftime('%Y-%m-%d %H:00')} UTC",
-            fontsize=10,
+            fontsize=12,
             fontweight="600",
             pad=6,
         )
 
     # A manually placed colorbar is part of this fixed three-panel layout;
     # keep all subplot geometry explicit rather than invoking tight_layout.
-    fig.subplots_adjust(left=0.04, right=0.98, top=0.80, bottom=0.25, wspace=0.08)
+    fig.subplots_adjust(left=0.04, right=0.98, top=0.80, bottom=0.30, wspace=0.10)
     if vis_mappable is not None:
-        cax = fig.add_axes([0.2, 0.08, 0.6, 0.03])
+        cax = fig.add_axes([0.2, 0.07, 0.6, 0.03])
         cb = fig.colorbar(vis_mappable, cax=cax, orientation="horizontal")
         cb.set_ticks([VIS_MIN_EVENT, 500.0, 1000.0, VIS_MAX_EVENT])
         cb.set_ticklabels(["50", "500", "1000", "2000"])
@@ -1334,7 +1336,7 @@ def plot_three_events_peak_row(
 
     fig.suptitle(
         "Three widespread Low-vis events — observed visibility at peak hour",
-        fontsize=12,
+        fontsize=14,
         fontweight="bold",
         y=0.96,
     )
@@ -1396,11 +1398,11 @@ def plot_event_metric_comparison(hourly_df, event_row, output_path):
     fig.legend(handles, labels, loc="lower center", ncol=3, frameon=True, bbox_to_anchor=(0.5, 0.02))
     fig.suptitle(
         "PMST vs IFS During Widespread Low-vis Event\n" + _format_event_label(event_row),
-        fontsize=13,
+        fontsize=15,
         fontweight="bold",
         y=0.965,
     )
-    plt.tight_layout(rect=(0.01, 0.11, 0.99, 0.90))
+    plt.tight_layout(rect=(0.01, 0.15, 0.99, 0.90))
     save_figure(fig, output_path)
     return fig
 
@@ -1559,7 +1561,7 @@ def plot_event_summary_comparison(summary_df, output_path):
                     f"Δ={delta:+.2f}",
                     ha="center",
                     va="bottom",
-                    fontsize=8,
+                    fontsize=10,
                     color=pmst_color if delta >= 0 else ifs_color,
                 )
 
@@ -1569,7 +1571,7 @@ def plot_event_summary_comparison(summary_df, output_path):
 
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="lower center", ncol=2, frameon=True, bbox_to_anchor=(0.5, 0.02))
-    fig.suptitle("Widespread Low-vis Events: PMST vs IFS Summary", fontsize=13, fontweight="bold", y=0.965)
+    fig.suptitle("Widespread Low-vis Events: PMST vs IFS Summary", fontsize=15, fontweight="bold", y=0.965)
     plt.tight_layout(rect=(0.01, 0.11, 0.99, 0.90))
     save_figure(fig, output_path)
     return fig

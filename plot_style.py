@@ -32,12 +32,12 @@ def setup_style(font_family="DejaVu Serif"):
     """Apply journal-ready rcParams."""
     plt.rcParams.update({
         "font.family":      font_family,
-        "font.size":        10,
-        "axes.labelsize":   11,
-        "axes.titlesize":   12,
-        "xtick.labelsize":  9,
-        "ytick.labelsize":  9,
-        "legend.fontsize":  9,
+        "font.size":        12,
+        "axes.labelsize":   13,
+        "axes.titlesize":   14,
+        "xtick.labelsize":  11,
+        "ytick.labelsize":  11,
+        "legend.fontsize":  11,
         "figure.dpi":       150,
         "savefig.dpi":      300,
         "savefig.bbox":     "tight",
@@ -77,7 +77,7 @@ def export_fig(fig, path, formats=("png",), dpi=300):
 def add_panel_label(ax, label, x=-0.12, y=1.02):
     """Add panel letter (a), (b), (c) etc."""
     ax.text(x, y, f"({label})", transform=ax.transAxes,
-            fontsize=12, fontweight="bold", va="bottom")
+            fontsize=14, fontweight="bold", va="bottom")
 
 
 def get_fog_mist_clear_colors():
