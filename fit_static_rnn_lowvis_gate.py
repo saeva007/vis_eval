@@ -26,6 +26,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--min-ultra-recall", type=float, default=0.55)
     p.add_argument("--min-moderate-recall", type=float, default=0.30)
     p.add_argument("--min-moderate-csi", type=float, default=0.09)
+    p.add_argument(
+        "--max-event-area-ratio",
+        type=float,
+        default=0.0,
+        help="Maximum Low-vis predicted/observed area ratio for every validation event; <=0 disables.",
+    )
     p.add_argument("--target-max-fpr", type=float, default=0.035)
     p.add_argument("--gate-low", type=float, default=0.05)
     p.add_argument("--gate-high", type=float, default=0.95)
@@ -158,17 +164,27 @@ def main() -> None:
         pred = predictions(calibrated, float(gate))
         row: Dict[str, object] = {"low_vis_gate": float(gate), **metrics(labels, pred)}
         recalls = []
+        area_ratios = []
         for event_id, mask in masks:
             event_metrics = metrics(labels[mask], pred[mask])
             recall = float(event_metrics["low_vis_recall"])
+            area_ratio = float(event_metrics["low_vis_area_ratio"])
             row[f"event_{event_id}_low_vis_recall"] = recall
+            row[f"event_{event_id}_low_vis_area_ratio"] = area_ratio
             recalls.append(recall)
+            area_ratios.append(area_ratio)
         row["min_event_low_vis_recall"] = float(np.min(recalls))
+        row["max_event_low_vis_area_ratio"] = float(np.max(area_ratios))
+        event_area_ok = bool(
+            args.max_event_area_ratio <= 0.0
+            or row["max_event_low_vis_area_ratio"] <= args.max_event_area_ratio
+        )
         row["passes_constraints"] = bool(
             row["min_event_low_vis_recall"] >= args.min_event_recall
             and row["Fog_R"] >= args.min_ultra_recall
             and row["Mist_R"] >= args.min_moderate_recall
             and row["Mist_CSI"] >= args.min_moderate_csi
+            and event_area_ok
         )
         row["meets_target_fpr"] = bool(row["false_positive_rate"] <= args.target_max_fpr)
         rows.append(row)
@@ -188,6 +204,10 @@ def main() -> None:
             + (args.min_moderate_recall - diagnostic["Mist_R"]).clip(lower=0.0)
             + (args.min_moderate_csi - diagnostic["Mist_CSI"]).clip(lower=0.0)
         )
+        if args.max_event_area_ratio > 0.0:
+            diagnostic["constraint_shortfall"] += (
+                diagnostic["max_event_low_vis_area_ratio"] - args.max_event_area_ratio
+            ).clip(lower=0.0)
         closest = diagnostic.sort_values(
             ["constraint_shortfall", "false_positive_rate", "low_vis_csi", "low_vis_gate"],
             ascending=[True, True, False, False],
@@ -198,6 +218,10 @@ def main() -> None:
             "min_ultra_recall": bool(closest["Fog_R"] >= args.min_ultra_recall),
             "min_moderate_recall": bool(closest["Mist_R"] >= args.min_moderate_recall),
             "min_moderate_csi": bool(closest["Mist_CSI"] >= args.min_moderate_csi),
+            "max_event_area_ratio": bool(
+                args.max_event_area_ratio <= 0.0
+                or closest["max_event_low_vis_area_ratio"] <= args.max_event_area_ratio
+            ),
         }
         closest_metrics = {
             key: (value.item() if isinstance(value, np.generic) else value)
@@ -220,6 +244,7 @@ def main() -> None:
                 "min_ultra_recall": args.min_ultra_recall,
                 "min_moderate_recall": args.min_moderate_recall,
                 "min_moderate_csi": args.min_moderate_csi,
+                "max_event_area_ratio": args.max_event_area_ratio,
             },
             "failed_constraints_at_closest_gate": [name for name, passed in checks.items() if not passed],
             "closest_diagnostic_gate": closest_metrics,
@@ -258,6 +283,7 @@ def main() -> None:
             "min_ultra_recall": args.min_ultra_recall,
             "min_moderate_recall": args.min_moderate_recall,
             "min_moderate_csi": args.min_moderate_csi,
+            "max_event_area_ratio": args.max_event_area_ratio,
         },
         "validation_metrics": {k: v for k, v in best.items() if k != "passes_constraints"},
         "target_max_fpr_met": bool(best["false_positive_rate"] <= args.target_max_fpr),
