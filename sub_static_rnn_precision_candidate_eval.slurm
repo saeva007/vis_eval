@@ -19,6 +19,14 @@ export OPENBLAS_NUM_THREADS="${SLURM_CPUS_PER_TASK:-32}"
 export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-32}"
 
 BASE="${BASE:-/public/home/putianshu/vis_mlp}"
+module purge
+module load compiler/devtoolset/7.3.1
+module load mpi/hpcx/2.11.0/gcc-7.3.1
+source /public/home/xichen/ncydata/dtk/dtk-24.04.1/env.sh
+export LD_LIBRARY_PATH=/public/home/xichen/ncydata/dtk/dtk-24.04.1/.hyhal/lib:${LD_LIBRARY_PATH:-}
+export CONDA_NO_PLUGINS=true
+export CONDA_SOLVER=classic
+
 RUNTIME_BOOTSTRAP="${RUNTIME_BOOTSTRAP:-${BASE}/ifs_baseline/activate_eval_torch_runtime.sh}"
 if [[ ! -f "${RUNTIME_BOOTSTRAP}" ]]; then
     echo "ERROR: eval torch runtime bootstrap not found: ${RUNTIME_BOOTSTRAP}" >&2
