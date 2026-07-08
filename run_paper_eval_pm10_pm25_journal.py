@@ -1227,6 +1227,7 @@ def plot_confusion_pmst_vs_ifs(
         ax.set_xticklabels(CLASS_NAMES)
         if panel_idx == 0:
             ax.set_yticklabels(CLASS_NAMES)
+            ax.tick_params(axis="y", pad=12)
             ax.set_ylabel("Observed class", labelpad=10)
         else:
             ax.tick_params(axis="y", which="both", left=False, labelleft=False)
@@ -1236,19 +1237,24 @@ def plot_confusion_pmst_vs_ifs(
             for j in range(3):
                 txt = f"{cm_norm[i, j]:.2f}\n{cm[i, j]:,}"
                 ax.text(j, i, txt, ha="center", va="center", fontsize=11, color="#111111")
+        # Keep highlighted diagonal cells clear of the outer axes spines so
+        # every side retains the same visible linewidth.
+        diag_inset = 0.035
         for diag_idx in range(3):
             ax.add_patch(
                 Rectangle(
-                    (diag_idx - 0.5, diag_idx - 0.5),
-                    1.0,
-                    1.0,
+                    (diag_idx - 0.5 + diag_inset, diag_idx - 0.5 + diag_inset),
+                    1.0 - 2.0 * diag_inset,
+                    1.0 - 2.0 * diag_inset,
                     fill=False,
                     edgecolor="#16783F",
                     linewidth=3.2,
-                    zorder=5,
+                    zorder=7,
                 )
             )
-        low_vis_box_pad = 0.14
+        # A small exterior offset separates the combined Low-vis outline from
+        # the cell boxes without extending into the left-hand tick labels.
+        low_vis_box_pad = 0.035
         ax.add_patch(
             Rectangle(
                 (-0.5 - low_vis_box_pad, -0.5 - low_vis_box_pad),
@@ -1259,7 +1265,7 @@ def plot_confusion_pmst_vs_ifs(
                 linewidth=2.8,
                 linestyle=(0, (5, 3)),
                 clip_on=False,
-                zorder=6,
+                zorder=8,
             )
         )
     cbar = fig.colorbar(

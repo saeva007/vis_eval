@@ -19,8 +19,15 @@ export OPENBLAS_NUM_THREADS="${SLURM_CPUS_PER_TASK:-32}"
 export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-32}"
 
 BASE="${BASE:-/public/home/putianshu/vis_mlp}"
+RUNTIME_BOOTSTRAP="${RUNTIME_BOOTSTRAP:-${BASE}/ifs_baseline/activate_eval_torch_runtime.sh}"
+if [[ ! -f "${RUNTIME_BOOTSTRAP}" ]]; then
+    echo "ERROR: eval torch runtime bootstrap not found: ${RUNTIME_BOOTSTRAP}" >&2
+    exit 2
+fi
+source "${RUNTIME_BOOTSTRAP}"
+
 SCRIPT_PATH="${SCRIPT_PATH:-${BASE}/paper_eval/run_static_rnn_precision_candidate_eval.py}"
-PYTHON_BIN="${PYTHON_BIN:-/public/home/putianshu/miniconda3/envs/torch/bin/python}"
+PYTHON_BIN="${PYTHON_BIN:-$(command -v python)}"
 MANIFEST_RAW="${MANIFEST:?Set MANIFEST to the precision-loss TSV manifest}"
 if [[ "${MANIFEST_RAW}" = /* ]]; then
     MANIFEST="${MANIFEST_RAW}"
