@@ -56,6 +56,41 @@ LIMIT_SAMPLES="${LIMIT_SAMPLES:-}"
 PLOTS="${PLOTS:-all}"
 REUSE_INFERENCE_DIR="${REUSE_INFERENCE_DIR:-}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
+PREPARE_REUSE_FROM_SAMPLE="${PREPARE_REUSE_FROM_SAMPLE:-0}"
+PREP_SCRIPT_PATH="${PREP_SCRIPT_PATH:-/public/home/putianshu/vis_mlp/paper_eval/prepare_best_effort_mean_for_static_rnn_eval.py}"
+SOURCE_SAMPLE_CSV="${SOURCE_SAMPLE_CSV:-}"
+PREPARE_MAIN_DATA_DIR="${PREPARE_MAIN_DATA_DIR:-}"
+PREPARED_DATA_DIR="${PREPARED_DATA_DIR:-}"
+PREPARED_REUSE_DIR="${PREPARED_REUSE_DIR:-}"
+PREPARE_SOURCE_NAME="${PREPARE_SOURCE_NAME:-tianji_t2nd_ifs_mean_softmax}"
+PREPARE_MAIN_TIME_SHIFT_HOURS="${PREPARE_MAIN_TIME_SHIFT_HOURS:-0}"
+PREPARE_SAMPLE_TIME_SHIFT_HOURS="${PREPARE_SAMPLE_TIME_SHIFT_HOURS:-0}"
+
+if [[ "${PREPARE_REUSE_FROM_SAMPLE}" == "1" || "${PREPARE_REUSE_FROM_SAMPLE}" == "true" ]]; then
+    if [[ -z "${SOURCE_SAMPLE_CSV}" || -z "${PREPARED_DATA_DIR}" || -z "${PREPARED_REUSE_DIR}" ]]; then
+        echo "ERROR: PREPARE_REUSE_FROM_SAMPLE requires SOURCE_SAMPLE_CSV, PREPARED_DATA_DIR, and PREPARED_REUSE_DIR." >&2
+        exit 2
+    fi
+    MAIN_DATA_FOR_PREP="${PREPARE_MAIN_DATA_DIR:-${DATA_DIR}}"
+    if [[ -z "${MAIN_DATA_FOR_PREP}" ]]; then
+        echo "ERROR: set PREPARE_MAIN_DATA_DIR or DATA_DIR for PREPARE_REUSE_FROM_SAMPLE." >&2
+        exit 2
+    fi
+    PREP_CMD=(
+        python "${PREP_SCRIPT_PATH}"
+        --sample_csv "${SOURCE_SAMPLE_CSV}"
+        --main_data_dir "${MAIN_DATA_FOR_PREP}"
+        --out_data_dir "${PREPARED_DATA_DIR}"
+        --out_reuse_dir "${PREPARED_REUSE_DIR}"
+        --source_name "${PREPARE_SOURCE_NAME}"
+        --main_time_shift_hours "${PREPARE_MAIN_TIME_SHIFT_HOURS}"
+        --sample_time_shift_hours "${PREPARE_SAMPLE_TIME_SHIFT_HOURS}"
+    )
+    echo "Prepare command: ${PREP_CMD[*]}"
+    "${PREP_CMD[@]}"
+    DATA_DIR="${PREPARED_DATA_DIR}"
+    REUSE_INFERENCE_DIR="${PREPARED_REUSE_DIR}"
+fi
 
 CMD=(
     python "${SCRIPT_PATH}"
