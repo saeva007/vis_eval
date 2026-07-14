@@ -608,7 +608,10 @@ def main() -> None:
     model.load_state_dict(checkpoint["model_state"], strict=True)
     device = choose_device(args.device)
     model = model.to(device).eval()
-    schedule = common.DiffusionSchedule(int(model_config.get("diffusion_steps", 1000))).to(device)
+    schedule = common.DiffusionSchedule(
+        int(model_config.get("diffusion_steps", 1000)),
+        ddim_clip_x0=float(model_config.get("ddim_clip_x0", 0.0)),
+    ).to(device)
     scaler = common.TrajectoryScaler.from_dict(checkpoint["scaler"])
     splits = [value.strip() for value in args.splits.split(",") if value.strip()]
     results = {}
@@ -639,6 +642,8 @@ def main() -> None:
         "checkpoint": str(Path(args.checkpoint).resolve()),
         "data_dir": str(Path(args.data_dir).resolve()),
         "model_config": model_config,
+        "checkpoint_weights_source": checkpoint.get("weights_source", "online"),
+        "checkpoint_ema_updates": int(checkpoint.get("ema_updates", 0)),
         "members": args.members,
         "ddim_steps": args.ddim_steps,
         "splits": splits,
