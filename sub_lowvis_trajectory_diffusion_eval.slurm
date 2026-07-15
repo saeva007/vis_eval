@@ -16,7 +16,7 @@ set -euo pipefail
 BASE="${LOWVIS_TRAJ_BASE:-/public/home/putianshu/vis_mlp}"
 TRAIN_DIR="${TRAIN_DIR:-${BASE}/train}"
 EVAL_DIR="${EVAL_DIR:-${BASE}/paper_eval}"
-DATA_DIR="${LOWVIS_TRAJ_DATA_DIR:-${BASE}/ml_dataset_s2_tianji_trajectory_0_48h_pm10_pm25_v1}"
+DATA_DIR="${LOWVIS_TRAJ_DATA_DIR:-${BASE}/ml_dataset_s2_tianji_trajectory_1_48h_pm10_pm25_v1}"
 : "${LOWVIS_TRAJ_CHECKPOINT:?Set LOWVIS_TRAJ_CHECKPOINT to a trained diffusion or Gaussian checkpoint}"
 RUN_ID="${LOWVIS_TRAJ_EVAL_RUN_ID:-$(basename "${LOWVIS_TRAJ_CHECKPOINT}" .pt)}"
 OUT_DIR="${LOWVIS_TRAJ_OUT_DIR:-${BASE}/trajectory_diffusion_results/${RUN_ID}}"
@@ -37,4 +37,3 @@ python "${EVAL_DIR}/evaluate_lowvis_trajectory_diffusion.py" \
     --members "${LOWVIS_TRAJ_MEMBERS:-50}" \
     --ddim-steps "${LOWVIS_TRAJ_DDIM_STEPS:-50}" \
     ${LOWVIS_TRAJ_EVAL_EXTRA_ARGS:-}
-

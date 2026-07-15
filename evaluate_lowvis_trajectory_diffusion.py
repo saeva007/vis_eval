@@ -270,6 +270,19 @@ class LeadAccumulator:
         return pd.DataFrame(data)
 
 
+def summarize_leads(table: pd.DataFrame) -> Dict[str, float]:
+    weights = np.maximum(table.n.to_numpy(), 1)
+    out = {
+        "MAE_m": float(np.average(table.MAE_m, weights=weights)),
+        "RMSE_m": float(np.sqrt(np.average(table.RMSE_m ** 2, weights=weights))),
+        "CRPS_m": float(np.average(table.CRPS_m, weights=weights)),
+    }
+    for level in (50, 80, 90):
+        out[f"coverage_{level}"] = float(np.average(table[f"coverage_{level}"], weights=weights))
+        out[f"width_{level}_m"] = float(np.average(table[f"width_{level}_m"], weights=weights))
+    return out
+
+
 def choose_device(value: str) -> torch.device:
     if value == "cpu" or (value == "auto" and not torch.cuda.is_available()):
         return torch.device("cpu")
@@ -292,7 +305,10 @@ def evaluate_split(args, split: str, model, model_type: str, schedule, scaler, c
     lead_acc = LeadAccumulator(common.TARGET_LENGTH)
     energy_values: List[np.ndarray] = []
     variogram_values: List[np.ndarray] = []
+    comparison_energy_values: List[np.ndarray] = []
+    comparison_variogram_values: List[np.ndarray] = []
     events: List[Dict[str, object]] = []
+    comparison_events: List[Dict[str, object]] = []
     best_cases: List[Tuple[float, int, np.ndarray, np.ndarray]] = []
     cursor = 0
     model.eval()
@@ -310,6 +326,7 @@ def evaluate_split(args, split: str, model, model_type: str, schedule, scaler, c
         quantiles[slc] = np.quantile(samples, quantile_levels, axis=1).transpose(1, 0, 2)
         probabilities[slc] = common.visibility_class_probabilities(samples)
         lead_acc.update(samples, visibility, mask)
+        comparison_positions = np.asarray(common.COMPARISON_TARGET_POSITIONS, dtype=np.int64)
         complete = np.all(mask, axis=1)
         if complete.any():
             complete_samples = samples[complete]
@@ -320,6 +337,16 @@ def evaluate_split(args, split: str, model, model_type: str, schedule, scaler, c
             events.extend(event_rows(complete_samples, complete_vis, complete_indices, common.TARGET_LEADS))
             for local, global_idx in zip(np.where(complete)[0], complete_indices):
                 best_cases.append((float(np.min(visibility[local])), int(global_idx), samples[local], visibility[local]))
+        comparison_complete = np.all(mask[..., comparison_positions], axis=1)
+        if comparison_complete.any():
+            comparison_samples = samples[comparison_complete][..., comparison_positions]
+            comparison_vis = visibility[comparison_complete][..., comparison_positions]
+            comparison_indices = np.arange(cursor, cursor + bsz)[comparison_complete]
+            comparison_energy_values.append(energy_score(comparison_samples, comparison_vis))
+            comparison_variogram_values.append(variogram_score(comparison_samples, comparison_vis))
+            comparison_events.extend(
+                event_rows(comparison_samples, comparison_vis, comparison_indices, common.COMPARISON_LEADS)
+            )
         cursor += bsz
         if cursor % max(args.batch_size * 20, 1) == 0 or cursor == n:
             print(f"[{split}] sampled {cursor}/{n}", flush=True)
@@ -329,24 +356,36 @@ def evaluate_split(args, split: str, model, model_type: str, schedule, scaler, c
     lead_table.to_csv(out_dir / f"metrics_by_lead_{split}.csv", index=False)
     event_df = pd.DataFrame(events)
     event_df.to_csv(out_dir / f"event_trajectory_metrics_{split}.csv", index=False)
+    comparison_event_df = pd.DataFrame(comparison_events)
+    comparison_event_df.to_csv(out_dir / f"event_trajectory_metrics_{split}_12_48.csv", index=False)
     complete_n = int(len(event_df))
-    overall = {
+    overall: Dict[str, object] = {
         "split": split,
         "n_trajectories": n,
         "n_complete_trajectories": complete_n,
-        "MAE_m": float(np.average(lead_table.MAE_m, weights=np.maximum(lead_table.n, 1))),
-        "RMSE_m": float(np.sqrt(np.average(lead_table.RMSE_m ** 2, weights=np.maximum(lead_table.n, 1)))),
-        "CRPS_m": float(np.average(lead_table.CRPS_m, weights=np.maximum(lead_table.n, 1))),
+        "n_complete_trajectories_12_48": int(len(comparison_event_df)),
         "Energy_Score": float(np.mean(np.concatenate(energy_values))) if energy_values else np.nan,
         "Variogram_Score": float(np.mean(np.concatenate(variogram_values))) if variogram_values else np.nan,
+        "Energy_Score_12_48": (
+            float(np.mean(np.concatenate(comparison_energy_values))) if comparison_energy_values else np.nan
+        ),
+        "Variogram_Score_12_48": (
+            float(np.mean(np.concatenate(comparison_variogram_values))) if comparison_variogram_values else np.nan
+        ),
     }
-    for level in (50, 80, 90):
-        overall[f"coverage_{level}"] = float(np.average(lead_table[f"coverage_{level}"], weights=np.maximum(lead_table.n, 1)))
-        overall[f"width_{level}_m"] = float(np.average(lead_table[f"width_{level}_m"], weights=np.maximum(lead_table.n, 1)))
+    overall.update(summarize_leads(lead_table))
+    comparison_table = lead_table[lead_table.lead_hour.isin(common.COMPARISON_LEADS)].reset_index(drop=True)
+    overall.update({f"{key}_12_48": value for key, value in summarize_leads(comparison_table).items()})
     if not event_df.empty:
         overall["event_occurrence_brier"] = float(np.mean((event_df.event_probability - event_df.observed_event) ** 2))
         for key in ("onset_error_h", "duration_error_h", "min_visibility_error_m"):
             overall[f"{key}_MAE"] = float(np.nanmean(np.abs(event_df[key])))
+    if not comparison_event_df.empty:
+        overall["event_occurrence_brier_12_48"] = float(
+            np.mean((comparison_event_df.event_probability - comparison_event_df.observed_event) ** 2)
+        )
+        for key in ("onset_error_h", "duration_error_h", "min_visibility_error_m"):
+            overall[f"{key}_MAE_12_48"] = float(np.nanmean(np.abs(comparison_event_df[key])))
     (out_dir / f"probabilistic_metrics_{split}.json").write_text(json.dumps(overall, indent=2), encoding="utf-8")
 
     # Save full ensembles only for the three most severe complete observed cases.
@@ -370,7 +409,14 @@ def evaluate_split(args, split: str, model, model_type: str, schedule, scaler, c
     return {"overall": overall, "probabilities": probabilities, "dataset": dataset, "n": n}
 
 
-def append_classification_outputs(split: str, result: Mapping[str, object], thresholds: Mapping[str, object], out_dir: Path) -> Dict[str, float]:
+def append_classification_outputs(
+    split: str,
+    result: Mapping[str, object],
+    thresholds: Mapping[str, object],
+    out_dir: Path,
+    target_leads: Sequence[int],
+    comparison_positions: Sequence[int],
+) -> Dict[str, float]:
     dataset = result["dataset"]
     n = int(result["n"])
     visibility = np.asarray(dataset.visibility[:n], dtype=np.float32)
@@ -389,6 +435,37 @@ def append_classification_outputs(split: str, result: Mapping[str, object], thre
     reliability = reliability_table(probabilities, truth, mask)
     reliability.to_csv(out_dir / f"reliability_{split}.csv", index=False)
 
+    comparison_positions = np.asarray(comparison_positions, dtype=np.int64)
+    comparison_probs = probabilities[:, comparison_positions]
+    comparison_truth = truth[:, comparison_positions]
+    comparison_mask = mask[:, comparison_positions]
+    comparison_pred = pred[:, comparison_positions]
+    comparison_metrics = classification_metrics(
+        comparison_truth[comparison_mask], comparison_pred[comparison_mask]
+    )
+    comparison_metrics["Brier_Fog"] = float(
+        np.mean((comparison_probs[..., 0][comparison_mask] - (comparison_truth[comparison_mask] == 0)) ** 2)
+    )
+    comparison_metrics["Brier_Mist"] = float(
+        np.mean((comparison_probs[..., 1][comparison_mask] - (comparison_truth[comparison_mask] == 1)) ** 2)
+    )
+    comparison_metrics["Brier_LowVis"] = float(
+        np.mean(
+            (
+                (comparison_probs[..., 0] + comparison_probs[..., 1])[comparison_mask]
+                - (comparison_truth[comparison_mask] <= 1)
+            )
+            ** 2
+        )
+    )
+    (out_dir / f"classification_metrics_{split}_12_48.json").write_text(
+        json.dumps(comparison_metrics, indent=2), encoding="utf-8"
+    )
+    reliability_table(comparison_probs, comparison_truth, comparison_mask).to_csv(
+        out_dir / f"reliability_{split}_12_48.csv", index=False
+    )
+    metrics.update({f"{key}_12_48": value for key, value in comparison_metrics.items()})
+
     meta = pd.read_csv(dataset.data_dir / f"meta_{split}.csv", nrows=n)
     flat = pd.DataFrame(
         {
@@ -405,7 +482,7 @@ def append_classification_outputs(split: str, result: Mapping[str, object], thre
     pd.DataFrame(station_rows).to_csv(out_dir / f"station_metrics_{split}.csv", index=False)
 
     lead_rows = []
-    for pos, lead in enumerate(range(12, 49)):
+    for pos, lead in enumerate(target_leads):
         valid = mask[:, pos]
         row = {"lead_hour": lead}
         row.update(classification_metrics(truth[:, pos][valid], pred[:, pos][valid]))
@@ -504,6 +581,8 @@ def exact_mainline_comparison(
     test_result: Mapping[str, object],
     candidate_thresholds: Mapping[str, object],
     out_dir: Path,
+    comparison_leads: Sequence[int],
+    comparison_positions: Sequence[int],
 ) -> None:
     """Join mainline probabilities only on exact init/station/lead keys."""
     if not (args.mainline_probs and args.mainline_meta):
@@ -521,10 +600,11 @@ def exact_mainline_comparison(
     dataset = test_result["dataset"]
     n = int(test_result["n"])
     meta = pd.read_csv(dataset.data_dir / "meta_test.csv", nrows=n)
-    leads = np.arange(12, 49, dtype=np.int16)
-    visibility = np.asarray(dataset.visibility[:n], dtype=np.float32)
-    mask = np.asarray(dataset.target_mask[:n], dtype=bool) & np.isfinite(visibility)
-    candidate_probs = np.asarray(test_result["probabilities"])
+    leads = np.asarray(comparison_leads, dtype=np.int16)
+    positions = np.asarray(comparison_positions, dtype=np.int64)
+    visibility = np.asarray(dataset.visibility[:n], dtype=np.float32)[:, positions]
+    mask = np.asarray(dataset.target_mask[:n], dtype=bool)[:, positions] & np.isfinite(visibility)
+    candidate_probs = np.asarray(test_result["probabilities"])[:, positions]
     candidate = pd.DataFrame(
         {
             "init_time": np.repeat(pd.to_datetime(meta.init_time).to_numpy(), len(leads)),
@@ -626,12 +706,25 @@ def main() -> None:
         val = results["val"]
         vis = np.asarray(val["dataset"].visibility[: val["n"]], dtype=np.float32)
         mask = np.asarray(val["dataset"].target_mask[: val["n"]], dtype=bool)
-        thresholds = fit_thresholds(np.asarray(val["probabilities"]), vis, mask)
+        positions = np.asarray(common.COMPARISON_TARGET_POSITIONS, dtype=np.int64)
+        thresholds = fit_thresholds(
+            np.asarray(val["probabilities"])[:, positions],
+            vis[:, positions],
+            mask[:, positions],
+        )
+        thresholds["fitted_leads"] = list(common.COMPARISON_LEADS)
         (out_dir / "validation_thresholds.json").write_text(json.dumps(thresholds, indent=2), encoding="utf-8")
 
     combined = {}
     for split, result in results.items():
-        classification = append_classification_outputs(split, result, thresholds, out_dir)
+        classification = append_classification_outputs(
+            split,
+            result,
+            thresholds,
+            out_dir,
+            common.TARGET_LEADS,
+            common.COMPARISON_TARGET_POSITIONS,
+        )
         combined[split] = dict(result["overall"])
         combined[split].update(classification)
         plot_summary(out_dir, split)
@@ -654,7 +747,14 @@ def main() -> None:
     if args.compare_result_dir:
         compare_result_dirs(out_dir, Path(args.compare_result_dir))
     if "test" in results:
-        exact_mainline_comparison(args, results["test"], thresholds, out_dir)
+        exact_mainline_comparison(
+            args,
+            results["test"],
+            thresholds,
+            out_dir,
+            common.COMPARISON_LEADS,
+            common.COMPARISON_TARGET_POSITIONS,
+        )
     print(json.dumps(combined, indent=2), flush=True)
 
 
