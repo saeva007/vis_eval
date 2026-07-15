@@ -744,7 +744,10 @@ def detect_widespread_fog_events(
 
 def _draw_event_basemap(ax, shp_gdf=None):
     """Compact basemap for event panels."""
-    if shp_gdf is not None:
+    if isinstance(shp_gdf, dict):
+        for xs, ys in shp_gdf.get("segments", []):
+            ax.plot(xs, ys, color="#404040", linewidth=0.45, zorder=1)
+    elif shp_gdf is not None:
         shp_gdf.boundary.plot(ax=ax, color="#404040", linewidth=0.45, zorder=1)
     ax.set_xlim(72, 136)
     ax.set_ylim(17, 54)
