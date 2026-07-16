@@ -2424,13 +2424,16 @@ def plot_event_footprint(
     fig, axes = plt.subplots(1, len(dfs), figsize=(4.5 * len(dfs), 4.6), sharey=True, squeeze=False)
     for i, (ax, df) in enumerate(zip(axes.ravel(), dfs), start=1):
         x = df["hour_offset"].to_numpy(dtype=float)
+        obs_color = "#111111"
+        pmst_color = FOG_COLOR
+        ifs_color = IFS_DIAG_COLOR
         line_specs = [
-            (_count_col(df, "obs_ultralow_count", "obs_fog_count"), "#111111", "o", 1.9, "-", "Obs Ultra-low"),
-            ("obs_low_vis_count", "#111111", "o", 1.2, "--", "Obs Low-vis event"),
-            (_count_col(df, "pmst_ultralow_count", "pmst_fog_count"), PMST_COLOR, "s", 1.9, "-", "PMST Ultra-low"),
-            ("pmst_low_vis_count", PMST_COLOR, "s", 1.2, "--", "PMST Low-vis event"),
-            (_count_col(df, "ifs_ultralow_count", "ifs_fog_count"), IFS_DIAG_COLOR, "^", 1.9, "-", "IFS Ultra-low"),
-            ("ifs_low_vis_count", IFS_DIAG_COLOR, "^", 1.2, "--", "IFS Low-vis event"),
+            (_count_col(df, "obs_ultralow_count", "obs_fog_count"), obs_color, "o", 1.9, "-", "Obs Ultra-low"),
+            ("obs_low_vis_count", obs_color, "o", 1.2, "--", "Obs Low-vis event"),
+            (_count_col(df, "pmst_ultralow_count", "pmst_fog_count"), pmst_color, "s", 1.9, "-", "PMST Ultra-low"),
+            ("pmst_low_vis_count", pmst_color, "s", 1.2, "--", "PMST Low-vis event"),
+            (_count_col(df, "ifs_ultralow_count", "ifs_fog_count"), ifs_color, "^", 1.9, "-", "IFS Ultra-low"),
+            ("ifs_low_vis_count", ifs_color, "^", 1.2, "--", "IFS Low-vis event"),
         ]
         for col, color, marker, lw, ls, label in line_specs:
             if col in df:
