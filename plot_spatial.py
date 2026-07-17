@@ -1525,6 +1525,7 @@ def plot_event_summary_comparison(summary_df, output_path):
     if summary_df.empty:
         return None
 
+    summary_df = _ordered_events_for_display(summary_df)
     setup_paper_style()
     pmst_color = PALETTE["Fog"]
     ifs_color = "#5B5B5B"
