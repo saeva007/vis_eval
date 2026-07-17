@@ -951,6 +951,7 @@ def export_per_sample(
             "hour_utc",
             "hour_analysis",
             "init_time",
+            "forecast_reference_time",
             "init_hour",
             "lead_hour",
         ]

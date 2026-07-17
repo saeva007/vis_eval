@@ -272,16 +272,53 @@ def main() -> None:
     if not event_df.empty:
         event_df.to_csv(event_path, index=False, float_format="%.8f")
 
+    member_provenance: List[Dict[str, object]] = []
+    for row in overall_rows:
+        experiment_id = int(row["experiment_id"])
+        label = str(row["label"])
+        probability_path = out_dir / f"{experiment_id}_{label}_probs.npy"
+        per_sample_path = out_dir / f"{experiment_id}_{label}_event_eval" / "per_sample_eval.csv"
+        checkpoint_path = Path(str(row["checkpoint"])).expanduser()
+        scaler_path = Path(str(row["scaler"])).expanduser()
+        for required_path in (probability_path, per_sample_path, checkpoint_path, scaler_path):
+            if not required_path.is_file():
+                raise FileNotFoundError(f"Missing provenance input after candidate evaluation: {required_path}")
+        member_provenance.append(
+            {
+                "candidate_id": str(row["candidate_id"]),
+                "seed": str(row["seed"]),
+                "experiment_id": experiment_id,
+                "label": label,
+                "run_id": str(row["run_id"]),
+                "checkpoint": str(checkpoint_path.resolve()),
+                "checkpoint_sha256": journal.sha256_file(checkpoint_path),
+                "scaler": str(scaler_path.resolve()),
+                "scaler_sha256": journal.sha256_file(scaler_path),
+                "probability_file": str(probability_path.resolve()),
+                "probability_sha256": journal.sha256_file(probability_path),
+                "per_sample_file": str(per_sample_path.resolve()),
+                "per_sample_sha256": journal.sha256_file(per_sample_path),
+            }
+        )
+
     config = {
         "experiment_status": "candidate_only",
         "replaces_mainline": False,
         "manifest": str(Path(args.manifest).resolve()),
+        "manifest_sha256": journal.sha256_file(Path(args.manifest)),
         "eval_split": args.split,
         "threshold_source": "argmax",
         "data_dir": str(data_dir),
         "out_dir": str(out_dir),
         "layout": asdict(layout),
         "targets": [target.run_id for _, _, target in targets],
+        "members": member_provenance,
+        "dataset_provenance": {
+            "y_file": str((data_dir / f"y_{args.split}.npy").resolve()),
+            "y_sha256": journal.sha256_file(data_dir / f"y_{args.split}.npy"),
+            "meta_file": str((data_dir / f"meta_{args.split}.csv").resolve()),
+            "meta_sha256": journal.sha256_file(data_dir / f"meta_{args.split}.csv"),
+        },
         "outputs": {
             "overall": str(overall_path),
             "per_class": str(class_path),

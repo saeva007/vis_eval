@@ -28,6 +28,7 @@ Class definitions are identical to the project guide:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import math
@@ -318,7 +319,108 @@ def apply_skip_switches(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
-def reusable_inference_probs(args: argparse.Namespace, base: Path, target: EvalTarget, n_rows: int) -> Optional[np.ndarray]:
+def sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def validate_seed_mean_reuse_config(
+    config: Dict[str, object],
+    base: Path,
+    data_dir: Path,
+    scope: str,
+    n_rows: Optional[int] = None,
+    required_outputs: Optional[Dict[str, Path]] = None,
+) -> bool:
+    """Strictly validate provenance for formal multi-seed probability reuse."""
+
+    marker = str(config.get("probability_combination", ""))
+    if marker != "equal_weight_mean_of_post_softmax_probabilities":
+        return False
+    if int(config.get("schema_version", 0) or 0) != 1:
+        raise ValueError("Three-seed reusable run_config has an unsupported schema_version")
+    if not str(config.get("candidate_id", "") or "").strip():
+        raise ValueError("Three-seed reusable run_config has no candidate_id")
+    seeds = [str(seed) for seed in config.get("seeds", [])] if isinstance(config.get("seeds", []), list) else []
+    ensemble_size = int(config.get("ensemble_size", 0) or 0)
+    if not seeds or len(seeds) != ensemble_size or len(seeds) != len(set(seeds)):
+        raise ValueError(
+            f"Three-seed reusable member contract is invalid: seeds={seeds}, ensemble_size={ensemble_size}"
+        )
+    if str(config.get("decision_rule", "")) != "argmax_of_mean_probabilities":
+        raise ValueError("Three-seed reusable decision rule is not argmax_of_mean_probabilities")
+
+    scope_cfg = config.get(scope, {}) if isinstance(config.get(scope, {}), dict) else {}
+    verification = (
+        scope_cfg.get("dataset_verification", {})
+        if isinstance(scope_cfg.get("dataset_verification", {}), dict)
+        else {}
+    )
+    if not verification:
+        raise ValueError(f"Three-seed reusable run_config has no {scope}.dataset_verification")
+    recorded_data_value = str(verification.get("data_dir", "") or "").strip()
+    if not recorded_data_value:
+        raise ValueError(f"Three-seed reusable {scope} verification has no data_dir")
+    recorded_data_dir = as_abs_under(base, recorded_data_value).resolve()
+    if recorded_data_dir != data_dir.resolve():
+        raise ValueError(
+            f"Three-seed reusable {scope} dataset differs: reuse={recorded_data_dir}, current={data_dir.resolve()}"
+        )
+    recorded_n = int(verification.get("n_samples", scope_cfg.get("n_samples", -1)) or -1)
+    if recorded_n <= 0 or (n_rows is not None and recorded_n != int(n_rows)):
+        raise ValueError(
+            f"Three-seed reusable {scope} sample count differs: reuse={recorded_n}, current={n_rows}"
+        )
+    if not str(verification.get("sample_identity_sha256", "") or "").strip():
+        raise ValueError(f"Three-seed reusable {scope} verification has no sample identity hash")
+    for filename, hash_key in (("y_test.npy", "y_test_sha256"), ("meta_test.csv", "meta_test_sha256")):
+        input_path = data_dir / filename
+        expected_hash = str(verification.get(hash_key, "") or "").strip()
+        if not input_path.is_file() or not expected_hash:
+            raise ValueError(f"Three-seed reusable {scope} verification is missing {filename} provenance")
+        actual_hash = sha256_file(input_path)
+        if actual_hash != expected_hash:
+            raise ValueError(
+                f"Three-seed reusable {scope} {filename} hash differs: reuse={expected_hash}, current={actual_hash}"
+            )
+
+    output_hashes = config.get("output_sha256", {}) if isinstance(config.get("output_sha256", {}), dict) else {}
+    for key, path in (required_outputs or {}).items():
+        expected_hash = str(output_hashes.get(key, "") or "").strip()
+        if not path.is_file() or not expected_hash:
+            raise ValueError(f"Three-seed reusable output provenance is missing: {key} -> {path}")
+        actual_hash = sha256_file(path)
+        if actual_hash != expected_hash:
+            raise ValueError(
+                f"Three-seed reusable output hash differs for {key}: reuse={expected_hash}, current={actual_hash}"
+            )
+    return True
+
+
+def has_seed_mean_reuse_contract_hint(config: Dict[str, object]) -> bool:
+    outputs = config.get("outputs", {}) if isinstance(config.get("outputs", {}), dict) else {}
+    return bool(
+        str(config.get("experiment_status", "")) == "formal_three_seed_candidate"
+        or str(config.get("probability_combination", ""))
+        == "equal_weight_mean_of_post_softmax_probabilities"
+        or str(outputs.get("main_members", "") or "").strip()
+        or str(outputs.get("forecast48_members", "") or "").strip()
+    )
+
+
+def reusable_inference_probs(
+    args: argparse.Namespace,
+    base: Path,
+    target: EvalTarget,
+    n_rows: int,
+    data_dir: Optional[Path] = None,
+) -> Optional[np.ndarray]:
     reuse_value = str(getattr(args, "reuse_inference_dir", "") or "").strip()
     if not reuse_value:
         return None
@@ -333,10 +435,36 @@ def reusable_inference_probs(args: argparse.Namespace, base: Path, target: EvalT
             f"Reusable probs shape mismatch for {target.run_id}: "
             f"got {probs.shape}, expected ({int(n_rows)}, 3)."
         )
+    member_manifest_path = reuse_dir / "ensemble_members.csv"
+    if member_manifest_path.is_file() and not config_path.is_file():
+        raise FileNotFoundError(f"Three-seed reusable directory has no run_config.json: {reuse_dir}")
     if config_path.is_file():
+        old_cfg: Dict[str, object] = {}
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 old_cfg = json.load(f)
+        except Exception as exc:
+            if member_manifest_path.is_file():
+                raise ValueError(f"Cannot read three-seed reusable run_config: {config_path}") from exc
+            print(f"[reuse] warning: cannot inspect {config_path}: {exc}", flush=True)
+        if old_cfg:
+            validated_seed_mean = False
+            if data_dir is not None:
+                validated_seed_mean = validate_seed_mean_reuse_config(
+                    old_cfg,
+                    base,
+                    data_dir,
+                    scope="main",
+                    n_rows=n_rows,
+                    required_outputs={
+                        "main_probs": prob_path,
+                        "main_members": member_manifest_path,
+                    },
+                )
+            if (member_manifest_path.is_file() or has_seed_mean_reuse_contract_hint(old_cfg)) and not validated_seed_mean:
+                raise ValueError(
+                    f"Ensemble member manifest exists but run_config is not a valid seed-mean contract: {reuse_dir}"
+                )
             old_ckpt = str(old_cfg.get("checkpoint", ""))
             if old_ckpt and Path(old_ckpt).name != Path(target.checkpoint).name:
                 print(
@@ -344,10 +472,52 @@ def reusable_inference_probs(args: argparse.Namespace, base: Path, target: EvalT
                     f"{old_ckpt} vs {target.checkpoint}",
                     flush=True,
                 )
-        except Exception as exc:
-            print(f"[reuse] warning: cannot inspect {config_path}: {exc}", flush=True)
     print(f"[reuse] loaded main test probabilities from {prob_path}", flush=True)
     return np.asarray(probs, dtype=np.float32)
+
+
+def seed_mean_reuse_metadata(args: argparse.Namespace, base: Path) -> Dict[str, object]:
+    reuse_value = str(getattr(args, "reuse_inference_dir", "") or "").strip()
+    if not reuse_value:
+        return {}
+    reuse_dir = as_abs_under(base, reuse_value)
+    config_path = reuse_dir / "run_config.json"
+    if not config_path.is_file():
+        return {}
+    with config_path.open("r", encoding="utf-8") as handle:
+        config = json.load(handle)
+    if str(config.get("probability_combination", "")) != "equal_weight_mean_of_post_softmax_probabilities":
+        return {}
+    seeds = [str(seed) for seed in config.get("seeds", [])]
+    candidate_id = str(config.get("candidate_id", "") or "")
+    return {
+        "prediction_source": "formal_seed_probability_mean",
+        "prediction_id": f"{candidate_id}_seed_mean_argmax",
+        "candidate_id": candidate_id,
+        "seeds": seeds,
+        "ensemble_size": int(config.get("ensemble_size", len(seeds)) or len(seeds)),
+        "probability_combination": str(config.get("probability_combination", "")),
+        "decision_rule": str(config.get("decision_rule", "")),
+        "ensemble_run_config": str(config_path.resolve()),
+        "manifest": str(config.get("manifest", "") or ""),
+        "manifest_sha256": str(config.get("manifest_sha256", "") or ""),
+    }
+
+
+def flat_prediction_provenance(metadata: Dict[str, object]) -> Dict[str, object]:
+    if not metadata:
+        return {}
+    seeds = metadata.get("seeds", []) if isinstance(metadata.get("seeds", []), list) else []
+    return {
+        "prediction_source": metadata.get("prediction_source", ""),
+        "prediction_id": metadata.get("prediction_id", ""),
+        "candidate_id": metadata.get("candidate_id", ""),
+        "ensemble_size": metadata.get("ensemble_size", 0),
+        "ensemble_seeds": ":".join(str(seed) for seed in seeds),
+        "probability_combination": metadata.get("probability_combination", ""),
+        "ensemble_decision_rule": metadata.get("decision_rule", ""),
+        "ensemble_run_config": metadata.get("ensemble_run_config", ""),
+    }
 
 
 def parse_id_list(value: str) -> List[int]:
@@ -821,14 +991,66 @@ def try_reuse_static_48h_outputs(
     if not reuse_value:
         return False
     reuse_dir = as_abs_under(base, reuse_value)
+    config_path = reuse_dir / "run_config.json"
+    member_manifest_path = reuse_dir / "ensemble_members_48h.csv"
     init_names = [
         "metrics_by_display_lead_hour_48h_model.csv",
         "metrics_by_display_lead_hour_init00Z.csv",
         "metrics_by_display_lead_hour_init12Z.csv",
     ]
     init_paths = [reuse_dir / name for name in init_names]
+    if member_manifest_path.is_file() and not config_path.is_file():
+        raise FileNotFoundError(f"Three-seed 48 h reusable directory has no run_config.json: {reuse_dir}")
+    reuse_config: Dict[str, object] = {}
+    if config_path.is_file():
+        try:
+            with config_path.open("r", encoding="utf-8") as handle:
+                reuse_config = json.load(handle)
+        except Exception as exc:
+            if member_manifest_path.is_file():
+                raise ValueError(f"Cannot read three-seed 48 h reusable run_config: {config_path}") from exc
+            print(f"[48h] warning: cannot inspect {config_path}: {exc}", flush=True)
+    is_formal_seed_mean = bool(reuse_config and has_seed_mean_reuse_contract_hint(reuse_config))
     if not all(path.is_file() for path in init_paths):
+        if is_formal_seed_mean or member_manifest_path.is_file():
+            missing = [str(path) for path in init_paths if not path.is_file()]
+            raise FileNotFoundError(
+                "Formal seed-mean reuse has incomplete 48 h tables; use --skip_static_48h "
+                f"instead of falling back to the representative checkpoint. Missing: {missing}"
+            )
         return False
+
+    if reuse_config:
+        required_outputs = {
+            **{name: reuse_dir / name for name in init_names},
+            "forecast48_members": member_manifest_path,
+        }
+        declared_outputs = (
+            reuse_config.get("outputs", {})
+            if isinstance(reuse_config.get("outputs", {}), dict)
+            else {}
+        )
+        cmp_name = "model_vs_ifs_metrics_by_display_lead_hour_48h.csv"
+        cmp_path = reuse_dir / cmp_name
+        cmp_declared = bool(str(declared_outputs.get(cmp_name, "") or "").strip())
+        if cmp_declared:
+            required_outputs[cmp_name] = cmp_path
+        elif is_formal_seed_mean and cmp_path.is_file():
+            raise ValueError(
+                "Formal seed-mean reuse contains an undeclared model-vs-IFS 48 h table; "
+                f"refusing to plot a potentially stale artifact: {cmp_path}"
+            )
+        validated_seed_mean = validate_seed_mean_reuse_config(
+            reuse_config,
+            base,
+            as_abs_under(base, args.data_48h_dir),
+            scope="forecast48",
+            required_outputs=required_outputs,
+        )
+        if (member_manifest_path.is_file() or is_formal_seed_mean) and not validated_seed_mean:
+            raise ValueError(
+                f"48 h ensemble member manifest exists but run_config is not a valid seed-mean contract: {reuse_dir}"
+            )
 
     print(f"[48h] reusing display lead tables from {reuse_dir}", flush=True)
 
@@ -1449,6 +1671,80 @@ def _draw_grid_panel(
     draw_boundary(ax, shp_gdf, color="#1F2933", linewidth=0.50, zorder=7)
 
 
+def _event_lowvis_csi_pair(sub: pd.DataFrame) -> Tuple[float, float, int]:
+    """Return PMST/IFS Low-vis CSI on one strictly matched station subset.
+
+    Low visibility is the binary event ``visibility < 1000 m``.  PMST and the
+    IFS diagnostic are scored only where the observation and IFS diagnostic
+    are both valid so that the two bars cannot differ because of sample
+    coverage.
+    """
+
+    required = {"vis_raw_m", "pmst_pred", "ifs_diagnostic_vis_m"}
+    if sub.empty or not required.issubset(sub.columns):
+        return math.nan, math.nan, 0
+
+    obs = pd.to_numeric(sub["vis_raw_m"], errors="coerce").to_numpy(dtype=float)
+    pmst = pd.to_numeric(sub["pmst_pred"], errors="coerce").to_numpy(dtype=float)
+    ifs_vis = pd.to_numeric(sub["ifs_diagnostic_vis_m"], errors="coerce").to_numpy(dtype=float)
+    valid = np.isfinite(obs) & np.isfinite(pmst) & np.isfinite(ifs_vis) & (obs >= 0.0) & (ifs_vis >= 0.0)
+    if "ifs_diagnostic_valid" in sub.columns:
+        valid &= sub["ifs_diagnostic_valid"].fillna(False).astype(bool).to_numpy()
+    if not bool(valid.any()):
+        return math.nan, math.nan, 0
+
+    truth = obs[valid] < 1000.0
+    pmst_event = pmst[valid].astype(int) != 2
+    ifs_event = ifs_vis[valid] < 1000.0
+
+    def _csi(pred_event: np.ndarray) -> float:
+        hits = int(np.count_nonzero(truth & pred_event))
+        misses = int(np.count_nonzero(truth & ~pred_event))
+        false_alarms = int(np.count_nonzero(~truth & pred_event))
+        denominator = hits + misses + false_alarms
+        return float(hits / denominator) if denominator > 0 else math.nan
+
+    return _csi(pmst_event), _csi(ifs_event), int(np.count_nonzero(valid))
+
+
+def _draw_event_lowvis_csi_panel(ax, pmst_csi: float, ifs_csi: float, matched_n: int, show_xaxis: bool) -> None:
+    """Draw a compact, directly labelled CSI comparison for one valid hour."""
+
+    pmst_color = "#1769AA"
+    ifs_color = "#6B7280"
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(-0.05, 1.05)
+    ax.set_yticks([])
+    ax.set_facecolor("#FBFCFD")
+    ax.grid(axis="x", color="#E5E7EB", linewidth=0.55, alpha=0.9)
+    ax.set_axisbelow(True)
+    for spine in ("top", "right", "left"):
+        ax.spines[spine].set_visible(False)
+    ax.spines["bottom"].set_color("#CBD1D8")
+    ax.spines["bottom"].set_linewidth(0.6)
+
+    if np.isfinite(pmst_csi):
+        ax.hlines(0.70, 0.0, pmst_csi, color=pmst_color, linewidth=3.0, zorder=2)
+        ax.scatter(pmst_csi, 0.70, s=19, color=pmst_color, edgecolor="white", linewidth=0.45, zorder=3)
+        ax.text(min(pmst_csi + 0.035, 0.98), 0.70, f"{pmst_csi:.2f}", color=pmst_color, fontsize=7.5, va="center", ha="left")
+    if np.isfinite(ifs_csi):
+        ax.hlines(0.27, 0.0, ifs_csi, color=ifs_color, linewidth=3.0, zorder=2)
+        ax.scatter(ifs_csi, 0.27, s=19, color=ifs_color, edgecolor="white", linewidth=0.45, zorder=3)
+        ax.text(min(ifs_csi + 0.035, 0.98), 0.27, f"{ifs_csi:.2f}", color=ifs_color, fontsize=7.5, va="center", ha="left")
+    if matched_n > 0:
+        ax.text(0.98, 0.96, f"n={matched_n:,}", transform=ax.transAxes, ha="right", va="top", fontsize=6.5, color="#6B7280")
+    else:
+        ax.text(0.50, 0.50, "No matched data", transform=ax.transAxes, ha="center", va="center", fontsize=7.5, color="#6B7280")
+
+    if show_xaxis:
+        ax.set_xticks([0.0, 0.5, 1.0])
+        ax.tick_params(axis="x", labelsize=7.0, length=2.2, pad=1.5)
+    else:
+        ax.set_xticks([0.0, 0.5, 1.0])
+        ax.set_xticklabels([])
+        ax.tick_params(axis="x", length=0)
+
+
 def plot_event_environment_grid(
     args: argparse.Namespace,
     base: Path,
@@ -1483,8 +1779,21 @@ def plot_event_environment_grid(
 
     nrows = len(event_times)
     fig_h = max(7.2, 1.18 * nrows + 1.25)
-    fig, axes = plt.subplots(nrows, 5, figsize=(11.2, fig_h), squeeze=False)
-    col_titles = ["Observed visibility", "PMST forecast", "IFS diagnostic VIS", "Tianji RH2m", "CAMS PM10"]
+    fig, axes = plt.subplots(
+        nrows,
+        6,
+        figsize=(13.15, fig_h),
+        squeeze=False,
+        gridspec_kw={"width_ratios": [1.0, 1.0, 1.0, 1.0, 1.0, 0.82]},
+    )
+    col_titles = [
+        "Observed visibility",
+        "PMST forecast",
+        "IFS diagnostic VIS",
+        "Tianji RH2m",
+        "CAMS PM10",
+        "Low-vis CSI (<1 km)",
+    ]
     for j, title in enumerate(col_titles):
         axes[0, j].set_title(title, fontsize=12.5, fontweight="bold", pad=4)
 
@@ -1519,6 +1828,14 @@ def plot_event_environment_grid(
         )
         _draw_grid_panel(axes[row_idx, 3], rh_fields.get(valid_time), shp_gdf, "YlGnBu", rh_norm, "RH2m missing", focus_extent)
         _draw_grid_panel(axes[row_idx, 4], pm10_fields.get(valid_time), shp_gdf, "YlOrRd", pm10_norm, "CAMS PM10 missing", focus_extent)
+        pmst_csi, ifs_csi, matched_n = _event_lowvis_csi_pair(sub)
+        _draw_event_lowvis_csi_panel(
+            axes[row_idx, 5],
+            pmst_csi,
+            ifs_csi,
+            matched_n,
+            show_xaxis=(row_idx == nrows - 1),
+        )
 
     rh_sm = plt.cm.ScalarMappable(norm=rh_norm, cmap="YlGnBu")
     rh_sm.set_array([])
@@ -1527,7 +1844,7 @@ def plot_event_environment_grid(
     rank = int(event_row.get("event_rank", 1))
     title = f"Event {rank}: {center_time:%Y-%m-%d %H:00 UTC}"
     fig.suptitle(title, x=0.5, y=0.988, fontsize=14, fontweight="bold")
-    fig.subplots_adjust(left=0.088, right=0.994, top=0.94, bottom=0.18, wspace=0.012, hspace=0.035)
+    fig.subplots_adjust(left=0.077, right=0.994, top=0.94, bottom=0.18, wspace=0.020, hspace=0.035)
     fig.canvas.draw()
 
     cbar_y = 0.065
@@ -1544,6 +1861,19 @@ def plot_event_environment_grid(
     cb3 = fig.colorbar(pm10_sm, cax=fig.add_axes(cbar_span(4, 4)), orientation="horizontal", extend="max")
     cb3.set_label(r"PM10 ($\mu$g m$^{-3}$)", fontsize=11)
 
+    pooled = df[df["time"].isin(set(pd.DatetimeIndex(event_times)))].copy()
+    pooled_pmst_csi, pooled_ifs_csi, pooled_n = _event_lowvis_csi_pair(pooled)
+    csi_pos = cbar_span(5, 5, y=0.038, height=0.090)
+    csi_legend_ax = fig.add_axes(csi_pos)
+    csi_legend_ax.axis("off")
+    csi_legend_ax.text(0.00, 0.72, "PMST", color="#1769AA", fontsize=8.0, fontweight="bold", ha="left", va="center")
+    csi_legend_ax.text(0.00, 0.40, "IFS", color="#6B7280", fontsize=8.0, fontweight="bold", ha="left", va="center")
+    if np.isfinite(pooled_pmst_csi):
+        csi_legend_ax.text(0.43, 0.72, f"pooled {pooled_pmst_csi:.2f}", color="#1769AA", fontsize=7.3, ha="left", va="center")
+    if np.isfinite(pooled_ifs_csi):
+        csi_legend_ax.text(0.43, 0.40, f"pooled {pooled_ifs_csi:.2f}", color="#6B7280", fontsize=7.3, ha="left", va="center")
+    csi_legend_ax.text(0.00, 0.08, f"matched n={pooled_n:,}", color="#6B7280", fontsize=6.8, ha="left", va="center")
+
     all_sources = list(sources) + rh_sources + pm10_sources
     save_fig_pair(
         fig,
@@ -1554,7 +1884,9 @@ def plot_event_environment_grid(
         notes=(
             "Rows are UTC hours around the selected widespread Low-vis event. "
             "The first three columns use shared Ultra-low/Moderate-low/Clear categories; the PMST panel is categorical. "
-            "RH2m and PM10 are raw gridded forecast fields read only for the displayed valid times."
+            "RH2m and PM10 are raw gridded forecast fields read only for the displayed valid times. "
+            "The final column reports binary Low-vis CSI for visibility <1000 m; PMST and IFS use the identical "
+            "IFS-diagnostic-valid station subset within each hour."
         ),
         n=int(len(eval_df)),
     )
@@ -1730,7 +2062,10 @@ def evaluate_target(
     if unexpected:
         print(f"  [ckpt] unexpected keys: {len(unexpected)} first={unexpected[:5]}", flush=True)
 
-    probs = reusable_inference_probs(args, base, target, len(y_cls))
+    probs = reusable_inference_probs(args, base, target, len(y_cls), data_dir=data_dir)
+    prediction_provenance = seed_mean_reuse_metadata(args, base) if probs is not None else {}
+    flat_provenance = flat_prediction_provenance(prediction_provenance)
+    model_label = str(prediction_provenance.get("prediction_id", target.label))
     if probs is None:
         probs = run_static_inference(
             x_path,
@@ -1750,11 +2085,17 @@ def evaluate_target(
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest = Manifest(out_dir)
     sources = [str(x_path), str(data_dir / "y_test.npy"), str(data_dir / "meta_test.csv"), str(target.checkpoint), str(scaler_path)]
+    reuse_value = str(getattr(args, "reuse_inference_dir", "") or "").strip()
+    if reuse_value:
+        reuse_dir = as_abs_under(base, reuse_value)
+        for reuse_source in (reuse_dir / "probs.npy", reuse_dir / "run_config.json", reuse_dir / "ensemble_members.csv"):
+            if reuse_source.is_file():
+                sources.append(str(reuse_source))
 
     ifs_pred = ifs_vis = ifs_valid = None
     ifs_metrics = None
     ifs_nc = as_abs_under(base, args.ifs_vis_nc)
-    overall_rows = [{"source": "pmst", "model_label": target.label, "sample_scope": "test", **decision_meta, **metrics}]
+    overall_rows = [{"source": "pmst", "model_label": model_label, "sample_scope": "test", **flat_provenance, **decision_meta, **metrics}]
     if ifs_nc.exists():
         try:
             ifs_pred, ifs_vis, ifs_valid = load_ifs_diagnostic(meta, ifs_nc, args.ifs_vis_var)
@@ -1763,13 +2104,13 @@ def evaluate_target(
                 matched_metrics = classification_metrics(y_cls[ifs_valid], pred[ifs_valid], probs=probs[ifs_valid])
                 pd.DataFrame(
                     [
-                        {"source": "pmst", "model_label": target.label, "sample_scope": "ifs_diagnostic_matched_test", "matched_rows": int(np.sum(ifs_valid)), **decision_meta, **matched_metrics},
+                        {"source": "pmst", "model_label": model_label, "sample_scope": "ifs_diagnostic_matched_test", "matched_rows": int(np.sum(ifs_valid)), **flat_provenance, **decision_meta, **matched_metrics},
                         {"source": "ifs_diagnostic", "sample_scope": "ifs_diagnostic_matched_test", "matched_rows": int(np.sum(ifs_valid)), "ifs_forecast_nc": str(ifs_nc), **ifs_metrics},
                     ]
                 ).to_csv(out_dir / "ifs_diagnostic_matched_metrics.csv", index=False)
                 overall_rows.extend(
                     [
-                        {"source": "pmst", "model_label": target.label, "sample_scope": "ifs_diagnostic_matched_test", "matched_rows": int(np.sum(ifs_valid)), **decision_meta, **matched_metrics},
+                        {"source": "pmst", "model_label": model_label, "sample_scope": "ifs_diagnostic_matched_test", "matched_rows": int(np.sum(ifs_valid)), **flat_provenance, **decision_meta, **matched_metrics},
                         {"source": "ifs_diagnostic", "sample_scope": "ifs_diagnostic_matched_test", "matched_rows": int(np.sum(ifs_valid)), "ifs_forecast_nc": str(ifs_nc), **ifs_metrics},
                     ]
                 )
@@ -1952,6 +2293,11 @@ def evaluate_target(
         "target": target.label,
         "run_id": target.run_id,
         "checkpoint": str(target.checkpoint),
+        "checkpoint_role": (
+            "representative_architecture_and_scaler_loader_only"
+            if prediction_provenance
+            else "prediction_model"
+        ),
         "scaler": str(scaler_path),
         "variant": asdict(target.variant),
         "layout": asdict(layout),
@@ -1971,11 +2317,20 @@ def evaluate_target(
         "out_dir": str(out_dir),
         "checkpoint_metadata": ckpt_meta,
         "reuse_inference_dir": str(getattr(args, "reuse_inference_dir", "") or ""),
+        "prediction_provenance": prediction_provenance,
     }
     with open(out_dir / "run_config.json", "w", encoding="utf-8") as f:
         json.dump(run_config, f, ensure_ascii=False, indent=2)
 
-    row = {"label": target.label, "run_id": target.run_id, "checkpoint": str(target.checkpoint), "out_dir": str(out_dir), **decision_meta, **metrics}
+    row = {
+        "label": model_label,
+        "run_id": target.run_id,
+        "checkpoint": str(target.checkpoint),
+        "out_dir": str(out_dir),
+        **flat_provenance,
+        **decision_meta,
+        **metrics,
+    }
     return row
 
 
