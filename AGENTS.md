@@ -13,6 +13,20 @@
 - Keep class definitions aligned with the project guide: Fog is `0 <= visibility < 500 m`, Mist is `500 <= visibility < 1000 m`, and Clear is `visibility >= 1000 m`.
 - Before changing thresholds, model paths, data versions, IFS baseline paths, or reported metrics, verify the current values in the relevant source files or result artifacts.
 
+## SSH-Resilient Slurm Submission
+
+- Do not deliver a multi-step paper-evaluation chain as a sequence that must
+  remain inside one interactive SSH session. Put checkpoint checks, exports,
+  manifest construction, and all dependent `sbatch` calls in a tracked launcher;
+  run its worker with `nohup ... </dev/null >log 2>&1 &`. Prefer a public
+  launcher that performs this detachment itself so the user runs one command.
+- A successful `test -s` is silent and can be mistaken for a hung terminal.
+  Long-form launchers must print explicit preflight `checkpoint=OK` messages.
+- Persist the bundle ID, output paths, and every returned JobID after each
+  submission in a sourceable state file. If SSH disconnects, recovery must use
+  that file instead of reconstructing state from shell history or resubmitting
+  the whole chain blindly.
+
 ## Figure/Layout Regression Pitfalls
 
 - Do not treat a visible overlap in one PNG as a one-line fontsize problem. First inspect every function that writes the same figure family, shared legend/colorbar helpers, and any merge-only or rerun scripts that can redraw the same output from cached CSVs.
