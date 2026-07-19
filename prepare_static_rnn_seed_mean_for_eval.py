@@ -24,6 +24,15 @@ import run_static_rnn_lowvis_eval_journal as journal
 
 PROBABILITY_COLUMNS = ("pmst_p_fog", "pmst_p_mist", "pmst_p_clear")
 IDENTITY_TIME_COLUMNS = ("time", "time_utc", "time_analysis")
+IDENTITY_STRING_COLUMNS = (
+    "station_id",
+    "time",
+    "time_utc",
+    "time_utc_original",
+    "time_analysis",
+    "init_time",
+    "forecast_reference_time",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -88,16 +97,119 @@ def canonical_station_id(values: pd.Series) -> pd.Series:
     )
 
 
-def identity_frame(frame: pd.DataFrame) -> Tuple[pd.DataFrame, pd.MultiIndex]:
-    if "station_id" not in frame:
-        raise KeyError("per_sample_eval.csv has no station_id column")
+def parse_mixed_datetime(values: pd.Series, name: str = "time") -> pd.Series:
+    """Parse ISO, compact, and epoch timestamps without format-order inference.
+
+    Large 48 h per-sample CSVs are appended from many forecast cycles.  Pandas
+    can otherwise infer one format from the first chunk and coerce valid rows
+    from later chunks to NaT.  Returned timestamps are timezone-naive UTC.
+    """
+
+    source = pd.Series(values, index=getattr(values, "index", None))
+    raw = source.astype("string").str.strip().str.replace(r"\.0$", "", regex=True)
+    parsed = pd.Series(pd.NaT, index=source.index, dtype="datetime64[ns, UTC]")
+
+    # Parse compact forecast-cycle encodings before considering epoch units.
+    for length, fmt in ((8, "%Y%m%d"), (10, "%Y%m%d%H"), (12, "%Y%m%d%H%M"), (14, "%Y%m%d%H%M%S")):
+        mask = parsed.isna() & raw.str.fullmatch(rf"\d{{{length}}}", na=False)
+        if mask.any():
+            parsed.loc[mask] = pd.to_datetime(
+                raw.loc[mask], format=fmt, errors="coerce", utc=True
+            )
+
+    remaining = parsed.isna() & raw.notna() & ~raw.isin(("", "NaT", "nan", "None", "<NA>"))
+    if remaining.any():
+        # ``format='mixed'`` is available in modern pandas.  The second pass
+        # preserves compatibility with older cluster pandas versions.
+        try:
+            generic = pd.to_datetime(
+                raw.loc[remaining], format="mixed", errors="coerce", utc=True
+            )
+        except (TypeError, ValueError):
+            generic = pd.to_datetime(raw.loc[remaining], errors="coerce", utc=True)
+        fallback_mask = generic.isna()
+        if fallback_mask.any():
+            generic.loc[fallback_mask] = pd.to_datetime(
+                raw.loc[generic.index[fallback_mask]], errors="coerce", utc=True
+            )
+        parsed.loc[remaining] = generic
+
+    # Recover serialized Unix epochs only for values still unparsed.  Compact
+    # YYYYMMDD[HH[MM[SS]]] values were already consumed above.
+    numeric = pd.to_numeric(raw, errors="coerce")
+    epoch_specs = (
+        ("ns", 1.0e17, np.inf),
+        ("us", 1.0e14, 1.0e17),
+        ("ms", 1.0e11, 1.0e14),
+        ("s", 1.0e8, 1.0e11),
+    )
+    for unit, lower, upper in epoch_specs:
+        magnitude = numeric.abs()
+        mask = parsed.isna() & numeric.notna() & magnitude.ge(lower) & magnitude.lt(upper)
+        if mask.any():
+            parsed.loc[mask] = pd.to_datetime(
+                numeric.loc[mask], unit=unit, errors="coerce", utc=True
+            )
+
+    return parsed.dt.tz_convert(None).rename(name)
+
+
+def canonical_valid_times(frame: pd.DataFrame) -> Tuple[pd.Series, str]:
     time_col = next((column for column in IDENTITY_TIME_COLUMNS if column in frame), "")
     if not time_col:
         raise KeyError(f"per_sample_eval.csv has none of {IDENTITY_TIME_COLUMNS}")
-    times = pd.to_datetime(frame[time_col], errors="coerce")
+    times = parse_mixed_datetime(frame[time_col], time_col)
+
+    # The 48 h dataset has an independent, physically exact valid-time
+    # contract.  Use it only to fill unparseable rows and require agreement
+    # wherever both representations exist.
+    derived = pd.Series(pd.NaT, index=frame.index, dtype="datetime64[ns]")
+    if "init_time" in frame and "lead_hour" in frame:
+        init_time = parse_mixed_datetime(frame["init_time"], "init_time")
+        lead_hour = pd.to_numeric(frame["lead_hour"], errors="coerce")
+        shift_hour = pd.Series(0.0, index=frame.index, dtype=float)
+        if "meta_time_shift_hours" in frame:
+            shift_hour = pd.to_numeric(
+                frame["meta_time_shift_hours"], errors="coerce"
+            ).fillna(0.0)
+        valid = init_time.notna() & lead_hour.notna() & shift_hour.notna()
+        if valid.any():
+            derived.loc[valid] = (
+                init_time.loc[valid]
+                + pd.to_timedelta(lead_hour.loc[valid], unit="h")
+                + pd.to_timedelta(shift_hour.loc[valid], unit="h")
+            )
+        both = times.notna() & derived.notna()
+        if both.any():
+            delta_seconds = (times.loc[both] - derived.loc[both]).abs().dt.total_seconds()
+            mismatch = delta_seconds > 1.0
+            if mismatch.any():
+                sample = frame.loc[delta_seconds.index[mismatch][:5], [time_col, "init_time", "lead_hour"]]
+                raise ValueError(
+                    "Valid time disagrees with init_time + lead_hour for "
+                    f"{int(mismatch.sum())} rows; examples={sample.to_dict('records')}"
+                )
+        times = times.fillna(derived)
+
     if times.isna().any():
-        bad = int(times.isna().sum())
-        raise ValueError(f"Cannot parse {bad} sample times from column {time_col}")
+        bad_mask = times.isna()
+        bad = int(bad_mask.sum())
+        example_columns = [
+            column
+            for column in (time_col, "init_time", "lead_hour")
+            if column in frame
+        ]
+        examples = frame.loc[bad_mask, example_columns].head(5).to_dict("records")
+        raise ValueError(
+            f"Cannot recover {bad} sample times from {time_col}; examples={examples}"
+        )
+    return times, time_col
+
+
+def identity_frame(frame: pd.DataFrame) -> Tuple[pd.DataFrame, pd.MultiIndex]:
+    if "station_id" not in frame:
+        raise KeyError("per_sample_eval.csv has no station_id column")
+    times, _ = canonical_valid_times(frame)
     identity = pd.DataFrame(
         {
             "station_id": canonical_station_id(frame["station_id"]),
@@ -109,7 +221,7 @@ def identity_frame(frame: pd.DataFrame) -> Tuple[pd.DataFrame, pd.MultiIndex]:
         ("forecast_reference_time", "forecast_reference_time_ns"),
     ):
         if source_name in frame:
-            values = pd.to_datetime(frame[source_name], errors="coerce")
+            values = parse_mixed_datetime(frame[source_name], source_name)
             if values.notna().any():
                 if values.isna().any():
                     raise ValueError(f"Cannot parse all identity values from {source_name}")
@@ -412,12 +524,20 @@ def average_eval_directory(
                 )
         member_probs = np.asarray(np.load(prob_path, mmap_mode="r"), dtype=np.float64)
         validate_probabilities(prob_path, member_probs, probability_atol)
-        member_frame = pd.read_csv(sample_path)
+        member_frame = pd.read_csv(
+            sample_path,
+            dtype={column: "string" for column in IDENTITY_STRING_COLUMNS},
+        )
         if len(member_frame) != len(member_probs):
             raise ValueError(
                 f"Row mismatch for seed={row['seed']}: samples={len(member_frame)}, probs={len(member_probs)}"
             )
         member_identity, member_key = identity_frame(member_frame)
+        # Preserve a canonical valid-time column in the reusable output even
+        # when the original appended CSV used mixed timestamp encodings.
+        member_frame["time"] = pd.to_datetime(
+            member_identity["valid_time_ns"], unit="ns", errors="raise"
+        )
 
         if reference_frame is None:
             reference_frame = member_frame.reset_index(drop=True)
@@ -566,6 +686,11 @@ def write_48h_tables(
         limit_samples=0,
         meta_time_shift_hours=args.meta_time_shift_hours,
         split="test",
+    )
+    data_identity, _ = identity_frame(meta)
+    meta = meta.copy()
+    meta["time"] = pd.to_datetime(
+        data_identity["valid_time_ns"], unit="ns", errors="raise"
     )
     if len(y_cls) != len(probs):
         raise ValueError(

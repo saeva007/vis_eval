@@ -45,8 +45,8 @@ if [ "${P13_CHAIN_WORKER:-0}" != "1" ]; then
 fi
 
 CKPT_DIR="${CKPT_DIR:-${BASE}/checkpoints}"
-RUN42="${RUN42:-exp_20260717_203259_p13_sampling_calibration_full_p13_seed42_2_proposed_rare_event_focal}"
-RUN314="${RUN314:-exp_20260717_203259_p13_sampling_calibration_full_p13_seed314_2_proposed_rare_event_focal}"
+RUN42="${RUN42:-exp_20260718_232510_p13_sampling_calibration_manual_retry_p13_seed42_2_proposed_rare_event_focal}"
+RUN314="${RUN314:-exp_20260718_195035_p13_sampling_calibration_full_p13_seed314_2_proposed_rare_event_focal}"
 RUN2718="${RUN2718:-exp_20260718_195035_p13_sampling_calibration_full_p13_seed2718_2_proposed_rare_event_focal}"
 
 CKPT42="${CKPT42:-${CKPT_DIR}/${RUN42}_S2_PhaseD_best_score.pt}"
