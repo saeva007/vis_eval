@@ -1712,7 +1712,9 @@ def _draw_event_lowvis_csi_panel(ax, pmst_csi: float, ifs_csi: float, matched_n:
 
     pmst_color = "#1769AA"
     ifs_color = "#6B7280"
-    ax.set_xlim(0.0, 1.0)
+    csi_axis_max = 0.5
+    label_offset = 0.035 * csi_axis_max
+    ax.set_xlim(0.0, csi_axis_max)
     ax.set_ylim(-0.05, 1.05)
     ax.set_yticks([])
     ax.set_facecolor("#FBFCFD")
@@ -1737,10 +1739,10 @@ def _draw_event_lowvis_csi_panel(ax, pmst_csi: float, ifs_csi: float, matched_n:
             linewidth=0.55,
             zorder=2,
         )
-        if value <= 0.84:
-            label_x, label_color, label_ha = value + 0.035, color, "left"
+        if value <= 0.84 * csi_axis_max:
+            label_x, label_color, label_ha = value + label_offset, color, "left"
         else:
-            label_x, label_color, label_ha = value - 0.035, "white", "right"
+            label_x, label_color, label_ha = value - label_offset, "white", "right"
         ax.text(
             label_x,
             y,
@@ -1761,10 +1763,10 @@ def _draw_event_lowvis_csi_panel(ax, pmst_csi: float, ifs_csi: float, matched_n:
         ax.text(0.50, 0.50, "No matched data", transform=ax.transAxes, ha="center", va="center", fontsize=7.5, color="#6B7280")
 
     if show_xaxis:
-        ax.set_xticks([0.0, 0.5, 1.0])
+        ax.set_xticks([0.0, 0.25, 0.5])
         ax.tick_params(axis="x", labelsize=7.0, length=2.2, pad=1.5)
     else:
-        ax.set_xticks([0.0, 0.5, 1.0])
+        ax.set_xticks([0.0, 0.25, 0.5])
         ax.set_xticklabels([])
         ax.tick_params(axis="x", length=0)
 
