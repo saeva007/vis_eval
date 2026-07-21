@@ -1723,14 +1723,38 @@ def _draw_event_lowvis_csi_panel(ax, pmst_csi: float, ifs_csi: float, matched_n:
     ax.spines["bottom"].set_color("#CBD1D8")
     ax.spines["bottom"].set_linewidth(0.6)
 
-    if np.isfinite(pmst_csi):
-        ax.hlines(0.70, 0.0, pmst_csi, color=pmst_color, linewidth=3.0, zorder=2)
-        ax.scatter(pmst_csi, 0.70, s=19, color=pmst_color, edgecolor="white", linewidth=0.45, zorder=3)
-        ax.text(min(pmst_csi + 0.035, 0.98), 0.70, f"{pmst_csi:.2f}", color=pmst_color, fontsize=7.5, va="center", ha="left")
-    if np.isfinite(ifs_csi):
-        ax.hlines(0.27, 0.0, ifs_csi, color=ifs_color, linewidth=3.0, zorder=2)
-        ax.scatter(ifs_csi, 0.27, s=19, color=ifs_color, edgecolor="white", linewidth=0.45, zorder=3)
-        ax.text(min(ifs_csi + 0.035, 0.98), 0.27, f"{ifs_csi:.2f}", color=ifs_color, fontsize=7.5, va="center", ha="left")
+    bar_height = 0.26
+
+    def _draw_bar(value: float, y: float, color: str) -> None:
+        if not np.isfinite(value):
+            return
+        ax.barh(
+            y,
+            value,
+            height=bar_height,
+            color=color,
+            edgecolor="white",
+            linewidth=0.55,
+            zorder=2,
+        )
+        if value <= 0.84:
+            label_x, label_color, label_ha = value + 0.035, color, "left"
+        else:
+            label_x, label_color, label_ha = value - 0.035, "white", "right"
+        ax.text(
+            label_x,
+            y,
+            f"{value:.2f}",
+            color=label_color,
+            fontsize=7.5,
+            fontweight="bold",
+            va="center",
+            ha=label_ha,
+            zorder=3,
+        )
+
+    _draw_bar(pmst_csi, 0.70, pmst_color)
+    _draw_bar(ifs_csi, 0.27, ifs_color)
     if matched_n > 0:
         ax.text(0.98, 0.96, f"n={matched_n:,}", transform=ax.transAxes, ha="right", va="top", fontsize=6.5, color="#6B7280")
     else:
