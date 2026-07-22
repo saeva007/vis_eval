@@ -3,7 +3,7 @@
 
 The member probabilities must come from one invocation of
 ``run_static_rnn_precision_candidate_eval.py`` (one output directory per
-dataset).  Members are located from the evaluator's metrics table rather than
+dataset split).  Members are located from the evaluator's metrics table rather than
 from guessed file ordering.  Samples are aligned by station, valid time, and a
 within-key duplicate index before post-softmax probabilities are averaged.
 """
@@ -47,6 +47,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--candidate-id", default="p13")
     parser.add_argument("--expected-seeds", default="42,314,2718")
     parser.add_argument("--required-stage", choices=("full", "any"), default="full")
+    parser.add_argument(
+        "--eval-split",
+        choices=("val", "test"),
+        default="test",
+        help="Dataset split represented by --main-eval-dir. Test remains the default for existing paper chains.",
+    )
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--base", default="/public/home/putianshu/vis_mlp")
     parser.add_argument(
@@ -355,7 +361,12 @@ def evaluation_members(eval_dir: Path, candidate_id: str, expected_seeds: Sequen
     return selected
 
 
-def verify_eval_config(eval_dir: Path, manifest_path: Path, base: Path) -> Dict[str, object]:
+def verify_eval_config(
+    eval_dir: Path,
+    manifest_path: Path,
+    base: Path,
+    eval_split: str,
+) -> Dict[str, object]:
     config_path = eval_dir / "run_config.json"
     if not config_path.is_file():
         raise FileNotFoundError(f"Missing evaluator provenance: {config_path}")
@@ -372,8 +383,11 @@ def verify_eval_config(eval_dir: Path, manifest_path: Path, base: Path) -> Dict[
         raise ValueError(f"Evaluator manifest hash mismatch: {config_path}")
     if str(config.get("threshold_source", "")) != "argmax":
         raise ValueError(f"Evaluator did not use argmax: {config_path}")
-    if str(config.get("eval_split", "")) != "test":
-        raise ValueError(f"Seed-mean reuse must be prepared from the frozen test split: {config_path}")
+    configured_split = str(config.get("eval_split", ""))
+    if configured_split != eval_split:
+        raise ValueError(
+            f"Evaluator split mismatch: config={configured_split!r}, requested={eval_split!r}: {config_path}"
+        )
     data_value = str(config.get("data_dir", "") or "").strip()
     dataset_provenance = (
         config.get("dataset_provenance", {})
@@ -383,7 +397,10 @@ def verify_eval_config(eval_dir: Path, manifest_path: Path, base: Path) -> Dict[
     if not data_value or not dataset_provenance:
         raise ValueError(f"Evaluator run_config has no dataset provenance: {config_path}")
     data_dir = resolve_path(base, data_value)
-    for filename, hash_key in (("y_test.npy", "y_sha256"), ("meta_test.csv", "meta_sha256")):
+    for filename, hash_key in (
+        (f"y_{eval_split}.npy", "y_sha256"),
+        (f"meta_{eval_split}.csv", "meta_sha256"),
+    ):
         path = data_dir / filename
         expected_hash = str(dataset_provenance.get(hash_key, "") or "")
         if not path.is_file() or not expected_hash or sha256_file(path) != expected_hash:
@@ -395,12 +412,13 @@ def verify_frame_against_dataset(
     frame: pd.DataFrame,
     data_dir: Path,
     meta_time_shift_hours: float,
+    eval_split: str,
 ) -> Dict[str, object]:
     _, y_cls, y_raw, meta = journal.load_main_data(
         data_dir,
         limit_samples=0,
         meta_time_shift_hours=meta_time_shift_hours,
-        split="test",
+        split=eval_split,
     )
     if len(frame) != len(y_cls):
         raise ValueError(
@@ -425,10 +443,13 @@ def verify_frame_against_dataset(
         raise ValueError(f"vis_raw_m differs from the evaluator dataset: {data_dir}")
     return {
         "data_dir": str(data_dir.resolve()),
+        "eval_split": eval_split,
         "n_samples": int(len(frame)),
         "sample_identity_sha256": identity_sha256(data_identity, frame),
-        "y_test_sha256": sha256_file(data_dir / "y_test.npy"),
-        "meta_test_sha256": sha256_file(data_dir / "meta_test.csv"),
+        "y_file": str((data_dir / f"y_{eval_split}.npy").resolve()),
+        "meta_file": str((data_dir / f"meta_{eval_split}.csv").resolve()),
+        "y_sha256": sha256_file(data_dir / f"y_{eval_split}.npy"),
+        "meta_sha256": sha256_file(data_dir / f"meta_{eval_split}.csv"),
     }
 
 
@@ -439,8 +460,14 @@ def average_eval_directory(
     candidate_id: str,
     expected_seeds: Sequence[str],
     probability_atol: float,
+    eval_split: str,
 ) -> Tuple[np.ndarray, pd.DataFrame, pd.DataFrame, Dict[str, object]]:
-    eval_config = verify_eval_config(eval_dir, Path(manifest_rows.attrs["manifest_path"]), base)
+    eval_config = verify_eval_config(
+        eval_dir,
+        Path(manifest_rows.attrs["manifest_path"]),
+        base,
+        eval_split,
+    )
     eval_rows = evaluation_members(eval_dir, candidate_id, expected_seeds)
     merged = eval_rows.merge(
         manifest_rows[["seed", "candidate_label", "run_id", "s2_checkpoint"]],
@@ -818,6 +845,7 @@ def main() -> None:
         args.candidate_id,
         expected_seeds,
         args.probability_atol,
+        args.eval_split,
     )
     main_data_value = str(main_meta["eval_run_config"].get("data_dir", "") or "").strip()
     if not main_data_value:
@@ -827,6 +855,7 @@ def main() -> None:
         main_frame,
         main_data_dir,
         args.meta_time_shift_hours,
+        args.eval_split,
     )
     forecast48_meta: Dict[str, object] = {}
     forecast48_outputs: Dict[str, str] = {}
@@ -834,6 +863,8 @@ def main() -> None:
     frame48: pd.DataFrame | None = None
     members48: pd.DataFrame | None = None
     if str(args.forecast48_eval_dir or "").strip():
+        if args.eval_split != "test":
+            raise ValueError("--forecast48-eval-dir is only valid with --eval-split test")
         forecast48_eval_dir = resolve_path(base, args.forecast48_eval_dir)
         probs48, frame48, members48, forecast48_meta = average_eval_directory(
             forecast48_eval_dir,
@@ -842,6 +873,7 @@ def main() -> None:
             args.candidate_id,
             expected_seeds,
             args.probability_atol,
+            "test",
         )
         forecast48_data_value = str(
             forecast48_meta["eval_run_config"].get("data_dir", "") or ""
@@ -859,6 +891,7 @@ def main() -> None:
             frame48,
             forecast48_data_dir,
             args.meta_time_shift_hours,
+            "test",
         )
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -905,9 +938,14 @@ def main() -> None:
 
     config = {
         "schema_version": 1,
-        "experiment_status": "formal_three_seed_candidate",
+        "experiment_status": (
+            "formal_three_seed_candidate"
+            if args.eval_split == "test"
+            else "formal_three_seed_validation_selection"
+        ),
         "replaces_mainline": False,
         "candidate_id": args.candidate_id,
+        "eval_split": args.eval_split,
         "seeds": expected_seeds,
         "ensemble_size": len(expected_seeds),
         "probability_combination": "equal_weight_mean_of_post_softmax_probabilities",

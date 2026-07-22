@@ -56,6 +56,7 @@ SPLIT="${SPLIT:-val}"
 OUT_DIR="${OUT_DIR:-${BASE}/static_rnn_precision_candidate_eval/${SPLIT}_${SLURM_JOB_ID}}"
 DEVICE="${DEVICE:-cpu}"
 RUN_EVENT_EVAL="${RUN_EVENT_EVAL:-1}"
+DATA_DIR="${DATA_DIR:-}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 CMD=(
@@ -69,6 +70,9 @@ CMD=(
 )
 if [[ "${RUN_EVENT_EVAL}" == "1" ]]; then
     CMD+=(--run_event_eval)
+fi
+if [[ -n "${DATA_DIR}" ]]; then
+    CMD+=(--data_dir "${DATA_DIR}")
 fi
 if [[ -n "${EXTRA_ARGS}" ]]; then
     # shellcheck disable=SC2206

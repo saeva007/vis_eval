@@ -1,6 +1,9 @@
 import unittest
+import json
 import sys
 import types
+from pathlib import Path
+from unittest import mock
 
 import pandas as pd
 
@@ -69,6 +72,42 @@ class SeedMeanIdentityTimeTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "disagrees with init_time"):
             seed_mean.identity_frame(frame)
+
+
+class SeedMeanSplitProvenanceTest(unittest.TestCase):
+    def test_validation_evaluator_config_is_accepted_only_as_validation(self):
+        base = Path("C:/base")
+        data_dir = base / "dataset"
+        eval_dir = base / "member_eval"
+        manifest = base / "manifest.tsv"
+        config = {
+            "manifest": str(manifest.resolve()),
+            "manifest_sha256": "manifest-hash",
+            "threshold_source": "argmax",
+            "eval_split": "val",
+            "data_dir": str(data_dir.resolve()),
+            "dataset_provenance": {
+                "y_sha256": "y-val-hash",
+                "meta_sha256": "meta-val-hash",
+            },
+        }
+
+        def fake_sha256(path):
+            return {
+                "manifest.tsv": "manifest-hash",
+                "y_val.npy": "y-val-hash",
+                "meta_val.csv": "meta-val-hash",
+            }[Path(path).name]
+
+        with mock.patch.object(Path, "is_file", return_value=True), mock.patch.object(
+            Path, "read_text", return_value=json.dumps(config)
+        ), mock.patch.object(seed_mean, "sha256_file", side_effect=fake_sha256):
+            loaded = seed_mean.verify_eval_config(
+                eval_dir, manifest, base, "val"
+            )
+            self.assertEqual(loaded["eval_split"], "val")
+            with self.assertRaisesRegex(ValueError, "Evaluator split mismatch"):
+                seed_mean.verify_eval_config(eval_dir, manifest, base, "test")
 
 
 if __name__ == "__main__":
