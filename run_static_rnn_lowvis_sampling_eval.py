@@ -26,11 +26,16 @@ SAMPLING_EXPERIMENTS: Dict[int, str] = {
     3: "heavy_lowvis_oversample",
     4: "mild_lowvis_oversample",
     10: "lowvis_share_00",
-    11: "lowvis_share_10",
-    12: "lowvis_share_20",
-    13: "lowvis_share_30",
-    14: "lowvis_share_40",
-    15: "lowvis_share_50",
+    11: "lowvis_share_05",
+    12: "lowvis_share_10",
+    13: "lowvis_share_15",
+    14: "lowvis_share_20",
+    15: "lowvis_share_25",
+    16: "lowvis_share_30",
+    17: "lowvis_share_35",
+    18: "lowvis_share_40",
+    19: "lowvis_share_45",
+    20: "lowvis_share_50",
 }
 
 SAMPLING_LABELS: Dict[str, str] = {
@@ -40,20 +45,30 @@ SAMPLING_LABELS: Dict[str, str] = {
     "heavy_lowvis_oversample": "Heavy Low-vis event oversampling",
     "mild_lowvis_oversample": "Mild Low-vis event oversampling",
     "lowvis_share_00": "Natural sampling (0%)",
+    "lowvis_share_05": "Low-vis target 5%",
     "lowvis_share_10": "Low-vis target 10%",
+    "lowvis_share_15": "Low-vis target 15%",
     "lowvis_share_20": "Low-vis target 20%",
+    "lowvis_share_25": "Low-vis target 25%",
     "lowvis_share_30": "Low-vis target 30%",
+    "lowvis_share_35": "Low-vis target 35%",
     "lowvis_share_40": "Low-vis target 40%",
+    "lowvis_share_45": "Low-vis target 45%",
     "lowvis_share_50": "Low-vis target 50%",
 }
 
 SAMPLING_TARGET_SHARES: Dict[int, float] = {
     10: 0.0,
-    11: 0.1,
-    12: 0.2,
-    13: 0.3,
-    14: 0.4,
-    15: 0.5,
+    11: 0.05,
+    12: 0.1,
+    13: 0.15,
+    14: 0.2,
+    15: 0.25,
+    16: 0.3,
+    17: 0.35,
+    18: 0.4,
+    19: 0.45,
+    20: 0.5,
 }
 
 CLASS_NAMES = ("Fog", "Mist", "Clear")

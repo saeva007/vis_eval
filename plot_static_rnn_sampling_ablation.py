@@ -23,10 +23,15 @@ METHOD_LABELS: Dict[str, str] = {
     "heavy_lowvis_oversample": "Heavy Low-vis event oversampling",
     "mild_lowvis_oversample": "Mild Low-vis event oversampling",
     "lowvis_share_00": "Natural sampling (0%)",
+    "lowvis_share_05": "Low-vis target 5%",
     "lowvis_share_10": "Low-vis target 10%",
+    "lowvis_share_15": "Low-vis target 15%",
     "lowvis_share_20": "Low-vis target 20%",
+    "lowvis_share_25": "Low-vis target 25%",
     "lowvis_share_30": "Low-vis target 30%",
+    "lowvis_share_35": "Low-vis target 35%",
     "lowvis_share_40": "Low-vis target 40%",
+    "lowvis_share_45": "Low-vis target 45%",
     "lowvis_share_50": "Low-vis target 50%",
 }
 
@@ -37,10 +42,15 @@ SHORT_LABELS: Dict[str, str] = {
     "Heavy Low-vis event oversampling": "Heavy\noversampling",
     "Mild Low-vis event oversampling": "Mild\noversampling",
     "Natural sampling (0%)": "0%",
+    "Low-vis target 5%": "5%",
     "Low-vis target 10%": "10%",
+    "Low-vis target 15%": "15%",
     "Low-vis target 20%": "20%",
+    "Low-vis target 25%": "25%",
     "Low-vis target 30%": "30%",
+    "Low-vis target 35%": "35%",
     "Low-vis target 40%": "40%",
+    "Low-vis target 45%": "45%",
     "Low-vis target 50%": "50%",
 }
 
@@ -547,10 +557,15 @@ def sampling_curve_table(overall: pd.DataFrame) -> pd.DataFrame:
 
     label_target = {
         "lowvis_share_00": 0.0,
+        "lowvis_share_05": 0.05,
         "lowvis_share_10": 0.1,
+        "lowvis_share_15": 0.15,
         "lowvis_share_20": 0.2,
+        "lowvis_share_25": 0.25,
         "lowvis_share_30": 0.3,
+        "lowvis_share_35": 0.35,
         "lowvis_share_40": 0.4,
+        "lowvis_share_45": 0.45,
         "lowvis_share_50": 0.5,
     }
     for index, row in df.iterrows():
@@ -600,7 +615,7 @@ def save_sampling_ratio_curve(
             markeredgewidth=0.7,
             label=label,
         )
-    ax.set_xticks(np.arange(0, 51, 10))
+    ax.set_xticks(np.arange(0, 51, 5))
     ax.set_xlim(-2, 52)
     ax.set_ylim(0, 1.0)
     ax.set_xlabel("Low-vis target share in S2 batches (%)")
@@ -627,6 +642,8 @@ def save_sampling_ratio_curve(
     )
     ax.plot(recall, precision, color="#9CA3AF", lw=1.0, zorder=1)
     for px, py, pct in zip(recall, precision, x):
+        if int(round(pct)) % 10 != 0:
+            continue
         ax.annotate(
             f"{int(round(pct))}%",
             (px, py),
