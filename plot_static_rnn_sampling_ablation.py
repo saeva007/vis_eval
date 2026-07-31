@@ -21,6 +21,13 @@ METHOD_LABELS: Dict[str, str] = {
     "current_stratified": "With Low-vis event oversampling",
     "light_lowvis_oversample": "Light Low-vis event oversampling",
     "heavy_lowvis_oversample": "Heavy Low-vis event oversampling",
+    "mild_lowvis_oversample": "Mild Low-vis event oversampling",
+    "lowvis_share_00": "Natural sampling (0%)",
+    "lowvis_share_10": "Low-vis target 10%",
+    "lowvis_share_20": "Low-vis target 20%",
+    "lowvis_share_30": "Low-vis target 30%",
+    "lowvis_share_40": "Low-vis target 40%",
+    "lowvis_share_50": "Low-vis target 50%",
 }
 
 SHORT_LABELS: Dict[str, str] = {
@@ -28,6 +35,13 @@ SHORT_LABELS: Dict[str, str] = {
     "With Low-vis event oversampling": "With\noversampling",
     "Light Low-vis event oversampling": "Light\noversampling",
     "Heavy Low-vis event oversampling": "Heavy\noversampling",
+    "Mild Low-vis event oversampling": "Mild\noversampling",
+    "Natural sampling (0%)": "0%",
+    "Low-vis target 10%": "10%",
+    "Low-vis target 20%": "20%",
+    "Low-vis target 30%": "30%",
+    "Low-vis target 40%": "40%",
+    "Low-vis target 50%": "50%",
 }
 
 METHOD_COLORS: Dict[str, str] = {
@@ -35,6 +49,7 @@ METHOD_COLORS: Dict[str, str] = {
     "With Low-vis event oversampling": "#2E5A87",
     "Light Low-vis event oversampling": "#7AA6A1",
     "Heavy Low-vis event oversampling": "#C77C3D",
+    "Mild Low-vis event oversampling": "#7096B8",
 }
 
 CLASS_COLORS: Dict[str, str] = {
@@ -50,6 +65,11 @@ CLASS_DISPLAY: Dict[str, str] = {
 }
 
 GRID_COLOR = "#E5E7EB"
+CURVE_COLORS = {
+    "low_vis_csi": "#0F4D92",
+    "low_vis_recall": "#42949E",
+    "low_vis_precision": "#D09A3A",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -513,6 +533,133 @@ def save_split_panels(
         plt.close(fig)
 
 
+def sampling_curve_table(overall: pd.DataFrame) -> pd.DataFrame:
+    required = ["low_vis_csi", "low_vis_recall", "low_vis_precision"]
+    missing = [name for name in required if name not in overall.columns]
+    if missing:
+        raise KeyError(f"Missing curve metrics: {missing}")
+
+    df = overall.copy()
+    if "target_lowvis_share" in df.columns:
+        target = pd.to_numeric(df["target_lowvis_share"], errors="coerce")
+    else:
+        target = pd.Series(np.nan, index=df.index, dtype=float)
+
+    label_target = {
+        "lowvis_share_00": 0.0,
+        "lowvis_share_10": 0.1,
+        "lowvis_share_20": 0.2,
+        "lowvis_share_30": 0.3,
+        "lowvis_share_40": 0.4,
+        "lowvis_share_50": 0.5,
+    }
+    for index, row in df.iterrows():
+        if not np.isfinite(target.loc[index]):
+            target.loc[index] = label_target.get(str(row.get("label", "")), np.nan)
+
+    df["target_lowvis_pct"] = target.astype(float) * 100.0
+    df = df[np.isfinite(df["target_lowvis_pct"])].copy()
+    return df.sort_values("target_lowvis_pct").reset_index(drop=True)
+
+
+def save_sampling_ratio_curve(
+    out_dir: Path,
+    figure_stem: str,
+    overall: pd.DataFrame,
+    sources: Sequence[Path],
+    dpi: int,
+) -> bool:
+    curve = sampling_curve_table(overall)
+    if curve["target_lowvis_pct"].nunique() < 3:
+        return False
+
+    x = curve["target_lowvis_pct"].to_numpy(dtype=float)
+    fig, axes = plt.subplots(
+        1,
+        2,
+        figsize=(7.2, 3.05),
+        gridspec_kw={"width_ratios": [1.3, 1.0]},
+        constrained_layout=True,
+    )
+
+    ax = axes[0]
+    for metric, label in (
+        ("low_vis_csi", "CSI"),
+        ("low_vis_recall", "Recall"),
+        ("low_vis_precision", "Precision"),
+    ):
+        values = curve[metric].to_numpy(dtype=float)
+        ax.plot(
+            x,
+            values,
+            color=CURVE_COLORS[metric],
+            lw=2.0,
+            marker="o",
+            ms=5.2,
+            markeredgecolor="white",
+            markeredgewidth=0.7,
+            label=label,
+        )
+    ax.set_xticks(np.arange(0, 51, 10))
+    ax.set_xlim(-2, 52)
+    ax.set_ylim(0, 1.0)
+    ax.set_xlabel("Low-vis target share in S2 batches (%)")
+    ax.set_ylabel("Event score")
+    ax.set_title("Sampling intensity changes event skill")
+    ax.grid(axis="y", color=GRID_COLOR, lw=0.6)
+    ax.legend(loc="best", ncol=1, handlelength=1.8)
+    ax.text(-0.16, 1.04, "a", transform=ax.transAxes, fontsize=12, fontweight="bold", va="bottom")
+
+    ax = axes[1]
+    recall = curve["low_vis_recall"].to_numpy(dtype=float)
+    precision = curve["low_vis_precision"].to_numpy(dtype=float)
+    scatter = ax.scatter(
+        recall,
+        precision,
+        c=x,
+        cmap="Blues",
+        vmin=0,
+        vmax=50,
+        s=54,
+        edgecolor="white",
+        linewidth=0.8,
+        zorder=3,
+    )
+    ax.plot(recall, precision, color="#9CA3AF", lw=1.0, zorder=1)
+    for px, py, pct in zip(recall, precision, x):
+        ax.annotate(
+            f"{int(round(pct))}%",
+            (px, py),
+            xytext=(4, 4),
+            textcoords="offset points",
+            fontsize=8.0,
+            color="#374151",
+        )
+    ax.set_xlim(max(0.0, float(np.nanmin(recall)) - 0.05), min(1.0, float(np.nanmax(recall)) + 0.05))
+    ax.set_ylim(max(0.0, float(np.nanmin(precision)) - 0.05), min(1.0, float(np.nanmax(precision)) + 0.05))
+    ax.set_xlabel("Recall")
+    ax.set_ylabel("Precision")
+    ax.set_title("Precision–recall operating trajectory")
+    ax.grid(color=GRID_COLOR, lw=0.6)
+    ax.text(-0.18, 1.04, "b", transform=ax.transAxes, fontsize=12, fontweight="bold", va="bottom")
+    cbar = fig.colorbar(scatter, ax=ax, fraction=0.055, pad=0.04)
+    cbar.set_label("Target share (%)")
+    cbar.set_ticks(np.arange(0, 51, 10))
+
+    curve_stem = f"{figure_stem}_ratio_curve"
+    save_outputs(
+        fig,
+        out_dir,
+        curve_stem,
+        dpi,
+        sources,
+        curve,
+        "S2-only Low-vis sampling-intensity response from natural sampling through a 50% target share.",
+    )
+    plt.close(fig)
+    return True
+
+
 def main() -> None:
     args = parse_args()
     setup_style()
@@ -521,7 +668,9 @@ def main() -> None:
     overall, per_class, confusion, sources = read_inputs(eval_dir)
     labels = ordered_labels(overall)
 
-    save_split_panels(out_dir, args.figure_stem, overall, per_class, confusion, labels, sources, args.dpi)
+    curve_written = save_sampling_ratio_curve(out_dir, args.figure_stem, overall, sources, args.dpi)
+    if not curve_written:
+        save_split_panels(out_dir, args.figure_stem, overall, per_class, confusion, labels, sources, args.dpi)
     write_caption(out_dir, args.figure_stem)
 
 

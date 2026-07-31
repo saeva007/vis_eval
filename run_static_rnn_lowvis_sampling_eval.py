@@ -7,6 +7,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
+import sys
 from dataclasses import asdict
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -23,6 +25,12 @@ SAMPLING_EXPERIMENTS: Dict[int, str] = {
     2: "light_lowvis_oversample",
     3: "heavy_lowvis_oversample",
     4: "mild_lowvis_oversample",
+    10: "lowvis_share_00",
+    11: "lowvis_share_10",
+    12: "lowvis_share_20",
+    13: "lowvis_share_30",
+    14: "lowvis_share_40",
+    15: "lowvis_share_50",
 }
 
 SAMPLING_LABELS: Dict[str, str] = {
@@ -31,6 +39,21 @@ SAMPLING_LABELS: Dict[str, str] = {
     "light_lowvis_oversample": "Light Low-vis event oversampling",
     "heavy_lowvis_oversample": "Heavy Low-vis event oversampling",
     "mild_lowvis_oversample": "Mild Low-vis event oversampling",
+    "lowvis_share_00": "Natural sampling (0%)",
+    "lowvis_share_10": "Low-vis target 10%",
+    "lowvis_share_20": "Low-vis target 20%",
+    "lowvis_share_30": "Low-vis target 30%",
+    "lowvis_share_40": "Low-vis target 40%",
+    "lowvis_share_50": "Low-vis target 50%",
+}
+
+SAMPLING_TARGET_SHARES: Dict[int, float] = {
+    10: 0.0,
+    11: 0.1,
+    12: 0.2,
+    13: 0.3,
+    14: 0.4,
+    15: 0.5,
 }
 
 CLASS_NAMES = ("Fog", "Mist", "Clear")
@@ -345,6 +368,7 @@ def evaluate_target(
         "run_id": target.run_id,
         "checkpoint": str(target.checkpoint),
         "scaler": str(scaler_path),
+        "target_lowvis_share": SAMPLING_TARGET_SHARES.get(experiment_id, np.nan),
         **sampling_fields(ckpt_meta),
         **decision_meta,
         **metrics,
@@ -488,6 +512,7 @@ def write_markdown_summary(out_dir: Path, overall: pd.DataFrame, per_class: pd.D
         "experiment_id",
         "display_label",
         "sampler_mode",
+        "target_lowvis_share",
         "sample_fog_ratio",
         "sample_mist_ratio",
         "Fog_CSI",
@@ -639,6 +664,20 @@ def main() -> None:
         },
     }
     (out_dir / "run_config.json").write_text(json.dumps(run_config, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    plot_script = Path(__file__).resolve().with_name("plot_static_rnn_sampling_ablation.py")
+    if plot_script.is_file():
+        subprocess.run(
+            [
+                sys.executable,
+                str(plot_script),
+                "--eval_dir",
+                str(out_dir),
+                "--out_dir",
+                str(out_dir),
+            ],
+            check=True,
+        )
 
     print(f"[table] {overall_path}", flush=True)
     print(f"[table] {per_class_path}", flush=True)
