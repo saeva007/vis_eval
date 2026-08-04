@@ -84,11 +84,27 @@ def load_targets(args: argparse.Namespace, base: Path) -> List[tuple[str, str, j
                 continue
             raise FileNotFoundError(path)
         label = row["candidate_label"] or row["candidate_id"]
+        variant_raw = str(row.get("variant_id", "0") or "0").strip()
+        try:
+            variant_id = int(variant_raw)
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid variant_id={variant_raw!r} for candidate={row['candidate_id']}"
+            ) from exc
+        if variant_id not in journal.VARIANTS:
+            raise ValueError(
+                f"Unknown variant_id={variant_id} for candidate={row['candidate_id']}"
+            )
         targets.append(
             (
                 row["candidate_id"],
                 row.get("seed", ""),
-                journal.EvalTarget(label=label, run_id=row["run_id"], checkpoint=path, variant=journal.VARIANTS[0]),
+                journal.EvalTarget(
+                    label=label,
+                    run_id=row["run_id"],
+                    checkpoint=path,
+                    variant=journal.VARIANTS[variant_id],
+                ),
             )
         )
     return targets
@@ -225,6 +241,7 @@ def main() -> None:
             row["candidate_id"] = candidate_id
             row["seed"] = seed
             row["eval_split"] = args.split
+            row["variant_id"] = int(target.variant.exp_id)
         overall_rows.append(overall)
         class_rows.extend(per_class)
         confusion_rows.extend(confusion)
@@ -290,6 +307,7 @@ def main() -> None:
                 "experiment_id": experiment_id,
                 "label": label,
                 "run_id": str(row["run_id"]),
+                "variant_id": int(row.get("variant_id", 0)),
                 "checkpoint": str(checkpoint_path.resolve()),
                 "checkpoint_sha256": journal.sha256_file(checkpoint_path),
                 "scaler": str(scaler_path.resolve()),
