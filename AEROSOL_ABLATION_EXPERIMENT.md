@@ -49,14 +49,21 @@ git pull --ff-only origin main
 bash submit_aerosol_ablation_chain.sh
 ```
 
-The public launcher detaches immediately and prints a launcher log and a
-sourceable state-file path.  The worker persists every data-build, training,
-evaluation, ensemble, and analysis JobID.  After submission:
+The public launcher immediately submits a short Slurm controller and prints a
+controller log and a sourceable state-file path. This keeps chain submission
+alive when the originating SSH/login-node session disappears. The controller
+persists every data-build, training, evaluation, ensemble, and analysis JobID.
+After submission:
 
 ```bash
 source /public/home/putianshu/vis_mlp/paper_eval/logs/<bundle>.state.sh
 squeue -j "${ALL_JOB_IDS//:/,}"
 ```
+
+The launcher overrides legacy generic Slurm names with explicit roles such as
+`aero_full_s1_42`, `aero_nopm_s2_314`, and `aero_final_analysis`. The historical
+`airport25` filenames denote the 25-variable No-PM layout; they do not restrict
+the experiment to airport stations.
 
 Do not resubmit a partially built No-PM dataset.  The launcher stops on a
 partial directory so recovery can use the recorded JobIDs and logs.
