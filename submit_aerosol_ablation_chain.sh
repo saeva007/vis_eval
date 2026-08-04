@@ -296,18 +296,24 @@ submit_train_arm() {
         if [[ "${arm}" == "no_pm" ]]; then
             extra_args="${extra_args} --no-pm"
         fi
-        local s1_dep=()
-        if [[ -n "${s1_data_job}" ]]; then
-            s1_dep=(--dependency="afterok:${s1_data_job}")
-        fi
         local s1_job
-        s1_job="$(
-            LOWVIS_RNN_EXTRA_ARGS="${extra_args}" \
-                sbatch --parsable "${s1_dep[@]}" \
-                --job-name="aero_${arm}_s1_${seed}" \
-                --export=ALL,LOWVIS_RNN_MODE=s1,LOWVIS_RNN_RUN_ID="${run_id}",LOWVIS_RNN_S1_DATA_DIR="${s1_data}",LOWVIS_RNN_S2_DATA_DIR="${s2_data}",LOWVIS_RNN_LOCAL_CACHE_ID="${BUNDLE_ID}_${arm}_seed${seed}" \
-                "${TRAIN_DIR}/sub_static_rnn_lowvis_main.slurm"
-        )"
+        if [[ -n "${s1_data_job}" ]]; then
+            s1_job="$(
+                LOWVIS_RNN_EXTRA_ARGS="${extra_args}" \
+                    sbatch --parsable --dependency="afterok:${s1_data_job}" \
+                    --job-name="aero_${arm}_s1_${seed}" \
+                    --export=ALL,LOWVIS_RNN_MODE=s1,LOWVIS_RNN_RUN_ID="${run_id}",LOWVIS_RNN_S1_DATA_DIR="${s1_data}",LOWVIS_RNN_S2_DATA_DIR="${s2_data}",LOWVIS_RNN_LOCAL_CACHE_ID="${BUNDLE_ID}_${arm}_seed${seed}" \
+                    "${TRAIN_DIR}/sub_static_rnn_lowvis_main.slurm"
+            )"
+        else
+            s1_job="$(
+                LOWVIS_RNN_EXTRA_ARGS="${extra_args}" \
+                    sbatch --parsable \
+                    --job-name="aero_${arm}_s1_${seed}" \
+                    --export=ALL,LOWVIS_RNN_MODE=s1,LOWVIS_RNN_RUN_ID="${run_id}",LOWVIS_RNN_S1_DATA_DIR="${s1_data}",LOWVIS_RNN_S2_DATA_DIR="${s2_data}",LOWVIS_RNN_LOCAL_CACHE_ID="${BUNDLE_ID}_${arm}_seed${seed}" \
+                    "${TRAIN_DIR}/sub_static_rnn_lowvis_main.slurm"
+            )"
+        fi
         arm_s1_jobs="$(append_value "${arm_s1_jobs}" "${s1_job}")"
         ALL_JOB_IDS="$(append_value "${ALL_JOB_IDS}" "${s1_job}")"
         if [[ "${arm}" == "full" ]]; then
