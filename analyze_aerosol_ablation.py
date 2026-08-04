@@ -31,6 +31,35 @@ DEFAULT_EVENTS = (
     "2025-09-28 23:00:00",
     "2025-10-30 22:00:00",
 )
+LEGACY_FULL_DYNAMIC_ORDER = (
+    "RH2M",
+    "T2M",
+    "PRECIP",
+    "MSLP",
+    "SW_RAD",
+    "U10",
+    "WSPD10",
+    "V10",
+    "WDIR10",
+    "CAPE",
+    "LCC",
+    "T_925",
+    "RH_925",
+    "U_925",
+    "WSPD925",
+    "V_925",
+    "DP_1000",
+    "DP_925",
+    "Q_1000",
+    "Q_925",
+    "W_925",
+    "W_1000",
+    "DPD",
+    "INVERSION",
+    "ZENITH",
+    "PM10",
+    "PM2P5",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -265,17 +294,44 @@ def normalize_feature_name(name: str) -> str:
 
 def dynamic_layout(data_dir: Path) -> Tuple[int, int, List[str], Dict[str, object]]:
     cfg_path = data_dir / "dataset_build_config.json"
-    if not cfg_path.is_file():
-        raise FileNotFoundError(cfg_path)
-    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.is_file() else {}
     order = cfg.get("dynamic_feature_order")
-    if not isinstance(order, list) or not order:
-        raise ValueError(f"{cfg_path}: dynamic_feature_order is missing")
-    dyn_vars = int(cfg.get("dyn_vars", len(order)))
     window_size = int(cfg.get("window_size", 12))
-    if len(order) != dyn_vars:
-        raise ValueError(f"{cfg_path}: order length {len(order)} != dyn_vars {dyn_vars}")
-    return window_size, dyn_vars, [str(item) for item in order], cfg
+    if isinstance(order, list) and order:
+        dyn_vars = int(cfg.get("dyn_vars", len(order)))
+        if len(order) != dyn_vars:
+            raise ValueError(f"{cfg_path}: order length {len(order)} != dyn_vars {dyn_vars}")
+        cfg["dynamic_feature_order_source"] = "dataset_build_config"
+        return window_size, dyn_vars, [str(item) for item in order], cfg
+
+    # The established Full S2 mainline predates dataset_build_config.json on
+    # some cluster builds. Accept it only after its matrix width proves the
+    # exact 27-variable PM10+PM2.5 layout; do not use a permissive guess.
+    x_path = data_dir / "X_val.npy"
+    if not x_path.is_file():
+        raise FileNotFoundError(x_path)
+    shape = np.load(x_path, mmap_mode="r").shape
+    if len(shape) != 2:
+        raise ValueError(f"{x_path}: expected a 2-D matrix, got {shape}")
+    dyn_vars = len(LEGACY_FULL_DYNAMIC_ORDER)
+    fe_dim = int(shape[1]) - (window_size * dyn_vars) - 6
+    if fe_dim != 36:
+        raise ValueError(
+            f"{x_path}: width={shape[1]} does not prove the legacy Full "
+            f"27-variable plus 36-engineered-feature layout at window_size={window_size}"
+        )
+    cfg = dict(cfg)
+    cfg.update(
+        {
+            "dyn_vars": dyn_vars,
+            "window_size": window_size,
+            "feature_engineering_dim": fe_dim,
+            "dynamic_feature_order": list(LEGACY_FULL_DYNAMIC_ORDER),
+            "dynamic_feature_order_source": "legacy_full_27_width_audit",
+            "protocol": cfg.get("protocol", "legacy_main_pm10_pm25"),
+        }
+    )
+    return window_size, dyn_vars, list(LEGACY_FULL_DYNAMIC_ORDER), cfg
 
 
 def feature_index(order: Sequence[str], name: str) -> int:
@@ -642,6 +698,7 @@ def main() -> None:
         "no_pm_test_dir": str(Path(args.no_pm_test_dir).expanduser().resolve()),
         "full_data_dir": str(data_dir),
         "dataset_protocol": dataset_cfg.get("protocol", ""),
+        "dynamic_feature_order_source": dataset_cfg.get("dynamic_feature_order_source", ""),
         "dataset_pm_unit_note": (
             "PM is analyzed only by month-relative validation ranks; absolute PM values are not reported."
         ),

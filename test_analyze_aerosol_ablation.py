@@ -1,4 +1,6 @@
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -7,6 +9,22 @@ import analyze_aerosol_ablation as aerosol
 
 
 class AerosolAblationAnalysisTests(unittest.TestCase):
+    def test_legacy_full_layout_is_width_audited_without_config(self):
+        width = 12 * len(aerosol.LEGACY_FULL_DYNAMIC_ORDER) + 6 + 36
+        fake_matrix = type("FakeMatrix", (), {"shape": (2, width)})()
+        with patch.object(
+            Path,
+            "is_file",
+            autospec=True,
+            side_effect=lambda path: path.name == "X_val.npy",
+        ), patch.object(aerosol.np, "load", return_value=fake_matrix):
+            data_dir = Path("legacy_full_s2")
+            window, dyn, order, cfg = aerosol.dynamic_layout(data_dir)
+            self.assertEqual(window, 12)
+            self.assertEqual(dyn, 27)
+            self.assertEqual(order[-2:], ["PM10", "PM2P5"])
+            self.assertEqual(cfg["dynamic_feature_order_source"], "legacy_full_27_width_audit")
+
     def test_average_precision_groups_tied_scores(self):
         y = np.array([1, 0, 1, 0], dtype=bool)
         score = np.array([0.8, 0.8, 0.4, 0.1])

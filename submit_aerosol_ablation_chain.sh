@@ -219,8 +219,10 @@ dataset_state() {
     local required=(X_train.npy y_train.npy X_val.npy y_val.npy)
     if [[ "${split_kind}" == "s2" ]]; then
         # Downstream paired validation/test and RH-PM/event analysis require
-        # explicit feature provenance plus row metadata on S2.
-        required+=(dataset_build_config.json meta_val.csv X_test.npy y_test.npy meta_test.csv)
+        # validation/test row metadata on S2. Legacy Full S2 datasets may
+        # predate dataset_build_config.json; the fixed 27-variable mainline
+        # layout is audited from X_val.npy by the final analysis instead.
+        required+=(meta_val.csv X_test.npy y_test.npy meta_test.csv)
     fi
     if [[ ! -e "${directory}" ]]; then
         echo "absent"

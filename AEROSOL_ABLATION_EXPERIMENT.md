@@ -66,9 +66,10 @@ The launcher overrides legacy generic Slurm names with explicit roles such as
 the experiment to airport stations.
 
 S1 readiness follows the established trainer contract and requires the four
-train/validation arrays. S2 readiness is intentionally stricter because the
-paired conditional and event analyses require feature provenance plus
-validation/test row metadata.
+train/validation arrays. S2 additionally requires validation/test row metadata.
+For legacy Full S2 builds that predate `dataset_build_config.json`, the analysis
+accepts the feature order only after the array width proves the fixed 27-variable
+PM10+PM2.5 mainline layout; this fallback is recorded in the run configuration.
 
 Do not resubmit a partially built No-PM dataset.  The launcher stops on a
 partial directory so recovery can use the recorded JobIDs and logs.
