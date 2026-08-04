@@ -65,6 +65,11 @@ The launcher overrides legacy generic Slurm names with explicit roles such as
 `airport25` filenames denote the 25-variable No-PM layout; they do not restrict
 the experiment to airport stations.
 
+S1 readiness follows the established trainer contract and requires the four
+train/validation arrays. S2 readiness is intentionally stricter because the
+paired conditional and event analyses require feature provenance plus
+validation/test row metadata.
+
 Do not resubmit a partially built No-PM dataset.  The launcher stops on a
 partial directory so recovery can use the recorded JobIDs and logs.
 

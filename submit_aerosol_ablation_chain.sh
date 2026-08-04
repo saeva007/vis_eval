@@ -212,9 +212,15 @@ require_file() {
 dataset_state() {
     local directory="$1"
     local split_kind="$2"
-    local required=(dataset_build_config.json X_train.npy y_train.npy X_val.npy y_val.npy meta_val.csv)
+    # Match the established trainer contract for S1: only the four train/val
+    # arrays are required. Older nationwide Full datasets legitimately predate
+    # dataset_build_config.json and meta_val.csv, and the trainer infers their
+    # feature layout directly from X_train.npy.
+    local required=(X_train.npy y_train.npy X_val.npy y_val.npy)
     if [[ "${split_kind}" == "s2" ]]; then
-        required+=(X_test.npy y_test.npy meta_test.csv)
+        # Downstream paired validation/test and RH-PM/event analysis require
+        # explicit feature provenance plus row metadata on S2.
+        required+=(dataset_build_config.json meta_val.csv X_test.npy y_test.npy meta_test.csv)
     fi
     if [[ ! -e "${directory}" ]]; then
         echo "absent"
