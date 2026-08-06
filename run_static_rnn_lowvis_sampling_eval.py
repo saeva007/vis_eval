@@ -38,6 +38,18 @@ SAMPLING_EXPERIMENTS: Dict[int, str] = {
     20: "lowvis_share_50",
 }
 
+# Compatibility map for the six-checkpoint curve submitted before the experiment
+# ids were expanded to five-percentage-point increments. This mode evaluates the
+# existing artifacts without renaming, copying, or retraining checkpoints.
+LEGACY_TEN_PERCENT_EXPERIMENTS: Dict[int, str] = {
+    10: "lowvis_share_00",
+    11: "lowvis_share_10",
+    12: "lowvis_share_20",
+    13: "lowvis_share_30",
+    14: "lowvis_share_40",
+    15: "lowvis_share_50",
+}
+
 SAMPLING_LABELS: Dict[str, str] = {
     "natural_shuffle": "No Low-vis event oversampling",
     "current_stratified": "With Low-vis event oversampling",
@@ -69,6 +81,15 @@ SAMPLING_TARGET_SHARES: Dict[int, float] = {
     18: 0.4,
     19: 0.45,
     20: 0.5,
+}
+
+LEGACY_TEN_PERCENT_TARGET_SHARES: Dict[int, float] = {
+    10: 0.0,
+    11: 0.1,
+    12: 0.2,
+    13: 0.3,
+    14: 0.4,
+    15: 0.5,
 }
 
 CLASS_NAMES = ("Fog", "Mist", "Clear")
@@ -112,6 +133,11 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--allow_missing", action="store_true")
     p.add_argument("--no_auto_latest", action="store_true")
+    p.add_argument(
+        "--legacy_ten_percent",
+        action="store_true",
+        help="Evaluate the legacy 0/10/20/30/40/50 percent curve stored as experiments 10-15.",
+    )
 
     p.add_argument("--threshold_source", choices=["checkpoint", "cli", "argmax"], default="argmax")
     p.add_argument("--fog_th", type=float, default=0.5)
@@ -146,27 +172,32 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def parse_id_list(value: str) -> List[int]:
+def parse_id_list(value: str, experiments: Dict[int, str] = SAMPLING_EXPERIMENTS) -> List[int]:
     out: List[int] = []
     for token in (value or "").replace(",", ":").replace(" ", ":").split(":"):
         token = token.strip()
         if not token:
             continue
         exp_id = int(token)
-        if exp_id not in SAMPLING_EXPERIMENTS:
-            raise ValueError(f"Unknown sampling experiment id={exp_id}; valid ids={sorted(SAMPLING_EXPERIMENTS)}")
+        if exp_id not in experiments:
+            raise ValueError(f"Unknown sampling experiment id={exp_id}; valid ids={sorted(experiments)}")
         out.append(exp_id)
-    return out or sorted(SAMPLING_EXPERIMENTS)
+    return out or sorted(experiments)
 
 
 def checkpoint_suffix(exp_id: int, name: str, stage_tag: str) -> str:
     return f"_{exp_id}_{name}_{stage_tag}_best_score.pt"
 
 
-def discover_latest_prefix(ckpt_dir: Path, stage_tag: str, exp_ids: Sequence[int]) -> Optional[str]:
+def discover_latest_prefix(
+    ckpt_dir: Path,
+    stage_tag: str,
+    exp_ids: Sequence[int],
+    experiments: Dict[int, str] = SAMPLING_EXPERIMENTS,
+) -> Optional[str]:
     runs: Dict[str, Dict[str, object]] = {}
     for exp_id in exp_ids:
-        name = SAMPLING_EXPERIMENTS[exp_id]
+        name = experiments[exp_id]
         suffix = checkpoint_suffix(exp_id, name, stage_tag)
         for path in ckpt_dir.glob(f"*{suffix}"):
             if not path.name.endswith(suffix):
@@ -190,11 +221,12 @@ def build_targets(
     allow_missing: bool,
     current_main_run_id: str = "",
     current_main_ckpt: str = "",
+    experiments: Dict[int, str] = SAMPLING_EXPERIMENTS,
 ) -> List[journal.EvalTarget]:
     targets: List[journal.EvalTarget] = []
     spec = journal.VARIANTS[0]
     for exp_id in exp_ids:
-        name = SAMPLING_EXPERIMENTS[exp_id]
+        name = experiments[exp_id]
         if exp_id == 1 and (str(current_main_run_id).strip() or str(current_main_ckpt).strip()):
             if str(current_main_ckpt).strip():
                 checkpoint = journal.as_abs_under(base, str(current_main_ckpt).strip())
@@ -342,6 +374,7 @@ def evaluate_target(
     mod,
     layout,
     device,
+    target_shares: Dict[int, float] = SAMPLING_TARGET_SHARES,
 ) -> Tuple[Dict[str, object], List[Dict[str, object]], List[Dict[str, object]], List[Dict[str, object]]]:
     import joblib
 
@@ -383,7 +416,7 @@ def evaluate_target(
         "run_id": target.run_id,
         "checkpoint": str(target.checkpoint),
         "scaler": str(scaler_path),
-        "target_lowvis_share": SAMPLING_TARGET_SHARES.get(experiment_id, np.nan),
+        "target_lowvis_share": target_shares.get(experiment_id, np.nan),
         **sampling_fields(ckpt_meta),
         **decision_meta,
         **metrics,
@@ -563,9 +596,11 @@ def main() -> None:
     out_dir = journal.unique_dir(journal.as_abs_under(base, args.out_dir))
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    exp_ids = parse_id_list(args.experiments)
+    experiments = LEGACY_TEN_PERCENT_EXPERIMENTS if args.legacy_ten_percent else SAMPLING_EXPERIMENTS
+    target_shares = LEGACY_TEN_PERCENT_TARGET_SHARES if args.legacy_ten_percent else SAMPLING_TARGET_SHARES
+    exp_ids = parse_id_list(args.experiments, experiments)
     if not args.sampling_run_prefix and not args.no_auto_latest:
-        args.sampling_run_prefix = discover_latest_prefix(ckpt_dir, args.stage_tag, exp_ids) or ""
+        args.sampling_run_prefix = discover_latest_prefix(ckpt_dir, args.stage_tag, exp_ids, experiments) or ""
         if args.sampling_run_prefix:
             print(f"[auto] sampling_run_prefix={args.sampling_run_prefix}", flush=True)
     needs_sampling_prefix = any(exp_id != 1 for exp_id in exp_ids) or not (
@@ -593,6 +628,7 @@ def main() -> None:
         args.allow_missing,
         current_main_run_id=getattr(args, "current_main_run_id", ""),
         current_main_ckpt=getattr(args, "current_main_ckpt", ""),
+        experiments=experiments,
     )
     if not targets:
         raise FileNotFoundError("No sampling-ablation checkpoints were selected for evaluation.")
@@ -611,7 +647,7 @@ def main() -> None:
     class_rows: List[Dict[str, object]] = []
     cm_rows: List[Dict[str, object]] = []
     event_rows: List[Dict[str, object]] = []
-    id_by_label = {name: exp_id for exp_id, name in SAMPLING_EXPERIMENTS.items()}
+    id_by_label = {name: exp_id for exp_id, name in experiments.items()}
     for target in targets:
         exp_id = id_by_label[target.label]
         overall, per_class, confusion, events = evaluate_target(
@@ -628,6 +664,7 @@ def main() -> None:
             mod,
             layout,
             device,
+            target_shares,
         )
         overall_rows.append(overall)
         class_rows.extend(per_class)
@@ -653,7 +690,8 @@ def main() -> None:
         "sampling_run_prefix": args.sampling_run_prefix,
         "current_main_run_id": str(getattr(args, "current_main_run_id", "") or ""),
         "current_main_ckpt": str(getattr(args, "current_main_ckpt", "") or ""),
-        "experiments": {str(k): SAMPLING_EXPERIMENTS[k] for k in exp_ids},
+        "experiments": {str(k): experiments[k] for k in exp_ids},
+        "sampling_curve_mode": "legacy_ten_percent" if args.legacy_ten_percent else "five_percent",
         "labels": SAMPLING_LABELS,
         "base": str(base),
         "train_dir": str(train_dir),

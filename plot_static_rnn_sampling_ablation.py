@@ -589,6 +589,11 @@ def save_sampling_ratio_curve(
         return False
 
     x = curve["target_lowvis_pct"].to_numpy(dtype=float)
+    unique_x = np.sort(np.unique(x[np.isfinite(x)]))
+    positive_steps = np.diff(unique_x)
+    positive_steps = positive_steps[positive_steps > 0]
+    curve_step = float(np.min(positive_steps)) if positive_steps.size else 10.0
+    tick_step = max(5, int(round(curve_step)))
     fig, axes = plt.subplots(
         1,
         2,
@@ -615,12 +620,12 @@ def save_sampling_ratio_curve(
             markeredgewidth=0.7,
             label=label,
         )
-    ax.set_xticks(np.arange(0, 51, 5))
+    ax.set_xticks(np.arange(0, 51, tick_step))
     ax.set_xlim(-2, 52)
     ax.set_ylim(0, 1.0)
     ax.set_xlabel("Low-vis target share in S2 batches (%)")
     ax.set_ylabel("Event score")
-    ax.set_title("Sampling intensity changes event skill")
+    ax.set_title(f"Sampling response ({tick_step}-point increments)")
     ax.grid(axis="y", color=GRID_COLOR, lw=0.6)
     ax.legend(loc="best", ncol=1, handlelength=1.8)
     ax.text(-0.16, 1.04, "a", transform=ax.transAxes, fontsize=12, fontweight="bold", va="bottom")
@@ -671,7 +676,7 @@ def save_sampling_ratio_curve(
         dpi,
         sources,
         curve,
-        "S2-only Low-vis sampling-intensity response from natural sampling through a 50% target share.",
+        f"S2-only Low-vis sampling-intensity response from natural sampling through a 50% target share, evaluated at {tick_step}-percentage-point increments.",
     )
     plt.close(fig)
     return True
