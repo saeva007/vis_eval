@@ -17,7 +17,7 @@ from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
 import numpy as np
 import pandas as pd
 
-FIGURE_WIDTH = 7.205
+FIGURE_WIDTH = 9.00
 VISCAST = "#2E5A87"
 IFS = "#7A7F87"
 INK = "#17191B"
@@ -378,7 +378,7 @@ def draw_lead_heatmap(ax, cax, lead: pd.DataFrame) -> pd.DataFrame:
     ax.set_xlabel("Display lead time (h)")
     ax.set_title("48 h skill gain over IFS", loc="left", fontweight="bold", pad=5)
     for row_idx, (lo, hi) in enumerate(ranges):
-        ax.text(1.012, row_idx, f"{lo:+.1f} to {hi:+.1f} pp", transform=ax.get_yaxis_transform(), ha="left", va="center", fontsize=6.7, color="#334155", clip_on=False)
+        ax.text(1.010, row_idx, f"{lo:+.1f} to {hi:+.1f} pp", transform=ax.get_yaxis_transform(), ha="left", va="center", fontsize=6.7, color="#334155", clip_on=False)
     cb = ax.figure.colorbar(mesh, cax=cax, orientation="horizontal")
     cb.set_ticks(np.linspace(-1, 1, 5))
     cb.set_label("Within-metric normalized VisCast − IFS skill gain", fontsize=7.3)
@@ -402,8 +402,10 @@ def main() -> None:
     shp = read_shapefile(args.shp_path)
 
     fig = plt.figure(figsize=(FIGURE_WIDTH, 7.15))
-    outer = fig.add_gridspec(2, 1, height_ratios=[2.15, 1.15], left=0.14, right=0.90, top=0.975, bottom=0.075, hspace=0.30)
-    top = outer[0].subgridspec(1, 2, width_ratios=[3.15, 1.0], wspace=0.16)
+    # Spend the additional width on the map and lead-time panel. The right-hand
+    # metric panels retain approximately their previous physical width.
+    outer = fig.add_gridspec(2, 1, height_ratios=[2.15, 1.15], left=0.15, right=0.86, top=0.968, bottom=0.075, hspace=0.30)
+    top = outer[0].subgridspec(1, 2, width_ratios=[3.80, 1.0], wspace=0.17)
     ax_map = fig.add_subplot(top[0, 0])
     right = top[0, 1].subgridspec(3, 1, hspace=0.46)
     small_axes = [fig.add_subplot(right[i, 0]) for i in range(3)]

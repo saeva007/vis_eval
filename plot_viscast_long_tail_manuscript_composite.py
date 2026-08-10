@@ -20,7 +20,7 @@ import plot_static_rnn_loss_comparison as loss_plot
 import plot_static_rnn_sampling_ablation as sampling_plot
 
 
-FIGURE_WIDTH = 7.205
+FIGURE_WIDTH = 8.20
 INK = "#17191B"
 GRID = "#E5E7EB"
 
@@ -105,7 +105,14 @@ def draw_s1(ax, source: pd.DataFrame, labels: Sequence[str]) -> pd.DataFrame:
     for offset, label in zip(offsets, labels):
         values = pd.to_numeric(lookup[label], errors="coerce").to_numpy(dtype=float)
         ax.bar(x + offset, values, width=width, color=split_plot.label_color(label), label=label)
-    ax.set_xticks(x, [text.replace("Low-vis event ", "Low-vis\n") for text in display], rotation=25, ha="right")
+    tick_labels = [
+        text.replace("Ultra-low ", "Ultra-\nlow ")
+        .replace("Moderate-low ", "Moderate-\nlow ")
+        .replace("Low-vis event ", "Low-vis\n")
+        for text in display
+    ]
+    ax.set_xticks(x, tick_labels, rotation=0, ha="center")
+    ax.tick_params(axis="x", labelsize=6.8, pad=3)
     ax.set_ylim(0, 1.0)
     ax.set_ylabel("Score")
     ax.set_title("Pretraining improves skill", loc="left", fontweight="bold", pad=5)
@@ -153,8 +160,11 @@ def prepare_loss(overall: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
 def draw_loss(ax, overall: pd.DataFrame) -> pd.DataFrame:
     source, labels = prepare_loss(overall)
     loss_plot.panel_lowvis_event_skill(ax, source, labels)
+    # The helper writes a centred title. Clear it before adding the composite's
+    # left-aligned title so both Matplotlib title slots cannot overlap.
+    ax.set_title("", loc="center")
     ax.set_title("Loss-function comparison", loc="left", fontweight="bold", pad=5)
-    ax.legend(loc="upper left", handlelength=1.3)
+    ax.legend(loc="upper left", bbox_to_anchor=(0.0, 0.97), handlelength=1.3, fontsize=6.8)
     return source
 
 
@@ -184,8 +194,18 @@ def main() -> None:
     require_columns(sampling, ["low_vis_csi", "low_vis_recall", "low_vis_precision"], sampling_path)
     require_columns(loss, ["label", "low_vis_csi", "low_vis_recall", "low_vis_precision"], loss_path)
 
-    fig, axes = plt.subplots(1, 3, figsize=(FIGURE_WIDTH, 2.72))
-    fig.subplots_adjust(left=0.07, right=0.995, top=0.91, bottom=0.28, wspace=0.38)
+    fig = plt.figure(figsize=(FIGURE_WIDTH, 2.85))
+    grid = fig.add_gridspec(
+        1,
+        3,
+        width_ratios=[1.18, 1.04, 1.05],
+        left=0.06,
+        right=0.992,
+        top=0.88,
+        bottom=0.22,
+        wspace=0.34,
+    )
+    axes = [fig.add_subplot(grid[0, index]) for index in range(3)]
     source_a = draw_s1(axes[0], s1, labels)
     source_b = draw_sampling(axes[1], sampling)
     source_c = draw_loss(axes[2], loss)

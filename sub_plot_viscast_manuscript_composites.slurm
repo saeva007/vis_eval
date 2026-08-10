@@ -21,6 +21,7 @@ S1_CSV="${S1_CSV:-auto}"
 SAMPLING_CSV="${SAMPLING_CSV:-auto}"
 LOSS_CSV="${LOSS_CSV:-auto}"
 UPPER_AIR_DIR="${UPPER_AIR_DIR:-auto}"
+PAIRED_QUALITY_DIR="${PAIRED_QUALITY_DIR:-auto}"
 OUT_DIR="${OUT_DIR:-${BASE}/paper_eval_results_pm10_pm25_journal/manuscript_main_figures_redraw_${SLURM_JOB_ID}}"
 SHP_PATH="${SHP_PATH:-/public/home/putianshu/中华人民共和国/中华人民共和国.shp}"
 
@@ -52,13 +53,22 @@ fi
 if [[ "${UPPER_AIR_DIR}" == "auto" ]]; then
     UPPER_AIR_DIR="${QCORE_ANALYSIS_DIR}"
 fi
+if [[ "${PAIRED_QUALITY_DIR}" == "auto" ]]; then
+    paired_quality_file="$(latest_file pressure_level_paired_rmse_utc_date_bootstrap_ci.csv)"
+    [[ -n "${paired_quality_file}" ]] || { echo "ERROR: could not find pressure_level_paired_rmse_utc_date_bootstrap_ci.csv" >&2; exit 2; }
+    PAIRED_QUALITY_DIR="$(dirname "${paired_quality_file}")"
+fi
 
 for path in \
     "${EVAL_DIR}/plot_viscast_baseline_manuscript_composite.py" \
     "${EVAL_DIR}/plot_viscast_long_tail_manuscript_composite.py" \
     "${IFS_DIR}/plot_qcore_t925_manuscript_composite.py" \
+    "${IFS_DIR}/plot_common_variable_error_regimes.py" \
     "${MAIN_EVAL_DIR}/station_model_vs_ifs_metrics.csv" \
     "${QCORE_ANALYSIS_DIR}/hybrid_exact_shapley_effects.csv" \
+    "${PAIRED_QUALITY_DIR}/pressure_level_paired_rmse_utc_date_bootstrap_ci.csv" \
+    "${PAIRED_QUALITY_DIR}/surface_observation_three_source_rmse_utc_date_bootstrap_ci.csv" \
+    "${PAIRED_QUALITY_DIR}/surface_observation_pairwise_rmse_delta_utc_date_bootstrap_ci.csv" \
     "${S1_CSV}" \
     "${SAMPLING_CSV}" \
     "${LOSS_CSV}"; do
@@ -81,6 +91,7 @@ mkdir -p "${OUT_DIR}" "${EVAL_DIR}/logs"
 echo "viscast_main_figures_preflight=OK"
 echo "main_eval_dir=${MAIN_EVAL_DIR}"
 echo "qcore_analysis_dir=${QCORE_ANALYSIS_DIR}"
+echo "paired_quality_dir=${PAIRED_QUALITY_DIR}"
 echo "s1_csv=${S1_CSV}"
 echo "sampling_csv=${SAMPLING_CSV}"
 echo "loss_csv=${LOSS_CSV}"
@@ -94,6 +105,7 @@ python "${EVAL_DIR}/plot_viscast_baseline_manuscript_composite.py" \
 python "${IFS_DIR}/plot_qcore_t925_manuscript_composite.py" \
   --analysis-dir "${QCORE_ANALYSIS_DIR}" \
   --upper-air-dir "${UPPER_AIR_DIR}" \
+  --paired-quality-dir "${PAIRED_QUALITY_DIR}" \
   --out-dir "${OUT_DIR}"
 
 python "${EVAL_DIR}/plot_viscast_long_tail_manuscript_composite.py" \
