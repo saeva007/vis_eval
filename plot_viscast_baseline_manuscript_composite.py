@@ -402,8 +402,14 @@ def draw_lead_heatmap(ax, cax, lead: pd.DataFrame) -> pd.DataFrame:
         model = pd.to_numeric(table[f"{metric}_model"], errors="coerce").to_numpy(dtype=float)
         baseline = pd.to_numeric(table[f"{metric}_ifs"], errors="coerce").to_numpy(dtype=float)
         delta = 100.0 * (model - baseline)
-        matrix[row_idx] = delta
-        for lead_hour, model_value, ifs_value, delta_value in zip(leads, model, baseline, delta):
+        matrix[row_idx] = signed_row_display(delta)
+        for lead_hour, model_value, ifs_value, delta_value, display_value in zip(
+            leads,
+            model,
+            baseline,
+            delta,
+            matrix[row_idx],
+        ):
             raw_rows.append(
                 {
                     "metric": metric,
@@ -412,20 +418,16 @@ def draw_lead_heatmap(ax, cax, lead: pd.DataFrame) -> pd.DataFrame:
                     "viscast_value": model_value,
                     "ifs_value": ifs_value,
                     "skill_delta_percentage_points": delta_value,
-                    "heatmap_value_percentage_points": delta_value,
+                    "within_row_display_value": display_value,
                 }
             )
     cmap = lead_delta_cmap()
-    finite = matrix[np.isfinite(matrix)]
-    if finite.size == 0:
-        raise ValueError("No finite VisCast-minus-IFS skill gains are available")
-    limit = max(5.0, math.ceil(float(np.nanmax(np.abs(finite))) / 5.0) * 5.0)
     mesh = ax.pcolormesh(
         lead_edges(leads),
         np.arange(len(specs) + 1) - 0.5,
         np.ma.masked_invalid(matrix),
         cmap=cmap,
-        norm=TwoSlopeNorm(vmin=-limit, vcenter=0.0, vmax=limit),
+        norm=TwoSlopeNorm(vmin=-1.0, vcenter=0.0, vmax=1.0),
         shading="flat",
     )
     ax.set_ylim(len(specs) - 0.5, -0.5)
@@ -435,8 +437,8 @@ def draw_lead_heatmap(ax, cax, lead: pd.DataFrame) -> pd.DataFrame:
     ax.set_xlabel("Display lead time (h)")
     ax.set_title("48 h skill gain over IFS", loc="left", fontweight="bold", pad=5)
     cb = ax.figure.colorbar(mesh, cax=cax, orientation="horizontal")
-    cb.set_ticks(np.linspace(-limit, limit, 5))
-    cb.set_label("VisCast − IFS skill gain (percentage points)", fontsize=7.3)
+    cb.set_ticks(np.linspace(-1.0, 1.0, 5))
+    cb.set_label("Within-metric normalized VisCast − IFS skill gain", fontsize=7.3)
     cax.tick_params(labelsize=6.8)
     return pd.DataFrame(raw_rows)
 
