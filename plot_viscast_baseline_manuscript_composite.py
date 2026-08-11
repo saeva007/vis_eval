@@ -470,6 +470,15 @@ def main() -> None:
         wspace=0.17,
     )
     ax_map = fig.add_subplot(top[0, 0])
+    map_position = ax_map.get_position()
+    ax_map.set_position(
+        [
+            map_position.x0 + 0.012,
+            map_position.y0,
+            map_position.width,
+            map_position.height,
+        ]
+    )
     right = top[0, 1].subgridspec(3, 1, hspace=0.46)
     small_axes = [fig.add_subplot(right[i, 0]) for i in range(3)]
     bottom = fig.add_gridspec(
