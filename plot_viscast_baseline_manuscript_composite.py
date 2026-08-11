@@ -148,6 +148,14 @@ def parse_args() -> argparse.Namespace:
         default=0.012,
         help="Horizontal map-panel shift in figure coordinates; positive moves right.",
     )
+    p.add_argument(
+        "--hist-inset",
+        type=float,
+        nargs=4,
+        default=(0.065, 0.085, 0.265, 0.190),
+        metavar=("X", "Y", "WIDTH", "HEIGHT"),
+        help="Distribution inset rectangle in map-axis coordinates.",
+    )
     p.add_argument("--dpi", type=int, default=600)
     return p.parse_args()
 
@@ -245,7 +253,13 @@ def panel_label(ax, letter: str, x: float = -0.12) -> None:
     ax.text(x, 1.02, letter, transform=ax.transAxes, ha="left", va="bottom", fontsize=10, fontweight="bold", color=INK)
 
 
-def draw_station_map(ax, station: pd.DataFrame, shp, min_count: int) -> pd.DataFrame:
+def draw_station_map(
+    ax,
+    station: pd.DataFrame,
+    shp,
+    min_count: int,
+    hist_inset: Tuple[float, float, float, float],
+) -> pd.DataFrame:
     source = station.copy()
     source["n_low_vis"] = pd.to_numeric(source["n_low_vis"], errors="coerce")
     source["delta_low_vis_recall"] = pd.to_numeric(source["delta_low_vis_recall"], errors="coerce")
@@ -280,7 +294,7 @@ def draw_station_map(ax, station: pd.DataFrame, shp, min_count: int) -> pd.DataF
     # color key.  Both components remain part of panel a without masking the
     # station-rich eastern half of the map.
     ax.set_ylim(12.5, 54)
-    hist = ax.inset_axes([0.025, 0.035, 0.285, 0.225], zorder=9)
+    hist = ax.inset_axes(hist_inset, zorder=9)
     cax = ax.inset_axes([0.525, 0.060, 0.405, 0.040], zorder=9)
     hist.set_facecolor("white")
     hist.patch.set_alpha(0.97)
@@ -505,6 +519,7 @@ def main() -> None:
         station,
         shp,
         args.min_station_lowvis,
+        tuple(args.hist_inset),
     )
     small_sources = [
         draw_metric_pair(small_axes[0], overall, "Ultra-low", "Fog_CSI", "Fog_R", add_legend=True),
