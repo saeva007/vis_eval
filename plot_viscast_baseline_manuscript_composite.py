@@ -142,6 +142,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--shp-path", default="/public/home/putianshu/中华人民共和国/中华人民共和国.shp")
     p.add_argument("--figure-stem", default="fig_viscast_vs_ifs_main_composite")
     p.add_argument("--min-station-lowvis", type=int, default=5)
+    p.add_argument(
+        "--map-shift-x",
+        type=float,
+        default=0.012,
+        help="Horizontal map-panel shift in figure coordinates; positive moves right.",
+    )
     p.add_argument("--dpi", type=int, default=600)
     return p.parse_args()
 
@@ -473,7 +479,7 @@ def main() -> None:
     map_position = ax_map.get_position()
     ax_map.set_position(
         [
-            map_position.x0 + 0.012,
+            map_position.x0 + args.map_shift_x,
             map_position.y0,
             map_position.width,
             map_position.height,
