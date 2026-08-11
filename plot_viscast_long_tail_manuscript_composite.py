@@ -53,6 +53,7 @@ def setup_style() -> None:
             "axes.linewidth": 0.75,
             "axes.spines.top": False,
             "axes.spines.right": False,
+            "axes.grid": False,
             "legend.frameon": False,
             "figure.facecolor": "white",
             "savefig.facecolor": "white",
@@ -116,7 +117,7 @@ def draw_s1(ax, source: pd.DataFrame, labels: Sequence[str]) -> pd.DataFrame:
     ax.set_ylim(0, 1.0)
     ax.set_ylabel("Score")
     ax.set_title("Pretraining improves skill", loc="left", fontweight="bold", pad=5)
-    ax.grid(axis="y", color=GRID, linewidth=0.55)
+    ax.grid(False)
     ax.legend(loc="upper left", handlelength=1.3)
     return source
 
@@ -145,7 +146,7 @@ def draw_sampling(ax, overall: pd.DataFrame) -> pd.DataFrame:
     ax.set_xlabel("Low-vis target share (%)")
     ax.set_ylabel("Score")
     ax.set_title("Sampling response", loc="left", fontweight="bold", pad=5)
-    ax.grid(axis="y", color=GRID, linewidth=0.55)
+    ax.grid(False)
     ax.legend(loc="best", handlelength=1.5)
     return curve
 
@@ -164,6 +165,7 @@ def draw_loss(ax, overall: pd.DataFrame) -> pd.DataFrame:
     # left-aligned title so both Matplotlib title slots cannot overlap.
     ax.set_title("", loc="center")
     ax.set_title("Loss-function comparison", loc="left", fontweight="bold", pad=5)
+    ax.grid(False)
     ax.legend(loc="upper left", bbox_to_anchor=(0.0, 0.97), handlelength=1.3, fontsize=6.8)
     return source
 

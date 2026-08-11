@@ -17,7 +17,7 @@ from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
 import numpy as np
 import pandas as pd
 
-FIGURE_WIDTH = 9.00
+FIGURE_WIDTH = 9.20
 VISCAST = "#2E5A87"
 IFS = "#7A7F87"
 INK = "#17191B"
@@ -28,6 +28,23 @@ def delta_cmap() -> LinearSegmentedColormap:
     return LinearSegmentedColormap.from_list(
         "viscast_ifs_delta",
         [(0.00, "#9E1F36"), (0.24, "#D6604D"), (0.50, "#FFFFFF"), (0.76, "#67A9CF"), (1.00, "#08306B")],
+        N=256,
+    )
+
+
+def lead_delta_cmap() -> LinearSegmentedColormap:
+    """Signed gain map: purple for losses and green for gains."""
+    return LinearSegmentedColormap.from_list(
+        "viscast_ifs_lead_delta",
+        [
+            (0.000, "#6F526E"),
+            (0.167, "#9A7B96"),
+            (0.333, "#D2C3CF"),
+            (0.500, "#F3F1ED"),
+            (0.667, "#C4DAD5"),
+            (0.833, "#75A79F"),
+            (1.000, "#347A73"),
+        ],
         N=256,
     )
 
@@ -75,14 +92,34 @@ def read_shapefile(path: str):
 
         return gpd.read_file(str(shp))
     except Exception as exc:
-        print(f"[WARN] boundary unavailable: {exc}", flush=True)
-        return None
+        try:
+            import shapefile
+
+            segments = []
+            with shapefile.Reader(str(shp)) as reader:
+                for shape in reader.shapes():
+                    points = np.asarray(shape.points, dtype=float)
+                    bounds = list(shape.parts) + [len(points)]
+                    for start, end in zip(bounds[:-1], bounds[1:]):
+                        if end - start >= 2:
+                            segments.append(points[start:end])
+            return segments
+        except Exception as fallback_exc:
+            print(
+                f"[WARN] boundary unavailable: geopandas={exc}; pyshp={fallback_exc}",
+                flush=True,
+            )
+            return None
 
 
 def draw_boundary(ax, shp, color: str = "#404040", linewidth: float = 0.5, zorder: int = 6) -> None:
     if shp is None:
         return
-    shp.boundary.plot(ax=ax, color=color, linewidth=linewidth, zorder=zorder)
+    if hasattr(shp, "boundary"):
+        shp.boundary.plot(ax=ax, color=color, linewidth=linewidth, zorder=zorder)
+        return
+    for segment in shp:
+        ax.plot(segment[:, 0], segment[:, 1], color=color, linewidth=linewidth, zorder=zorder)
 
 
 def draw_basemap(ax, shp) -> None:
@@ -126,6 +163,7 @@ def setup_style() -> None:
             "axes.linewidth": 0.8,
             "axes.spines.top": True,
             "axes.spines.right": True,
+            "axes.grid": False,
             "legend.frameon": False,
             "figure.facecolor": "white",
             "savefig.facecolor": "white",
@@ -232,6 +270,16 @@ def draw_station_map(ax, station: pd.DataFrame, shp, min_count: int) -> pd.DataF
         zorder=3,
     )
     draw_boundary(ax, shp, color="#1F2937", linewidth=0.55, zorder=6)
+    # Reserve a shallow, in-frame southern margin for the distribution and
+    # color key.  Both components remain part of panel a without masking the
+    # station-rich eastern half of the map.
+    ax.set_ylim(12.5, 54)
+    hist = ax.inset_axes([0.025, 0.035, 0.285, 0.225], zorder=9)
+    cax = ax.inset_axes([0.525, 0.060, 0.405, 0.040], zorder=9)
+    hist.set_facecolor("white")
+    hist.patch.set_alpha(0.97)
+    cax.set_facecolor("white")
+    cax.patch.set_alpha(0.97)
     better = int((values > 0).sum())
     worse = int((values < 0).sum())
     ax.set_title("Station-level Low-vis recall difference", loc="left", fontweight="bold", pad=5)
@@ -247,7 +295,6 @@ def draw_station_map(ax, station: pd.DataFrame, shp, min_count: int) -> pd.DataF
         bbox={"facecolor": "white", "edgecolor": "#B8B8B8", "linewidth": 0.35, "alpha": 0.88, "pad": 2.2},
         zorder=8,
     )
-    hist = ax.inset_axes([0.055, 0.055, 0.32, 0.22])
     hlo, hhi = nice_hist_limits(values, lim)
     bins = np.linspace(hlo, hhi, 18)
     density, edges = np.histogram(values, bins=bins, density=True)
@@ -264,8 +311,10 @@ def draw_station_map(ax, station: pd.DataFrame, shp, min_count: int) -> pd.DataF
     hist.set_xlabel("Δ recall", fontsize=6.7)
     hist.set_ylabel("Density", fontsize=6.7)
     hist.tick_params(axis="both", labelsize=6.2, length=2)
-    hist.grid(alpha=0.15)
-    cax = ax.inset_axes([0.50, 0.055, 0.40, 0.035])
+    hist.grid(False)
+    for spine in hist.spines.values():
+        spine.set_color("#50555A")
+        spine.set_linewidth(0.55)
     cb = ax.figure.colorbar(sc, cax=cax, orientation="horizontal", extend="both")
     cb.set_label("")
     cax.set_title("VisCast − IFS recall", fontsize=6.8, pad=1)
@@ -296,7 +345,7 @@ def draw_metric_pair(ax, overall: pd.DataFrame, title: str, csi_metric: str, rec
     ax.set_xticks(x, ["CSI", "Recall"])
     ax.set_ylim(0, 1.0)
     ax.set_title(title, loc="left", fontweight="bold", pad=3)
-    ax.grid(axis="y", color=GRID, linewidth=0.55)
+    ax.grid(False)
     if add_legend:
         ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.02), handlelength=1.3)
     return pd.DataFrame(
@@ -349,15 +398,12 @@ def draw_lead_heatmap(ax, cax, lead: pd.DataFrame) -> pd.DataFrame:
     leads = pd.to_numeric(table[lead_axis], errors="coerce").to_numpy(dtype=float)
     matrix = np.full((len(specs), len(table)), np.nan)
     raw_rows = []
-    ranges = []
     for row_idx, (metric, label) in enumerate(specs):
         model = pd.to_numeric(table[f"{metric}_model"], errors="coerce").to_numpy(dtype=float)
         baseline = pd.to_numeric(table[f"{metric}_ifs"], errors="coerce").to_numpy(dtype=float)
         delta = 100.0 * (model - baseline)
-        matrix[row_idx] = signed_row_display(delta)
-        finite = delta[np.isfinite(delta)]
-        ranges.append((float(np.nanmin(finite)), float(np.nanmax(finite))))
-        for lead_hour, model_value, ifs_value, delta_value, display_value in zip(leads, model, baseline, delta, matrix[row_idx]):
+        matrix[row_idx] = delta
+        for lead_hour, model_value, ifs_value, delta_value in zip(leads, model, baseline, delta):
             raw_rows.append(
                 {
                     "metric": metric,
@@ -366,22 +412,31 @@ def draw_lead_heatmap(ax, cax, lead: pd.DataFrame) -> pd.DataFrame:
                     "viscast_value": model_value,
                     "ifs_value": ifs_value,
                     "skill_delta_percentage_points": delta_value,
-                    "within_row_display_value": display_value,
+                    "heatmap_value_percentage_points": delta_value,
                 }
             )
-    cmap = delta_cmap()
-    mesh = ax.pcolormesh(lead_edges(leads), np.arange(len(specs) + 1) - 0.5, np.ma.masked_invalid(matrix), cmap=cmap, norm=TwoSlopeNorm(vmin=-1, vcenter=0, vmax=1), shading="flat")
+    cmap = lead_delta_cmap()
+    finite = matrix[np.isfinite(matrix)]
+    if finite.size == 0:
+        raise ValueError("No finite VisCast-minus-IFS skill gains are available")
+    limit = max(5.0, math.ceil(float(np.nanmax(np.abs(finite))) / 5.0) * 5.0)
+    mesh = ax.pcolormesh(
+        lead_edges(leads),
+        np.arange(len(specs) + 1) - 0.5,
+        np.ma.masked_invalid(matrix),
+        cmap=cmap,
+        norm=TwoSlopeNorm(vmin=-limit, vcenter=0.0, vmax=limit),
+        shading="flat",
+    )
     ax.set_ylim(len(specs) - 0.5, -0.5)
     ax.set_yticks(np.arange(len(specs)), [label for _, label in specs])
     ticks = [value for value in (0, 6, 12, 24, 36, 48) if np.nanmin(leads) <= value <= np.nanmax(leads)]
     ax.set_xticks(ticks)
     ax.set_xlabel("Display lead time (h)")
     ax.set_title("48 h skill gain over IFS", loc="left", fontweight="bold", pad=5)
-    for row_idx, (lo, hi) in enumerate(ranges):
-        ax.text(1.010, row_idx, f"{lo:+.1f} to {hi:+.1f} pp", transform=ax.get_yaxis_transform(), ha="left", va="center", fontsize=6.7, color="#334155", clip_on=False)
     cb = ax.figure.colorbar(mesh, cax=cax, orientation="horizontal")
-    cb.set_ticks(np.linspace(-1, 1, 5))
-    cb.set_label("Within-metric normalized VisCast − IFS skill gain", fontsize=7.3)
+    cb.set_ticks(np.linspace(-limit, limit, 5))
+    cb.set_label("VisCast − IFS skill gain (percentage points)", fontsize=7.3)
     cax.tick_params(labelsize=6.8)
     return pd.DataFrame(raw_rows)
 
@@ -401,19 +456,39 @@ def main() -> None:
     station, lead, overall, paths = load_inputs(eval_dir)
     shp = read_shapefile(args.shp_path)
 
-    fig = plt.figure(figsize=(FIGURE_WIDTH, 7.15))
-    # Spend the additional width on the map and lead-time panel. The right-hand
-    # metric panels retain approximately their previous physical width.
-    outer = fig.add_gridspec(2, 1, height_ratios=[2.15, 1.15], left=0.15, right=0.86, top=0.968, bottom=0.075, hspace=0.30)
-    top = outer[0].subgridspec(1, 2, width_ratios=[3.80, 1.0], wspace=0.17)
+    fig = plt.figure(figsize=(FIGURE_WIDTH, 7.55))
+    top = fig.add_gridspec(
+        1,
+        2,
+        width_ratios=[4.25, 1.0],
+        left=0.045,
+        right=0.985,
+        top=0.972,
+        bottom=0.485,
+        wspace=0.17,
+    )
     ax_map = fig.add_subplot(top[0, 0])
     right = top[0, 1].subgridspec(3, 1, hspace=0.46)
     small_axes = [fig.add_subplot(right[i, 0]) for i in range(3)]
-    bottom = outer[1].subgridspec(2, 1, height_ratios=[1.0, 0.10], hspace=0.45)
+    bottom = fig.add_gridspec(
+        2,
+        1,
+        height_ratios=[1.0, 0.11],
+        left=0.145,
+        right=0.985,
+        top=0.395,
+        bottom=0.070,
+        hspace=0.46,
+    )
     ax_heat = fig.add_subplot(bottom[0, 0])
     cax = fig.add_subplot(bottom[1, 0])
 
-    station_source = draw_station_map(ax_map, station, shp, args.min_station_lowvis)
+    station_source = draw_station_map(
+        ax_map,
+        station,
+        shp,
+        args.min_station_lowvis,
+    )
     small_sources = [
         draw_metric_pair(small_axes[0], overall, "Ultra-low", "Fog_CSI", "Fog_R", add_legend=True),
         draw_metric_pair(small_axes[1], overall, "Moderate-low", "Mist_CSI", "Mist_R"),

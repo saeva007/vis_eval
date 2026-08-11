@@ -20,7 +20,7 @@ def plot_confusion_matrix_normalized(
     ax=None,
     baseline_pred=None,
     baseline_name="IFS",
-    model_name="PMST",
+    model_name="VisCast",
 ):
     """
     Normalized confusion matrix (rows=True).
@@ -96,11 +96,11 @@ def plot_per_class_prf1(
     output_path,
     baseline_stats=None,
     baseline_name="IFS",
-    model_name="PMST",
+    model_name="VisCast",
 ):
     """
     Per-class P/R/F1 bar chart.
-    If baseline_stats is provided, draw grouped bars: PMST vs baseline (e.g. IFS) for each metric.
+    If baseline_stats is provided, draw grouped bars: VisCast vs baseline (e.g. IFS) for each metric.
     """
     setup_paper_style()
     apply_palette()
@@ -132,7 +132,7 @@ def plot_per_class_prf1(
         ax.set_ylabel("Score")
         ax.legend()
         ax.set_ylim(0, 1.05)
-        ax.grid(axis="y", alpha=0.3)
+        ax.grid(False)
         plt.tight_layout()
         if output_path:
             save_figure(fig, output_path)
@@ -160,7 +160,7 @@ def plot_per_class_prf1(
         ax.set_title(mname)
         ax.legend()
         ax.set_ylim(0, 1.05)
-        ax.grid(axis="y", alpha=0.3)
+        ax.grid(False)
     plt.tight_layout()
     if output_path:
         save_figure(fig, output_path)
@@ -182,7 +182,7 @@ def plot_pr_curves(probs, y_true, class_names_short, output_path):
         ax.legend()
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1.05)
-        ax.grid(alpha=0.3)
+        ax.grid(False)
     plt.tight_layout()
     if output_path:
         save_figure(fig, output_path)
@@ -203,7 +203,7 @@ def plot_threshold_sweep(probs, y_true, output_path, fog_th=0.46, mist_th=0.38):
     ax.set_xlabel("False Alarm Ratio")
     ax.set_ylabel("Probability of Detection")
     ax.legend()
-    ax.grid(alpha=0.3)
+    ax.grid(False)
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1.05)
     # Right: CSI vs threshold
@@ -215,7 +215,7 @@ def plot_threshold_sweep(probs, y_true, output_path, fog_th=0.46, mist_th=0.38):
     ax.set_xlabel("Threshold")
     ax.set_ylabel("CSI")
     ax.legend()
-    ax.grid(alpha=0.3)
+    ax.grid(False)
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1.05)
     plt.tight_layout()
@@ -242,7 +242,7 @@ def plot_reliability_diagram(probs, y_true, output_path, n_bins=10):
         ax.set_title(f"{cls_name} (ECE={ece[idx]:.3f})")
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1.05)
-        ax.grid(alpha=0.3)
+        ax.grid(False)
     plt.suptitle(f"Brier: Ultra-low={brier[0]:.3f}, Moderate-low={brier[1]:.3f}")
     plt.tight_layout()
     if output_path:

@@ -796,8 +796,7 @@ def plot_summary_bar(summary: pd.DataFrame, out_dir: Path, manifest: Manifest, s
     ax.set_title("Static-RNN checkpoint comparison on the S2 test set")
     handles, legend_labels = ax.get_legend_handles_labels()
     fig.legend(handles, legend_labels, ncol=3, frameon=False, loc="upper center", bbox_to_anchor=(0.5, 0.985))
-    ax.grid(axis="y", alpha=0.25)
-    ax.grid(axis="x", visible=False)
+    ax.grid(False)
     finish_figure_layout(fig, rect=(0.02, 0.04, 0.98, 0.80), h_pad=1.4)
     save_fig_pair(fig, out_dir, "fig_static_rnn_model_matrix_summary", manifest, sources, notes="Static-RNN main/ablation checkpoint comparison.")
 
@@ -860,8 +859,7 @@ def plot_static_feature_importance(imp_df: pd.DataFrame, out_dir: Path, sort_met
     ax.axvline(0, color="#222222", lw=0.8)
     ax.set_xlabel(f"Grouped permutation importance ({sort_metric})")
     ax.set_title("Feature groups that sustain low-vis event skill")
-    ax.grid(axis="x", alpha=0.25)
-    ax.grid(axis="y", visible=False)
+    ax.grid(False)
     handles = [
         plt.Line2D([0], [0], marker="s", color="none", markerfacecolor=color, markersize=7, label=label)
         for label, color in (
@@ -1718,7 +1716,7 @@ def _draw_event_lowvis_csi_panel(ax, pmst_csi: float, ifs_csi: float, matched_n:
     ax.set_ylim(-0.05, 1.05)
     ax.set_yticks([])
     ax.set_facecolor("#FBFCFD")
-    ax.grid(axis="x", color="#E5E7EB", linewidth=0.55, alpha=0.9)
+    ax.grid(False)
     ax.set_axisbelow(True)
     for spine in ("top", "right", "left"):
         ax.spines[spine].set_visible(False)
@@ -1814,7 +1812,7 @@ def plot_event_environment_grid(
     )
     col_titles = [
         "Observed visibility",
-        "PMST forecast",
+        "VisCast forecast",
         "IFS diagnostic VIS",
         "Tianji RH2m",
         "CAMS PM10",
@@ -1892,7 +1890,7 @@ def plot_event_environment_grid(
     csi_pos = cbar_span(5, 5, y=0.038, height=0.090)
     csi_legend_ax = fig.add_axes(csi_pos)
     csi_legend_ax.axis("off")
-    csi_legend_ax.text(0.00, 0.72, "PMST", color="#1769AA", fontsize=8.0, fontweight="bold", ha="left", va="center")
+    csi_legend_ax.text(0.00, 0.72, "VisCast", color="#1769AA", fontsize=8.0, fontweight="bold", ha="left", va="center")
     csi_legend_ax.text(0.00, 0.40, "IFS", color="#6B7280", fontsize=8.0, fontweight="bold", ha="left", va="center")
     if np.isfinite(pooled_pmst_csi):
         csi_legend_ax.text(0.43, 0.72, f"pooled {pooled_pmst_csi:.2f}", color="#1769AA", fontsize=7.3, ha="left", va="center")
@@ -1909,9 +1907,9 @@ def plot_event_environment_grid(
         all_sources,
         notes=(
             "Rows are UTC hours around the selected widespread Low-vis event. "
-            "The first three columns use shared Ultra-low/Moderate-low/Clear categories; the PMST panel is categorical. "
+            "The first three columns use shared Ultra-low/Moderate-low/Clear categories; the VisCast panel is categorical. "
             "RH2m and PM10 are raw gridded forecast fields read only for the displayed valid times. "
-            "The final column reports binary Low-vis CSI for visibility <1000 m; PMST and IFS use the identical "
+            "The final column reports binary Low-vis CSI for visibility <1000 m; VisCast and IFS use the identical "
             "IFS-diagnostic-valid station subset within each hour."
         ),
         n=int(len(eval_df)),

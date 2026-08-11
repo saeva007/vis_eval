@@ -150,7 +150,7 @@ def plot_station_map(
     ax.set_xlabel("Longitude")
     ax.set_ylabel("Latitude")
     ax.set_title(title)
-    ax.grid(alpha=0.3)
+    ax.grid(False)
     plt.tight_layout()
     if output_path:
         save_figure(fig, output_path)
@@ -989,7 +989,7 @@ def plot_widespread_event_panels(
     vis_cmap = build_event_visibility_cmap()
     vis_mappable = None
 
-    row_labels = ["Observed visibility", "PMST forecast", "IFS diagnostic VIS"]
+    row_labels = ["Observed visibility", "VisCast forecast", "IFS diagnostic VIS"]
     times = _meta_utc_times(meta)
 
     for col_idx, offset in enumerate(hour_offsets):
@@ -1230,7 +1230,7 @@ def plot_three_events_footprint_row(
         )
 
     fig.text(0.02, 0.48, "Observed\nvisibility (m)", rotation=90, va="center", ha="center", fontsize=12, fontweight="600")
-    fig.text(0.02, 0.22, "PMST\n(3-class)", rotation=90, va="center", ha="center", fontsize=12, fontweight="600")
+    fig.text(0.02, 0.22, "VisCast\n(3-class)", rotation=90, va="center", ha="center", fontsize=12, fontweight="600")
 
     if vis_mappable is not None:
         cax = fig.add_axes([0.24, 0.155, 0.52, 0.026])
@@ -1250,7 +1250,7 @@ def plot_three_events_footprint_row(
         fontsize=11,
     )
     fig.suptitle(
-        "Three Low-vis events — spatial footprint: observed visibility vs PMST forecast",
+        "Three Low-vis events — spatial footprint: observed visibility vs VisCast forecast",
         fontsize=14,
         fontweight="bold",
         y=0.965,
@@ -1313,7 +1313,7 @@ def plot_three_events_peak_row(
             )
             pmst = pmst_pred[time_mask]
             ax.set_xlabel(
-                "PMST peak counts\n"
+                "VisCast peak counts\n"
                 f"Ultra-low={(pmst == 0).sum()} | Moderate-low={(pmst == 1).sum()} | Clear={(pmst == 2).sum()}",
                 fontsize=10,
                 color="#4b5563",
@@ -1364,13 +1364,13 @@ def plot_event_metric_comparison(hourly_df, event_row, output_path):
     hourly_df = _add_ultralow_event_aliases(hourly_df)
     counts_ax.plot(x, hourly_df[_event_col(hourly_df, "obs_ultralow_count", "obs_fog_count")], color=obs_color, marker="o", lw=2.2, label="Obs Ultra-low count")
     counts_ax.plot(x, hourly_df["obs_low_vis_count"], color=obs_color, marker="o", lw=1.4, ls="--", label="Obs Low-vis event count")
-    counts_ax.plot(x, hourly_df[_event_col(hourly_df, "pmst_ultralow_count", "pmst_fog_count")], color=pmst_color, marker="o", lw=2.0, label="PMST Ultra-low count")
-    counts_ax.plot(x, hourly_df["pmst_low_vis_count"], color=pmst_color, marker="o", lw=1.4, ls="--", label="PMST Low-vis event count")
+    counts_ax.plot(x, hourly_df[_event_col(hourly_df, "pmst_ultralow_count", "pmst_fog_count")], color=pmst_color, marker="o", lw=2.0, label="VisCast Ultra-low count")
+    counts_ax.plot(x, hourly_df["pmst_low_vis_count"], color=pmst_color, marker="o", lw=1.4, ls="--", label="VisCast Low-vis event count")
     counts_ax.plot(x, hourly_df[_event_col(hourly_df, "ifs_ultralow_count", "ifs_fog_count")], color=ifs_color, marker="s", lw=2.0, label="IFS Ultra-low count")
     counts_ax.plot(x, hourly_df["ifs_low_vis_count"], color=ifs_color, marker="s", lw=1.4, ls="--", label="IFS Low-vis event count")
     counts_ax.set_ylabel("Station Count")
     counts_ax.set_title("Event Footprint Evolution")
-    counts_ax.grid(alpha=0.3)
+    counts_ax.grid(False)
 
     metric_specs = [
         ("ultralow_csi", "Ultra-low CSI"),
@@ -1379,11 +1379,11 @@ def plot_event_metric_comparison(hourly_df, event_row, output_path):
         ("low_vis_recall", "Low-vis event recall"),
     ]
     for ax, (metric, title) in zip(axes[1:], metric_specs):
-        ax.plot(x, hourly_df[f"pmst_{metric}"], color=pmst_color, marker="o", lw=2.0, label="PMST")
+        ax.plot(x, hourly_df[f"pmst_{metric}"], color=pmst_color, marker="o", lw=2.0, label="VisCast")
         ax.plot(x, hourly_df[f"ifs_{metric}"], color=ifs_color, marker="s", lw=2.0, label="IFS")
         ax.set_title(title)
         ax.set_ylim(0, 1.05)
-        ax.grid(alpha=0.3)
+        ax.grid(False)
     for ax in axes[1 + len(metric_specs):]:
         ax.axis("off")
 
@@ -1400,7 +1400,7 @@ def plot_event_metric_comparison(hourly_df, event_row, output_path):
     handles, labels = counts_ax.get_legend_handles_labels()
     fig.legend(handles, labels, loc="lower center", ncol=3, frameon=True, bbox_to_anchor=(0.5, 0.02))
     fig.suptitle(
-        "PMST vs IFS During Widespread Low-vis Event\n" + _format_event_label(event_row),
+        "VisCast vs IFS During Widespread Low-vis Event\n" + _format_event_label(event_row),
         fontsize=15,
         fontweight="bold",
         y=0.965,
@@ -1549,11 +1549,11 @@ def plot_event_summary_comparison(summary_df, output_path):
     for idx, (ax, (suffix, title)) in enumerate(zip(axes, panels)):
         pmst_vals = summary_df[f"pmst_{suffix}"].to_numpy(dtype=float)
         ifs_vals = summary_df[f"ifs_{suffix}"].to_numpy(dtype=float)
-        ax.bar(x - width / 2, pmst_vals, width, color=pmst_color, label="PMST")
+        ax.bar(x - width / 2, pmst_vals, width, color=pmst_color, label="VisCast")
         ax.bar(x + width / 2, ifs_vals, width, color=ifs_color, label="IFS")
         ax.set_title(title)
         ax.set_ylim(0, 1.05)
-        ax.grid(axis="y", alpha=0.3)
+        ax.grid(False)
         add_panel_label(ax, chr(ord("a") + idx), x=-0.12, y=1.02)
 
         for xi, pmst_v, ifs_v in zip(x, pmst_vals, ifs_vals):
@@ -1575,7 +1575,7 @@ def plot_event_summary_comparison(summary_df, output_path):
 
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="lower center", ncol=2, frameon=True, bbox_to_anchor=(0.5, 0.02))
-    fig.suptitle("Widespread Low-vis Events: PMST vs IFS Summary", fontsize=15, fontweight="bold", y=0.965)
+    fig.suptitle("Widespread Low-vis Events: VisCast vs IFS Summary", fontsize=15, fontweight="bold", y=0.965)
     plt.tight_layout(rect=(0.01, 0.11, 0.99, 0.90))
     save_figure(fig, output_path)
     return fig

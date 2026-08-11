@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Plot PMST argmax, PMST threshold, and IFS diagnostic bar comparison.
+"""Plot VisCast argmax, VisCast threshold, and IFS diagnostic bar comparison.
 
 Inputs are the two ``overall_metrics.csv`` files written by
 ``run_static_rnn_lowvis_eval_journal.py``:
@@ -27,14 +27,14 @@ import pandas as pd
 
 
 METHOD_ORDER = [
-    "PMST argmax",
-    "PMST threshold",
+    "VisCast argmax",
+    "VisCast threshold",
     "IFS diagnostic",
 ]
 
 METHOD_COLORS = {
-    "PMST argmax": "#4C78A8",
-    "PMST threshold": "#2A9D8F",
+    "VisCast argmax": "#4C78A8",
+    "VisCast threshold": "#2A9D8F",
     "IFS diagnostic": "#8A8F98",
 }
 
@@ -55,7 +55,7 @@ FPR_PANEL: Tuple[str, Sequence[Tuple[str, str]]] = (
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Draw grouped bars for PMST argmax, PMST threshold, and IFS diagnostic metrics."
+        description="Draw grouped bars for VisCast argmax, VisCast threshold, and IFS diagnostic metrics."
     )
     p.add_argument("--argmax_csv", required=True, help="overall_metrics.csv from the argmax evaluation run.")
     p.add_argument("--threshold_csv", required=True, help="overall_metrics.csv from the checkpoint-threshold run.")
@@ -111,14 +111,14 @@ def load_comparison(argmax_csv: Path, threshold_csv: Path) -> pd.DataFrame:
     threshold_df = pd.read_csv(threshold_csv)
     rows = []
     specs = [
-        ("PMST argmax", _pick_row(argmax_df, "pmst")),
-        ("PMST threshold", _pick_row(threshold_df, "pmst")),
+        ("VisCast argmax", _pick_row(argmax_df, "pmst")),
+        ("VisCast threshold", _pick_row(threshold_df, "pmst")),
         ("IFS diagnostic", _pick_row(threshold_df, "ifs_diagnostic")),
     ]
     for method, row in specs:
         rec: Dict[str, object] = {
             "method": method,
-            "source_csv": str(argmax_csv if method == "PMST argmax" else threshold_csv),
+            "source_csv": str(argmax_csv if method == "VisCast argmax" else threshold_csv),
             "source": row.get("source", ""),
             "sample_scope": row.get("sample_scope", ""),
             "threshold_source": row.get("threshold_source", ""),
@@ -172,7 +172,7 @@ def plot_panel(ax, data: pd.DataFrame, metrics: Sequence[Tuple[str, str]], title
     ax.set_ylim(0, 1.08)
     ax.set_ylabel("Metric value")
     ax.set_title(title, pad=8)
-    ax.grid(axis="y", color="#E4E7EB", linewidth=0.65)
+    ax.grid(False)
 
 
 def plot_fpr_panel(ax, data: pd.DataFrame) -> None:
@@ -199,7 +199,7 @@ def plot_fpr_panel(ax, data: pd.DataFrame) -> None:
     ax.set_ylim(0, min(1.0, ymax))
     ax.set_ylabel("False-positive rate")
     ax.set_title("Clear-condition false positives", pad=8)
-    ax.grid(axis="y", color="#E4E7EB", linewidth=0.65)
+    ax.grid(False)
     ax.text(0.98, 0.96, "lower is better", transform=ax.transAxes, ha="right", va="top", fontsize=8.5, color="#555555")
 
 
@@ -217,7 +217,7 @@ def save_outputs(fig, out_dir: Path, stem: str, dpi: int, source_csvs: Sequence[
                 "figure": f"{stem}.png/pdf/svg",
                 "source_data": str(source_path),
                 "source_csvs": ";".join(str(p) for p in source_csvs),
-                "notes": "IFS-matched test-set grouped bars for PMST argmax, PMST checkpoint-threshold, and IFS diagnostic.",
+                "notes": "IFS-matched test-set grouped bars for VisCast argmax, VisCast checkpoint-threshold, and IFS diagnostic.",
             }
         ]
     )

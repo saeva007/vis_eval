@@ -16,7 +16,8 @@ BASE="${BASE:-/public/home/putianshu/vis_mlp}"
 EVAL_DIR="${BASE}/paper_eval"
 IFS_DIR="${BASE}/ifs_baseline"
 QCORE_ANALYSIS_DIR="${QCORE_ANALYSIS_DIR:-${BASE}/paper_eval_results_pm10_pm25_journal/q_core_t925_factorial/qcore_t925_mhtpw_formal_v2_20260728/analysis}"
-MAIN_EVAL_DIR="${MAIN_EVAL_DIR:-auto}"
+QCORE_ENDPOINT_DIR="${QCORE_ENDPOINT_DIR:-${BASE}/paper_eval_results_pm10_pm25_journal/q_core_t925_fair/qcore_t925_fair_formal_v1_20260721/analysis}"
+MAIN_EVAL_DIR="${MAIN_EVAL_DIR:-${BASE}/static_rnn_eval_results/p13_seed_mean_timefix_20260719_130856_paper_figures/exp_20260718_232510_p13_sampling_calibration_manual_retry_p13_seed42_2_proposed_rare_event_focal}"
 S1_CSV="${S1_CSV:-auto}"
 SAMPLING_CSV="${SAMPLING_CSV:-auto}"
 LOSS_CSV="${LOSS_CSV:-auto}"
@@ -66,6 +67,8 @@ for path in \
     "${IFS_DIR}/plot_common_variable_error_regimes.py" \
     "${MAIN_EVAL_DIR}/station_model_vs_ifs_metrics.csv" \
     "${QCORE_ANALYSIS_DIR}/hybrid_exact_shapley_effects.csv" \
+    "${QCORE_ENDPOINT_DIR}/qcore_t925_metrics_by_seed.csv" \
+    "${QCORE_ENDPOINT_DIR}/qcore_t925_bootstrap_gap_draws.csv" \
     "${PAIRED_QUALITY_DIR}/pressure_level_paired_rmse_utc_date_bootstrap_ci.csv" \
     "${PAIRED_QUALITY_DIR}/surface_observation_three_source_rmse_utc_date_bootstrap_ci.csv" \
     "${PAIRED_QUALITY_DIR}/surface_observation_pairwise_rmse_delta_utc_date_bootstrap_ci.csv" \
@@ -91,6 +94,7 @@ mkdir -p "${OUT_DIR}" "${EVAL_DIR}/logs"
 echo "viscast_main_figures_preflight=OK"
 echo "main_eval_dir=${MAIN_EVAL_DIR}"
 echo "qcore_analysis_dir=${QCORE_ANALYSIS_DIR}"
+echo "qcore_endpoint_dir=${QCORE_ENDPOINT_DIR}"
 echo "paired_quality_dir=${PAIRED_QUALITY_DIR}"
 echo "s1_csv=${S1_CSV}"
 echo "sampling_csv=${SAMPLING_CSV}"
@@ -104,6 +108,7 @@ python "${EVAL_DIR}/plot_viscast_baseline_manuscript_composite.py" \
 
 python "${IFS_DIR}/plot_qcore_t925_manuscript_composite.py" \
   --analysis-dir "${QCORE_ANALYSIS_DIR}" \
+  --endpoint-dir "${QCORE_ENDPOINT_DIR}" \
   --upper-air-dir "${UPPER_AIR_DIR}" \
   --paired-quality-dir "${PAIRED_QUALITY_DIR}" \
   --out-dir "${OUT_DIR}"
