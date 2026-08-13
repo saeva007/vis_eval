@@ -37,6 +37,20 @@ latest_file() {
         | cut -d' ' -f2-
 }
 
+has_ifs_operator_pair() {
+    local csv="$1"
+    [[ -s "${csv}" ]] || return 1
+    awk -F',' '
+        NR > 1 {
+            source=$1
+            gsub(/\r/, "", source)
+            if (source == "ifs") have_ifs=1
+            if (source == "ifs_diagnostic") have_diagnostic=1
+        }
+        END { exit !(have_ifs && have_diagnostic) }
+    ' "${csv}"
+}
+
 if [[ "${MAIN_EVAL_DIR}" == "auto" ]]; then
     station_file="$(latest_file station_model_vs_ifs_metrics.csv)"
     [[ -n "${station_file}" ]] || { echo "ERROR: could not find station_model_vs_ifs_metrics.csv" >&2; exit 2; }
@@ -68,16 +82,30 @@ if [[ "${TAIL_ANALYSIS_DIR}" == "auto" ]]; then
     TAIL_ANALYSIS_DIR="$(dirname "${tail_file}")"
 fi
 if [[ "${IFS_COMPARISON_DIR}" == "auto" ]]; then
-    if [[ -s "${MAIN_EVAL_DIR}/ifs_diagnostic_matched_metrics.csv" ]]; then
+    if has_ifs_operator_pair "${MAIN_EVAL_DIR}/ifs_diagnostic_matched_metrics.csv"; then
         IFS_COMPARISON_DIR="${MAIN_EVAL_DIR}"
-    elif [[ -s "${MAIN_EVAL_DIR}/overlap_forecast_source/ifs_diagnostic_matched_metrics.csv" ]]; then
+    elif has_ifs_operator_pair "${MAIN_EVAL_DIR}/overlap_forecast_source/ifs_diagnostic_matched_metrics.csv"; then
         IFS_COMPARISON_DIR="${MAIN_EVAL_DIR}/overlap_forecast_source"
     else
-        ifs_matched_file="$(latest_file ifs_diagnostic_matched_metrics.csv)"
+        ifs_matched_file="$({
+            find "${BASE}" -maxdepth 8 -type f -name ifs_diagnostic_matched_metrics.csv -printf '%T@ %p\n' 2>/dev/null \
+                | sort -nr \
+                | cut -d' ' -f2- \
+                | while IFS= read -r candidate; do
+                    if has_ifs_operator_pair "${candidate}"; then
+                        printf '%s\n' "${candidate}"
+                        break
+                    fi
+                done
+        } || true)"
         [[ -n "${ifs_matched_file}" ]] || { echo "ERROR: could not find ifs_diagnostic_matched_metrics.csv" >&2; exit 2; }
         IFS_COMPARISON_DIR="$(dirname "${ifs_matched_file}")"
     fi
 fi
+has_ifs_operator_pair "${IFS_COMPARISON_DIR}/ifs_diagnostic_matched_metrics.csv" || {
+    echo "ERROR: ${IFS_COMPARISON_DIR}/ifs_diagnostic_matched_metrics.csv must contain both ifs and ifs_diagnostic rows" >&2
+    exit 2
+}
 if [[ "${SOURCE_FULL_METRICS_CSV}" == "auto" ]]; then
     SOURCE_FULL_METRICS_CSV="$({
         find "${BASE}" -maxdepth 8 -type f -name overall_metrics.csv -printf '%T@ %p\n' 2>/dev/null \
