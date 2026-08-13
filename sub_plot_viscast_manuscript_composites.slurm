@@ -68,7 +68,9 @@ if [[ "${TAIL_ANALYSIS_DIR}" == "auto" ]]; then
     TAIL_ANALYSIS_DIR="$(dirname "${tail_file}")"
 fi
 if [[ "${IFS_COMPARISON_DIR}" == "auto" ]]; then
-    if [[ -s "${MAIN_EVAL_DIR}/overlap_forecast_source/ifs_diagnostic_matched_metrics.csv" ]]; then
+    if [[ -s "${MAIN_EVAL_DIR}/ifs_diagnostic_matched_metrics.csv" ]]; then
+        IFS_COMPARISON_DIR="${MAIN_EVAL_DIR}"
+    elif [[ -s "${MAIN_EVAL_DIR}/overlap_forecast_source/ifs_diagnostic_matched_metrics.csv" ]]; then
         IFS_COMPARISON_DIR="${MAIN_EVAL_DIR}/overlap_forecast_source"
     else
         ifs_matched_file="$(latest_file ifs_diagnostic_matched_metrics.csv)"
