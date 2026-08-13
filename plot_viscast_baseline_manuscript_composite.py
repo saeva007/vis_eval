@@ -17,6 +17,8 @@ from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
 import numpy as np
 import pandas as pd
 
+from paper_figure_geometry import TWO_SOURCE_BAR_WIDTH
+
 FIGURE_WIDTH = 9.20
 VISCAST = "#2E5A87"
 IFS = "#7A7F87"
@@ -145,8 +147,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--map-shift-x",
         type=float,
-        default=0.012,
-        help="Horizontal map-panel shift in figure coordinates; positive moves right.",
+        default=0.0,
+        help=(
+            "Optional residual horizontal shift after panel a has been aligned "
+            "with panel e; positive moves right."
+        ),
     )
     p.add_argument(
         "--hist-inset",
@@ -375,7 +380,7 @@ def draw_metric_pair(
     vis_values = [float(vis_row[metric]) for metric, _ in specs]
     ifs_values = [float(ifs_row[metric]) for metric, _ in specs]
     x = np.arange(len(specs))
-    width = 0.34
+    width = TWO_SOURCE_BAR_WIDTH
     ax.bar(x - width / 2, vis_values, width, color=VISCAST, label="VisCast")
     ax.bar(x + width / 2, ifs_values, width, color=IFS, label="IFS diagnostic VIS")
     ax.set_xticks(x, [label for _, label in specs])
@@ -507,15 +512,6 @@ def main() -> None:
         wspace=0.17,
     )
     ax_map = fig.add_subplot(top[0, 0])
-    map_position = ax_map.get_position()
-    ax_map.set_position(
-        [
-            map_position.x0 + args.map_shift_x,
-            map_position.y0,
-            map_position.width,
-            map_position.height,
-        ]
-    )
     right = top[0, 1].subgridspec(3, 1, hspace=0.46)
     small_axes = [fig.add_subplot(right[i, 0]) for i in range(3)]
     bottom = fig.add_gridspec(
@@ -549,7 +545,26 @@ def main() -> None:
         draw_metric_pair(small_axes[2], overall, "Low-vis event", "low_vis_csi", "low_vis_recall", precision_metrics[2]),
     ]
     lead_source = draw_lead_heatmap(ax_heat, cax, lead)
-    panel_label(ax_map, "a", x=-0.06)
+    # Align the rendered left edge of panel a with panel e without changing
+    # either panel's width or height.  This is done after drawing because the
+    # equal-aspect map adjusts its active position inside the GridSpec cell.
+    fig.canvas.draw()
+    map_position = ax_map.get_position()
+    heat_position = ax_heat.get_position()
+    ax_map.set_position(
+        [
+            heat_position.x0 + args.map_shift_x,
+            map_position.y0,
+            map_position.width,
+            map_position.height,
+        ]
+    )
+    fig.canvas.draw()
+    map_position = ax_map.get_position()
+    heat_position = ax_heat.get_position()
+    e_label_figure_x = heat_position.x0 - 0.06 * heat_position.width
+    a_label_x = (e_label_figure_x - map_position.x0) / map_position.width
+    panel_label(ax_map, "a", x=a_label_x)
     for letter, ax in zip("bcd", small_axes):
         panel_label(ax, letter, x=-0.30)
     panel_label(ax_heat, "e", x=-0.06)

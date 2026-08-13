@@ -15,6 +15,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from paper_figure_geometry import GROUPED_BAR_FILL, GROUPED_BAR_TOTAL_WIDTH
+
 import compare_static_rnn_month_group_split as split_plot
 import plot_static_rnn_loss_comparison as loss_plot
 import plot_static_rnn_sampling_ablation as sampling_plot
@@ -101,8 +103,9 @@ def draw_s1(ax, source: pd.DataFrame, labels: Sequence[str]) -> pd.DataFrame:
     lookup = source.set_index("metric").reindex(order)
     display = [label for _, label, _ in split_plot.SKILL_METRICS]
     x = np.arange(len(order))
-    width = 0.36
-    offsets = [-width / 2, width / 2]
+    slot = GROUPED_BAR_TOTAL_WIDTH / 2.0
+    width = slot * GROUPED_BAR_FILL
+    offsets = [-slot / 2, slot / 2]
     for offset, label in zip(offsets, labels):
         values = pd.to_numeric(lookup[label], errors="coerce").to_numpy(dtype=float)
         ax.bar(x + offset, values, width=width, color=split_plot.label_color(label), label=label)

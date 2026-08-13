@@ -15,6 +15,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from paper_figure_geometry import GROUPED_BAR_FILL, GROUPED_BAR_TOTAL_WIDTH
+
 
 METHOD_LABELS: Dict[str, str] = {
     "simple_ce_classification": "CE",
@@ -93,11 +95,14 @@ def metric_values(overall: pd.DataFrame, labels: Sequence[str], metric: str) -> 
     return vals
 
 
-def grouped_bar_geometry(n_labels: int, total_width: float = 0.78) -> Tuple[np.ndarray, float]:
+def grouped_bar_geometry(
+    n_labels: int,
+    total_width: float = GROUPED_BAR_TOTAL_WIDTH,
+) -> Tuple[np.ndarray, float]:
     n = max(int(n_labels), 1)
     bar_slot = float(total_width) / n
     offsets = (np.arange(n, dtype=float) - (n - 1) / 2.0) * bar_slot
-    return offsets, bar_slot * 0.88
+    return offsets, bar_slot * GROUPED_BAR_FILL
 
 
 def proposed_soft_targets(x: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:

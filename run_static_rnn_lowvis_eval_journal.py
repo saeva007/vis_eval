@@ -1611,6 +1611,7 @@ def _draw_visibility_class_panel(
     context_df: Optional[pd.DataFrame] = None,
 ) -> None:
     draw_basemap(ax, shp_gdf, compact=True)
+    ax.grid(False)
     _apply_event_map_extent(ax, extent)
     if context_df is not None and not context_df.empty and {"lon", "lat"}.issubset(context_df.columns):
         ax.scatter(
@@ -1665,6 +1666,7 @@ def _draw_grid_panel(
     extent: Optional[Tuple[float, float, float, float]] = None,
 ) -> None:
     draw_basemap(ax, shp_gdf, compact=True)
+    ax.grid(False)
     _apply_event_map_extent(ax, extent)
     if field is None:
         ax.text(0.5, 0.5, missing_label, transform=ax.transAxes, ha="center", va="center", color="#6B7280", fontsize=11)
@@ -1675,9 +1677,9 @@ def _draw_grid_panel(
 
 
 def _event_lowvis_csi_pair(sub: pd.DataFrame) -> Tuple[float, float, int]:
-    """Return PMST/IFS Low-vis CSI on one strictly matched station subset.
+    """Return VisCast/IFS Low-vis CSI on one strictly matched station subset.
 
-    Low visibility is the binary event ``visibility < 1000 m``.  PMST and the
+    Low visibility is the binary event ``visibility < 1000 m``.  VisCast and the
     IFS diagnostic are scored only where the observation and IFS diagnostic
     are both valid so that the two bars cannot differ because of sample
     coverage.
@@ -1713,7 +1715,7 @@ def _event_lowvis_csi_pair(sub: pd.DataFrame) -> Tuple[float, float, int]:
 def _draw_event_lowvis_csi_panel(ax, pmst_csi: float, ifs_csi: float, matched_n: int, show_xaxis: bool) -> None:
     """Draw a compact, directly labelled CSI comparison for one valid hour."""
 
-    pmst_color = "#1769AA"
+    viscast_color = "#1769AA"
     ifs_color = "#6B7280"
     csi_axis_max = 0.5
     label_offset = 0.035 * csi_axis_max
@@ -1758,7 +1760,7 @@ def _draw_event_lowvis_csi_panel(ax, pmst_csi: float, ifs_csi: float, matched_n:
             zorder=3,
         )
 
-    _draw_bar(pmst_csi, 0.70, pmst_color)
+    _draw_bar(pmst_csi, 0.70, viscast_color)
     _draw_bar(ifs_csi, 0.27, ifs_color)
     if matched_n > 0:
         ax.text(0.98, 0.96, f"n={matched_n:,}", transform=ax.transAxes, ha="right", va="top", fontsize=6.5, color="#6B7280")
@@ -1788,6 +1790,9 @@ def plot_event_environment_grid(
         return
 
     setup_journal_style()
+    # The manuscript event plate uses map boundaries and field shading only;
+    # journal-style Cartesian grid lines must not leak into any panel.
+    plt.rcParams["axes.grid"] = False
     center_time = _event_timestamp(event_row["peak_time"])
     offsets = list(range(-int(args.event_window_hours), int(args.event_window_hours) + 1))
     event_times = [center_time + pd.Timedelta(hours=h) for h in offsets]
@@ -1829,6 +1834,8 @@ def plot_event_environment_grid(
         col_titles.append("Low-vis CSI (<1 km)")
     for j, title in enumerate(col_titles):
         axes[0, j].set_title(title, fontsize=12.5, fontweight="bold", pad=4)
+    for ax in axes.flat:
+        ax.grid(False)
 
     rh_norm = Normalize(vmin=float(args.event_env_rh2m_vmin), vmax=float(args.event_env_rh2m_vmax))
     pm10_norm = Normalize(vmin=float(args.event_env_pm10_vmin), vmax=float(args.event_env_pm10_vmax))
@@ -1876,7 +1883,7 @@ def plot_event_environment_grid(
     pm10_sm = plt.cm.ScalarMappable(norm=pm10_norm, cmap="YlOrRd")
     pm10_sm.set_array([])
     rank = int(event_row.get("event_rank", 1))
-    title = f"Event {rank}: {center_time:%Y-%m-%d %H:00 UTC}"
+    title = f"{center_time:%Y-%m-%d %H:00 UTC}"
     fig.suptitle(title, x=0.5, y=0.988, fontsize=14, fontweight="bold")
     fig.subplots_adjust(left=0.077, right=0.994, top=0.94, bottom=0.18, wspace=0.020, hspace=0.035)
     fig.canvas.draw()
