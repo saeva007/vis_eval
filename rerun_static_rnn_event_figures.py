@@ -61,6 +61,20 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--event_env_max_events", type=int, default=3)
     p.add_argument(
+        "--environment_grid_only",
+        action="store_true",
+        help=(
+            "Draw only one event-environment grid from existing per-sample "
+            "results; skip every other event figure."
+        ),
+    )
+    p.add_argument(
+        "--environment_event_rank",
+        type=int,
+        default=1,
+        help="Event rank to draw when --environment_grid_only is used.",
+    )
+    p.add_argument(
         "--event_env_include_csi",
         action="store_true",
         help="Add the optional hourly Low-vis CSI column to event environment grids.",
@@ -226,12 +240,69 @@ def main() -> None:
 
     eval_df = read_eval_table(eval_dir)
     event_df = load_event_summary(eval_dir, args.event_summary)
+    original_event_ranks = (
+        pd.to_numeric(event_df["event_rank"], errors="coerce")
+        if "event_rank" in event_df.columns
+        else pd.Series(np.arange(1, len(event_df) + 1), index=event_df.index)
+    )
     replacements = parse_replacements(args.replace_event)
     if replacements:
         event_df = apply_replacements(event_df, eval_df, replacements, args.window_hours)
     else:
-        event_df = sort_events_chronologically(event_df)
+        if args.environment_grid_only:
+            event_df = event_df.copy()
+            event_df["event_rank"] = original_event_ranks.astype(int)
+        else:
+            event_df = sort_events_chronologically(event_df)
     event_df.to_csv(out_dir / "event_case_summary.csv", index=False)
+
+    if args.environment_grid_only:
+        selected = event_df[
+            pd.to_numeric(event_df["event_rank"], errors="coerce")
+            == int(args.environment_event_rank)
+        ]
+        if len(selected) != 1:
+            raise ValueError(
+                "--environment_event_rank must resolve exactly one event; "
+                f"requested={args.environment_event_rank}, "
+                f"available={event_df['event_rank'].tolist()}"
+            )
+        shp_gdf = journal.read_shapefile(args.shp_path) if args.shp_path else None
+        manifest = journal.Manifest(out_dir)
+        sources = [
+            str(eval_dir / "per_sample_eval.csv"),
+            str(out_dir / "event_case_summary.csv"),
+        ]
+        journal.plot_event_environment_grid(
+            args,
+            base,
+            eval_df,
+            selected.iloc[0],
+            out_dir,
+            manifest,
+            sources,
+            shp_gdf=shp_gdf,
+        )
+        manifest.write()
+        run_config = {
+            "eval_dir": str(eval_dir),
+            "out_dir": str(out_dir),
+            "base": str(base),
+            "environment_grid_only": True,
+            "environment_event_rank": int(args.environment_event_rank),
+            "window_hours": int(args.window_hours),
+            "event_env_include_csi": bool(args.event_env_include_csi),
+        }
+        (out_dir / "event_rerun_config.json").write_text(
+            json.dumps(run_config, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(
+            "[event] single environment grid complete: "
+            f"rank={args.environment_event_rank}, out={out_dir}",
+            flush=True,
+        )
+        return
 
     meta, y_cls, y_raw, pmst_pred, ifs_pred, ifs_valid = arrays_from_eval(eval_df)
     shp_gdf = journal.read_shapefile(args.shp_path) if args.shp_path else None
