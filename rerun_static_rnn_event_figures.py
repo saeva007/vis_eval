@@ -60,6 +60,11 @@ def parse_args() -> argparse.Namespace:
         help="Compatibility alias used by the main event-grid helper; defaults to --window_hours.",
     )
     p.add_argument("--event_env_max_events", type=int, default=3)
+    p.add_argument(
+        "--event_env_include_csi",
+        action="store_true",
+        help="Add the optional hourly Low-vis CSI column to event environment grids.",
+    )
     p.add_argument("--event_env_source", choices=["grid", "none"], default="grid")
     p.add_argument("--shp_path", default="/public/home/putianshu/中华人民共和国/中华人民共和国.shp")
     p.add_argument(
@@ -315,6 +320,7 @@ def main() -> None:
         "window_hours": int(args.window_hours),
         "event_env_source": str(args.event_env_source),
         "event_env_max_events": int(args.event_env_max_events),
+        "event_env_include_csi": bool(args.event_env_include_csi),
     }
     (out_dir / "event_rerun_config.json").write_text(json.dumps(run_config, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[event] wrote {out_dir / 'event_case_summary.csv'}", flush=True)

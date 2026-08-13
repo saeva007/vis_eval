@@ -156,6 +156,11 @@ def parse_args() -> argparse.Namespace:
         metavar=("X", "Y", "WIDTH", "HEIGHT"),
         help="Distribution inset rectangle in map-axis coordinates.",
     )
+    p.add_argument(
+        "--include-precision",
+        action="store_true",
+        help="Add Precision to panels b–d while preserving the original two-metric default.",
+    )
     p.add_argument("--dpi", type=int, default=600)
     return p.parse_args()
 
@@ -354,28 +359,40 @@ def select_overall_rows(overall: pd.DataFrame) -> Tuple[pd.Series, pd.Series]:
     return pmst.iloc[0], ifs.iloc[0]
 
 
-def draw_metric_pair(ax, overall: pd.DataFrame, title: str, csi_metric: str, recall_metric: str, add_legend: bool = False) -> pd.DataFrame:
+def draw_metric_pair(
+    ax,
+    overall: pd.DataFrame,
+    title: str,
+    csi_metric: str,
+    recall_metric: str,
+    precision_metric: str | None = None,
+    add_legend: bool = False,
+) -> pd.DataFrame:
     vis_row, ifs_row = select_overall_rows(overall)
-    vis_csi, ifs_csi = float(vis_row[csi_metric]), float(ifs_row[csi_metric])
-    vis_recall, ifs_recall = float(vis_row[recall_metric]), float(ifs_row[recall_metric])
-    x = np.arange(2)
+    specs = [(csi_metric, "CSI"), (recall_metric, "Recall")]
+    if precision_metric is not None:
+        specs.append((precision_metric, "Precision"))
+    vis_values = [float(vis_row[metric]) for metric, _ in specs]
+    ifs_values = [float(ifs_row[metric]) for metric, _ in specs]
+    x = np.arange(len(specs))
     width = 0.34
-    ax.bar(x - width / 2, [vis_csi, vis_recall], width, color=VISCAST, label="VisCast")
-    ax.bar(x + width / 2, [ifs_csi, ifs_recall], width, color=IFS, label="IFS diagnostic VIS")
-    ax.set_xticks(x, ["CSI", "Recall"])
+    ax.bar(x - width / 2, vis_values, width, color=VISCAST, label="VisCast")
+    ax.bar(x + width / 2, ifs_values, width, color=IFS, label="IFS diagnostic VIS")
+    ax.set_xticks(x, [label for _, label in specs])
     ax.set_ylim(0, 1.0)
     ax.set_title(title, loc="left", fontweight="bold", pad=3)
     ax.grid(False)
     if add_legend:
         ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.02), handlelength=1.3)
-    return pd.DataFrame(
-        {
-            "visibility_class": title,
-            "metric": ["CSI", "CSI", "Recall", "Recall"],
-            "source": ["VisCast", "IFS diagnostic VIS", "VisCast", "IFS diagnostic VIS"],
-            "value": [vis_csi, ifs_csi, vis_recall, ifs_recall],
-        }
-    )
+    rows = []
+    for (_, label), vis_value, ifs_value in zip(specs, vis_values, ifs_values):
+        rows.extend(
+            [
+                {"visibility_class": title, "metric": label, "source": "VisCast", "value": vis_value},
+                {"visibility_class": title, "metric": label, "source": "IFS diagnostic VIS", "value": ifs_value},
+            ]
+        )
+    return pd.DataFrame(rows)
 
 
 def signed_row_display(values: np.ndarray) -> np.ndarray:
@@ -521,15 +538,20 @@ def main() -> None:
         args.min_station_lowvis,
         tuple(args.hist_inset),
     )
+    precision_metrics = (
+        ["Fog_P", "Mist_P", "low_vis_precision"]
+        if args.include_precision
+        else [None, None, None]
+    )
     small_sources = [
-        draw_metric_pair(small_axes[0], overall, "Ultra-low", "Fog_CSI", "Fog_R", add_legend=True),
-        draw_metric_pair(small_axes[1], overall, "Moderate-low", "Mist_CSI", "Mist_R"),
-        draw_metric_pair(small_axes[2], overall, "Low-vis event", "low_vis_csi", "low_vis_recall"),
+        draw_metric_pair(small_axes[0], overall, "Ultra-low", "Fog_CSI", "Fog_R", precision_metrics[0], add_legend=True),
+        draw_metric_pair(small_axes[1], overall, "Moderate-low", "Mist_CSI", "Mist_R", precision_metrics[1]),
+        draw_metric_pair(small_axes[2], overall, "Low-vis event", "low_vis_csi", "low_vis_recall", precision_metrics[2]),
     ]
     lead_source = draw_lead_heatmap(ax_heat, cax, lead)
     panel_label(ax_map, "a", x=-0.06)
     for letter, ax in zip("bcd", small_axes):
-        panel_label(ax, letter, x=-0.22)
+        panel_label(ax, letter, x=-0.30)
     panel_label(ax_heat, "e", x=-0.06)
 
     export(fig, out_dir, args.figure_stem, args.dpi)
@@ -542,6 +564,7 @@ def main() -> None:
         "lead_metrics": str(paths["lead"]),
         "overall_metrics": str(paths["overall"]),
         "figure": str(out_dir / f"{args.figure_stem}.pdf"),
+        "include_precision": bool(args.include_precision),
         "rendering": "all panels redrawn from source tables on one canvas",
     }
     (out_dir / f"{args.figure_stem}_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")

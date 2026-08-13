@@ -231,6 +231,11 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--event_env_source", choices=["grid", "none"], default="grid")
     p.add_argument("--event_env_max_events", type=int, default=3)
+    p.add_argument(
+        "--event_env_include_csi",
+        action="store_true",
+        help="Add the optional hourly Low-vis CSI column to event environment grids.",
+    )
     p.add_argument("--event_env_rh2m_var", default="rh2m")
     p.add_argument("--event_env_rh2m_vmin", type=float, default=40.0)
     p.add_argument("--event_env_rh2m_vmax", type=float, default=100.0)
@@ -1803,12 +1808,15 @@ def plot_event_environment_grid(
 
     nrows = len(event_times)
     fig_h = max(7.2, 1.18 * nrows + 1.25)
+    include_csi = bool(getattr(args, "event_env_include_csi", False))
+    ncols = 6 if include_csi else 5
+    width_ratios = [1.0, 1.0, 1.0, 1.0, 1.0] + ([0.82] if include_csi else [])
     fig, axes = plt.subplots(
         nrows,
-        6,
-        figsize=(13.15, fig_h),
+        ncols,
+        figsize=((13.15 if include_csi else 11.65), fig_h),
         squeeze=False,
-        gridspec_kw={"width_ratios": [1.0, 1.0, 1.0, 1.0, 1.0, 0.82]},
+        gridspec_kw={"width_ratios": width_ratios},
     )
     col_titles = [
         "Observed visibility",
@@ -1816,8 +1824,9 @@ def plot_event_environment_grid(
         "IFS diagnostic VIS",
         "Tianji RH2m",
         "CAMS PM10",
-        "Low-vis CSI (<1 km)",
     ]
+    if include_csi:
+        col_titles.append("Low-vis CSI (<1 km)")
     for j, title in enumerate(col_titles):
         axes[0, j].set_title(title, fontsize=12.5, fontweight="bold", pad=4)
 
@@ -1852,14 +1861,15 @@ def plot_event_environment_grid(
         )
         _draw_grid_panel(axes[row_idx, 3], rh_fields.get(valid_time), shp_gdf, "YlGnBu", rh_norm, "RH2m missing", focus_extent)
         _draw_grid_panel(axes[row_idx, 4], pm10_fields.get(valid_time), shp_gdf, "YlOrRd", pm10_norm, "CAMS PM10 missing", focus_extent)
-        pmst_csi, ifs_csi, matched_n = _event_lowvis_csi_pair(sub)
-        _draw_event_lowvis_csi_panel(
-            axes[row_idx, 5],
-            pmst_csi,
-            ifs_csi,
-            matched_n,
-            show_xaxis=(row_idx == nrows - 1),
-        )
+        if include_csi:
+            pmst_csi, ifs_csi, matched_n = _event_lowvis_csi_pair(sub)
+            _draw_event_lowvis_csi_panel(
+                axes[row_idx, 5],
+                pmst_csi,
+                ifs_csi,
+                matched_n,
+                show_xaxis=(row_idx == nrows - 1),
+            )
 
     rh_sm = plt.cm.ScalarMappable(norm=rh_norm, cmap="YlGnBu")
     rh_sm.set_array([])
@@ -1885,18 +1895,19 @@ def plot_event_environment_grid(
     cb3 = fig.colorbar(pm10_sm, cax=fig.add_axes(cbar_span(4, 4)), orientation="horizontal", extend="max")
     cb3.set_label(r"PM10 ($\mu$g m$^{-3}$)", fontsize=11)
 
-    pooled = df[df["time"].isin(set(pd.DatetimeIndex(event_times)))].copy()
-    pooled_pmst_csi, pooled_ifs_csi, pooled_n = _event_lowvis_csi_pair(pooled)
-    csi_pos = cbar_span(5, 5, y=0.038, height=0.090)
-    csi_legend_ax = fig.add_axes(csi_pos)
-    csi_legend_ax.axis("off")
-    csi_legend_ax.text(0.00, 0.72, "VisCast", color="#1769AA", fontsize=8.0, fontweight="bold", ha="left", va="center")
-    csi_legend_ax.text(0.00, 0.40, "IFS", color="#6B7280", fontsize=8.0, fontweight="bold", ha="left", va="center")
-    if np.isfinite(pooled_pmst_csi):
-        csi_legend_ax.text(0.43, 0.72, f"pooled {pooled_pmst_csi:.2f}", color="#1769AA", fontsize=7.3, ha="left", va="center")
-    if np.isfinite(pooled_ifs_csi):
-        csi_legend_ax.text(0.43, 0.40, f"pooled {pooled_ifs_csi:.2f}", color="#6B7280", fontsize=7.3, ha="left", va="center")
-    csi_legend_ax.text(0.00, 0.08, f"matched n={pooled_n:,}", color="#6B7280", fontsize=6.8, ha="left", va="center")
+    if include_csi:
+        pooled = df[df["time"].isin(set(pd.DatetimeIndex(event_times)))].copy()
+        pooled_pmst_csi, pooled_ifs_csi, pooled_n = _event_lowvis_csi_pair(pooled)
+        csi_pos = cbar_span(5, 5, y=0.038, height=0.090)
+        csi_legend_ax = fig.add_axes(csi_pos)
+        csi_legend_ax.axis("off")
+        csi_legend_ax.text(0.00, 0.72, "VisCast", color="#1769AA", fontsize=8.0, fontweight="bold", ha="left", va="center")
+        csi_legend_ax.text(0.00, 0.40, "IFS", color="#6B7280", fontsize=8.0, fontweight="bold", ha="left", va="center")
+        if np.isfinite(pooled_pmst_csi):
+            csi_legend_ax.text(0.43, 0.72, f"pooled {pooled_pmst_csi:.2f}", color="#1769AA", fontsize=7.3, ha="left", va="center")
+        if np.isfinite(pooled_ifs_csi):
+            csi_legend_ax.text(0.43, 0.40, f"pooled {pooled_ifs_csi:.2f}", color="#6B7280", fontsize=7.3, ha="left", va="center")
+        csi_legend_ax.text(0.00, 0.08, f"matched n={pooled_n:,}", color="#6B7280", fontsize=6.8, ha="left", va="center")
 
     all_sources = list(sources) + rh_sources + pm10_sources
     save_fig_pair(
@@ -1909,8 +1920,12 @@ def plot_event_environment_grid(
             "Rows are UTC hours around the selected widespread Low-vis event. "
             "The first three columns use shared Ultra-low/Moderate-low/Clear categories; the VisCast panel is categorical. "
             "RH2m and PM10 are raw gridded forecast fields read only for the displayed valid times. "
-            "The final column reports binary Low-vis CSI for visibility <1000 m; VisCast and IFS use the identical "
-            "IFS-diagnostic-valid station subset within each hour."
+            + (
+                "The final column reports binary Low-vis CSI for visibility <1000 m; VisCast and IFS use the identical "
+                "IFS-diagnostic-valid station subset within each hour."
+                if include_csi
+                else ""
+            )
         ),
         n=int(len(eval_df)),
     )

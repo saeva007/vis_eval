@@ -23,6 +23,9 @@ SAMPLING_CSV="${SAMPLING_CSV:-auto}"
 LOSS_CSV="${LOSS_CSV:-auto}"
 UPPER_AIR_DIR="${UPPER_AIR_DIR:-auto}"
 PAIRED_QUALITY_DIR="${PAIRED_QUALITY_DIR:-auto}"
+TAIL_ANALYSIS_DIR="${TAIL_ANALYSIS_DIR:-auto}"
+IFS_COMPARISON_DIR="${IFS_COMPARISON_DIR:-auto}"
+SOURCE_FULL_METRICS_CSV="${SOURCE_FULL_METRICS_CSV:-auto}"
 OUT_DIR="${OUT_DIR:-${BASE}/paper_eval_results_pm10_pm25_journal/manuscript_main_figures_redraw_${SLURM_JOB_ID}}"
 SHP_PATH="${SHP_PATH:-/public/home/putianshu/中华人民共和国/中华人民共和国.shp}"
 
@@ -59,11 +62,41 @@ if [[ "${PAIRED_QUALITY_DIR}" == "auto" ]]; then
     [[ -n "${paired_quality_file}" ]] || { echo "ERROR: could not find pressure_level_paired_rmse_utc_date_bootstrap_ci.csv" >&2; exit 2; }
     PAIRED_QUALITY_DIR="$(dirname "${paired_quality_file}")"
 fi
+if [[ "${TAIL_ANALYSIS_DIR}" == "auto" ]]; then
+    tail_file="$(latest_file joint_tail_placement_utc_date_bootstrap_ci.csv)"
+    [[ -n "${tail_file}" ]] || { echo "ERROR: could not find joint_tail_placement_utc_date_bootstrap_ci.csv" >&2; exit 2; }
+    TAIL_ANALYSIS_DIR="$(dirname "${tail_file}")"
+fi
+if [[ "${IFS_COMPARISON_DIR}" == "auto" ]]; then
+    if [[ -s "${MAIN_EVAL_DIR}/overlap_forecast_source/ifs_diagnostic_matched_metrics.csv" ]]; then
+        IFS_COMPARISON_DIR="${MAIN_EVAL_DIR}/overlap_forecast_source"
+    else
+        ifs_matched_file="$(latest_file ifs_diagnostic_matched_metrics.csv)"
+        [[ -n "${ifs_matched_file}" ]] || { echo "ERROR: could not find ifs_diagnostic_matched_metrics.csv" >&2; exit 2; }
+        IFS_COMPARISON_DIR="$(dirname "${ifs_matched_file}")"
+    fi
+fi
+if [[ "${SOURCE_FULL_METRICS_CSV}" == "auto" ]]; then
+    SOURCE_FULL_METRICS_CSV="$({
+        find "${BASE}" -maxdepth 8 -type f -name overall_metrics.csv -printf '%T@ %p\n' 2>/dev/null \
+            | sort -nr \
+            | cut -d' ' -f2- \
+            | while IFS= read -r candidate; do
+                if grep -q 'tianji_t2nd_ifs_mean_softmax' "${candidate}"; then
+                    printf '%s\n' "${candidate}"
+                    break
+                fi
+            done
+    } || true)"
+    [[ -n "${SOURCE_FULL_METRICS_CSV}" ]] || { echo "ERROR: could not find source-full overall_metrics.csv" >&2; exit 2; }
+fi
 
 for path in \
     "${EVAL_DIR}/plot_viscast_baseline_manuscript_composite.py" \
     "${EVAL_DIR}/plot_viscast_long_tail_manuscript_composite.py" \
     "${IFS_DIR}/plot_qcore_t925_manuscript_composite.py" \
+    "${IFS_DIR}/plot_viscast_controlled_attribution_composite.py" \
+    "${IFS_DIR}/plot_viscast_source_full_metrics.py" \
     "${IFS_DIR}/plot_common_variable_error_regimes.py" \
     "${MAIN_EVAL_DIR}/station_model_vs_ifs_metrics.csv" \
     "${QCORE_ANALYSIS_DIR}/hybrid_exact_shapley_effects.csv" \
@@ -72,6 +105,10 @@ for path in \
     "${PAIRED_QUALITY_DIR}/pressure_level_paired_rmse_utc_date_bootstrap_ci.csv" \
     "${PAIRED_QUALITY_DIR}/surface_observation_three_source_rmse_utc_date_bootstrap_ci.csv" \
     "${PAIRED_QUALITY_DIR}/surface_observation_pairwise_rmse_delta_utc_date_bootstrap_ci.csv" \
+    "${TAIL_ANALYSIS_DIR}/joint_tail_placement_utc_date_bootstrap_ci.csv" \
+    "${TAIL_ANALYSIS_DIR}/joint_tail_placement_metrics.csv" \
+    "${IFS_COMPARISON_DIR}/ifs_diagnostic_matched_metrics.csv" \
+    "${SOURCE_FULL_METRICS_CSV}" \
     "${S1_CSV}" \
     "${SAMPLING_CSV}" \
     "${LOSS_CSV}"; do
@@ -96,6 +133,9 @@ echo "main_eval_dir=${MAIN_EVAL_DIR}"
 echo "qcore_analysis_dir=${QCORE_ANALYSIS_DIR}"
 echo "qcore_endpoint_dir=${QCORE_ENDPOINT_DIR}"
 echo "paired_quality_dir=${PAIRED_QUALITY_DIR}"
+echo "tail_analysis_dir=${TAIL_ANALYSIS_DIR}"
+echo "ifs_comparison_dir=${IFS_COMPARISON_DIR}"
+echo "source_full_metrics_csv=${SOURCE_FULL_METRICS_CSV}"
 echo "s1_csv=${S1_CSV}"
 echo "sampling_csv=${SAMPLING_CSV}"
 echo "loss_csv=${LOSS_CSV}"
@@ -106,11 +146,28 @@ python "${EVAL_DIR}/plot_viscast_baseline_manuscript_composite.py" \
   --shp-path "${SHP_PATH}" \
   --out-dir "${OUT_DIR}"
 
+python "${EVAL_DIR}/plot_viscast_baseline_manuscript_composite.py" \
+  --eval-dir "${MAIN_EVAL_DIR}" \
+  --shp-path "${SHP_PATH}" \
+  --include-precision \
+  --figure-stem fig_viscast_vs_ifs_main_composite_with_precision \
+  --out-dir "${OUT_DIR}"
+
 python "${IFS_DIR}/plot_qcore_t925_manuscript_composite.py" \
   --analysis-dir "${QCORE_ANALYSIS_DIR}" \
   --endpoint-dir "${QCORE_ENDPOINT_DIR}" \
   --upper-air-dir "${UPPER_AIR_DIR}" \
   --paired-quality-dir "${PAIRED_QUALITY_DIR}" \
+  --tail-analysis-dir "${TAIL_ANALYSIS_DIR}" \
+  --out-dir "${OUT_DIR}"
+
+python "${IFS_DIR}/plot_viscast_controlled_attribution_composite.py" \
+  --ifs-comparison-dir "${IFS_COMPARISON_DIR}" \
+  --endpoint-dir "${QCORE_ENDPOINT_DIR}" \
+  --out-dir "${OUT_DIR}"
+
+python "${IFS_DIR}/plot_viscast_source_full_metrics.py" \
+  --metrics-csv "${SOURCE_FULL_METRICS_CSV}" \
   --out-dir "${OUT_DIR}"
 
 python "${EVAL_DIR}/plot_viscast_long_tail_manuscript_composite.py" \

@@ -44,6 +44,7 @@ REPLACE_EVENT="${REPLACE_EVENT:-}"
 WINDOW_HOURS="${WINDOW_HOURS:-3}"
 EVENT_ENV_SOURCE="${EVENT_ENV_SOURCE:-grid}"
 EVENT_ENV_MAX_EVENTS="${EVENT_ENV_MAX_EVENTS:-3}"
+EVENT_ENV_INCLUDE_CSI="${EVENT_ENV_INCLUDE_CSI:-0}"
 SHP_PATH="${SHP_PATH:-}"
 EVENT_ENV_TIANJI_TEMPLATE="${EVENT_ENV_TIANJI_TEMPLATE:-}"
 if [[ -z "${EVENT_ENV_TIANJI_TEMPLATE}" ]]; then
@@ -77,6 +78,9 @@ fi
 if [[ -n "${REPLACE_EVENT}" ]]; then
     CMD+=(--replace_event "${REPLACE_EVENT}")
 fi
+if [[ "${EVENT_ENV_INCLUDE_CSI}" == "1" ]]; then
+    CMD+=(--event_env_include_csi)
+fi
 if [[ -n "${EXTRA_ARGS}" ]]; then
     # shellcheck disable=SC2206
     EXTRA_ARGV=(${EXTRA_ARGS})
@@ -88,6 +92,7 @@ echo "OUT_DIR=${OUT_DIR}"
 echo "REPLACE_EVENT=${REPLACE_EVENT:-<none>}"
 echo "EVENT_ENV_SOURCE=${EVENT_ENV_SOURCE}"
 echo "EVENT_ENV_MAX_EVENTS=${EVENT_ENV_MAX_EVENTS}"
+echo "EVENT_ENV_INCLUDE_CSI=${EVENT_ENV_INCLUDE_CSI}"
 echo "Command: ${CMD[*]}"
 "${CMD[@]}"
 
