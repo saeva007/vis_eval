@@ -97,7 +97,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--event_env_overlap_eval",
         default="",
-        help="Optional per_sample_paired_eval.csv; defaults to <eval_dir>/overlap_forecast_source/.",
+        help="Optional per_sample_paired_eval.csv; defaults to the paired source-evaluation artifact.",
     )
     p.add_argument(
         "--event_env_pangu_eval_root",
@@ -435,11 +435,14 @@ def main() -> None:
     source_model_metadata: Dict[str, object] = {}
     source_model_sources: List[str] = []
     if args.event_env_with_source_models:
-        source_eval_path = (
-            Path(args.event_env_overlap_eval).expanduser().resolve()
-            if str(args.event_env_overlap_eval).strip()
-            else eval_dir / "overlap_forecast_source" / "per_sample_paired_eval.csv"
-        )
+        if str(args.event_env_overlap_eval).strip():
+            source_eval_path = Path(args.event_env_overlap_eval).expanduser().resolve()
+        else:
+            source_candidates = [
+                eval_dir / "overlap_forecast_source" / "per_sample_paired_eval.csv",
+                base / "paper_eval_results_pm10_pm25_journal" / "overlap_forecast_source" / "per_sample_paired_eval.csv",
+            ]
+            source_eval_path = next((path for path in source_candidates if path.is_file()), source_candidates[-1])
         eval_df, source_model_sources, source_model_metadata = attach_overlap_source_predictions(
             eval_df,
             source_eval_path,
