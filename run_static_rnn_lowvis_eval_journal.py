@@ -1676,18 +1676,18 @@ def _draw_grid_panel(
     draw_boundary(ax, shp_gdf, color="#1F2933", linewidth=0.50, zorder=7)
 
 
-def _event_lowvis_csi_pair(sub: pd.DataFrame) -> Tuple[float, float, int]:
-    """Return VisCast/IFS Low-vis CSI on one strictly matched station subset.
+def _event_lowvis_csi_pair(sub: pd.DataFrame) -> Tuple[float, float, float]:
+    """Return VisCast/Pangu/IFS Low-vis CSI on matched station subsets.
 
     Low visibility is the binary event ``visibility < 1000 m``.  VisCast and the
-    IFS diagnostic are scored only where the observation and IFS diagnostic
-    are both valid so that the two bars cannot differ because of sample
-    coverage.
+    IFS diagnostic are scored only where the observation and IFS diagnostic are
+    both valid so that the two bars cannot differ because of sample coverage.
+    Pangu is scored on the intersection of that subset and valid Pangu rows.
     """
 
     required = {"vis_raw_m", "pmst_pred", "ifs_diagnostic_vis_m"}
     if sub.empty or not required.issubset(sub.columns):
-        return math.nan, math.nan, 0
+        return math.nan, math.nan, math.nan
 
     obs = pd.to_numeric(sub["vis_raw_m"], errors="coerce").to_numpy(dtype=float)
     pmst = pd.to_numeric(sub["pmst_pred"], errors="coerce").to_numpy(dtype=float)
@@ -1696,26 +1696,43 @@ def _event_lowvis_csi_pair(sub: pd.DataFrame) -> Tuple[float, float, int]:
     if "ifs_diagnostic_valid" in sub.columns:
         valid &= sub["ifs_diagnostic_valid"].fillna(False).astype(bool).to_numpy()
     if not bool(valid.any()):
-        return math.nan, math.nan, 0
+        return math.nan, math.nan, math.nan
 
     truth = obs[valid] < 1000.0
     pmst_event = pmst[valid].astype(int) != 2
     ifs_event = ifs_vis[valid] < 1000.0
 
-    def _csi(pred_event: np.ndarray) -> float:
-        hits = int(np.count_nonzero(truth & pred_event))
-        misses = int(np.count_nonzero(truth & ~pred_event))
-        false_alarms = int(np.count_nonzero(~truth & pred_event))
+    def _csi(truth_values: np.ndarray, pred_event: np.ndarray) -> float:
+        hits = int(np.count_nonzero(truth_values & pred_event))
+        misses = int(np.count_nonzero(truth_values & ~pred_event))
+        false_alarms = int(np.count_nonzero(~truth_values & pred_event))
         denominator = hits + misses + false_alarms
         return float(hits / denominator) if denominator > 0 else math.nan
 
-    return _csi(pmst_event), _csi(ifs_event), int(np.count_nonzero(valid))
+    pangu_csi = math.nan
+    if {"pangu_pred", "pangu_valid"}.issubset(sub.columns):
+        pangu = pd.to_numeric(sub["pangu_pred"], errors="coerce").to_numpy(dtype=float)
+        pangu_valid = sub["pangu_valid"].fillna(False).astype(bool).to_numpy()
+        pangu_mask = valid & np.isfinite(pangu) & pangu_valid
+        if bool(pangu_mask.any()):
+            pangu_truth = obs[pangu_mask] < 1000.0
+            pangu_event = pangu[pangu_mask].astype(int) != 2
+            pangu_csi = _csi(pangu_truth, pangu_event)
+
+    return _csi(truth, pmst_event), pangu_csi, _csi(truth, ifs_event)
 
 
-def _draw_event_lowvis_csi_panel(ax, pmst_csi: float, ifs_csi: float, matched_n: int, show_xaxis: bool) -> None:
+def _draw_event_lowvis_csi_panel(
+    ax,
+    pmst_csi: float,
+    pangu_csi: float,
+    ifs_csi: float,
+    show_xaxis: bool,
+) -> None:
     """Draw a compact, directly labelled CSI comparison for one valid hour."""
 
     viscast_color = "#1769AA"
+    pangu_color = "#8E6BBE"
     ifs_color = "#6B7280"
     csi_axis_max = 0.5
     label_offset = 0.035 * csi_axis_max
@@ -1760,11 +1777,14 @@ def _draw_event_lowvis_csi_panel(ax, pmst_csi: float, ifs_csi: float, matched_n:
             zorder=3,
         )
 
-    _draw_bar(pmst_csi, 0.70, viscast_color)
-    _draw_bar(ifs_csi, 0.27, ifs_color)
-    if matched_n > 0:
-        ax.text(0.98, 0.96, f"n={matched_n:,}", transform=ax.transAxes, ha="right", va="top", fontsize=6.5, color="#6B7280")
+    if np.isfinite(pangu_csi):
+        _draw_bar(pmst_csi, 0.76, viscast_color)
+        _draw_bar(pangu_csi, 0.50, pangu_color)
+        _draw_bar(ifs_csi, 0.24, ifs_color)
     else:
+        _draw_bar(pmst_csi, 0.70, viscast_color)
+        _draw_bar(ifs_csi, 0.27, ifs_color)
+    if not any(np.isfinite(value) for value in (pmst_csi, pangu_csi, ifs_csi)):
         ax.text(0.50, 0.50, "No matched data", transform=ax.transAxes, ha="center", va="center", fontsize=7.5, color="#6B7280")
 
     if show_xaxis:
@@ -1849,12 +1869,13 @@ def plot_event_environment_grid(
         "VisCast forecast",
     ]
     if include_pangu:
-        col_titles.append("Pangu-driven\nVisCast")
+        col_titles.append("Pangu-driven VisCast")
     col_titles.extend(["IFS diagnostic VIS", "Tianji RH2m", "CAMS PM10"])
     if include_csi:
         col_titles.append("Low-vis CSI (<1 km)")
     for j, title in enumerate(col_titles):
-        axes[0, j].set_title(title, fontsize=12.5, fontweight="bold", pad=4)
+        title_size = 10.5 if include_pangu and j == col_pangu else 12.5
+        axes[0, j].set_title(title, fontsize=title_size, fontweight="bold", pad=4)
     for ax in axes.flat:
         ax.grid(False)
 
@@ -1900,12 +1921,12 @@ def plot_event_environment_grid(
         _draw_grid_panel(axes[row_idx, col_rh2m], rh_fields.get(valid_time), shp_gdf, "YlGnBu", rh_norm, "RH2m missing", focus_extent)
         _draw_grid_panel(axes[row_idx, col_pm10], pm10_fields.get(valid_time), shp_gdf, "YlOrRd", pm10_norm, "CAMS PM10 missing", focus_extent)
         if include_csi and col_csi is not None:
-            pmst_csi, ifs_csi, matched_n = _event_lowvis_csi_pair(sub)
+            pmst_csi, pangu_csi, ifs_csi = _event_lowvis_csi_pair(sub)
             _draw_event_lowvis_csi_panel(
                 axes[row_idx, col_csi],
                 pmst_csi,
+                pangu_csi,
                 ifs_csi,
-                matched_n,
                 show_xaxis=(row_idx == nrows - 1),
             )
 
@@ -1935,17 +1956,18 @@ def plot_event_environment_grid(
 
     if include_csi and col_csi is not None:
         pooled = df[df["time"].isin(set(pd.DatetimeIndex(event_times)))].copy()
-        pooled_pmst_csi, pooled_ifs_csi, pooled_n = _event_lowvis_csi_pair(pooled)
+        pooled_pmst_csi, pooled_pangu_csi, pooled_ifs_csi = _event_lowvis_csi_pair(pooled)
         csi_pos = cbar_span(col_csi, col_csi, y=0.038, height=0.090)
         csi_legend_ax = fig.add_axes(csi_pos)
         csi_legend_ax.axis("off")
-        csi_legend_ax.text(0.00, 0.72, "VisCast", color="#1769AA", fontsize=8.0, fontweight="bold", ha="left", va="center")
-        csi_legend_ax.text(0.00, 0.40, "IFS", color="#6B7280", fontsize=8.0, fontweight="bold", ha="left", va="center")
-        if np.isfinite(pooled_pmst_csi):
-            csi_legend_ax.text(0.43, 0.72, f"pooled {pooled_pmst_csi:.2f}", color="#1769AA", fontsize=7.3, ha="left", va="center")
-        if np.isfinite(pooled_ifs_csi):
-            csi_legend_ax.text(0.43, 0.40, f"pooled {pooled_ifs_csi:.2f}", color="#6B7280", fontsize=7.3, ha="left", va="center")
-        csi_legend_ax.text(0.00, 0.08, f"matched n={pooled_n:,}", color="#6B7280", fontsize=6.8, ha="left", va="center")
+        csi_legend_rows = [(0.80, "VisCast", pooled_pmst_csi, "#1769AA")]
+        if include_pangu:
+            csi_legend_rows.append((0.50, "Pangu", pooled_pangu_csi, "#8E6BBE"))
+        csi_legend_rows.append((0.20, "IFS", pooled_ifs_csi, "#6B7280"))
+        for y, label, value, color in csi_legend_rows:
+            csi_legend_ax.text(0.00, y, label, color=color, fontsize=8.0, fontweight="bold", ha="left", va="center")
+            if np.isfinite(value):
+                csi_legend_ax.text(0.43, y, f"pooled {value:.2f}", color=color, fontsize=7.3, ha="left", va="center")
 
     all_sources = list(sources) + rh_sources + pm10_sources
     save_fig_pair(
