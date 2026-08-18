@@ -45,6 +45,10 @@ WINDOW_HOURS="${WINDOW_HOURS:-3}"
 EVENT_ENV_SOURCE="${EVENT_ENV_SOURCE:-grid}"
 EVENT_ENV_MAX_EVENTS="${EVENT_ENV_MAX_EVENTS:-1}"
 EVENT_ENV_INCLUDE_CSI="${EVENT_ENV_INCLUDE_CSI:-1}"
+EVENT_ENV_WITH_PANGU="${EVENT_ENV_WITH_PANGU:-0}"
+EVENT_ENV_PANGU_EVAL_ROOT="${EVENT_ENV_PANGU_EVAL_ROOT:-${BASE}/paper_eval_results_pm10_pm25_journal/q_core_t925_fair/qcore_t925_fair_formal_v1_20260721}"
+EVENT_ENV_PANGU_SEEDS="${EVENT_ENV_PANGU_SEEDS:-42:2025:20260702}"
+EVENT_ENV_PANGU_TAG="${EVENT_ENV_PANGU_TAG:-pangu2025_q_core_t925_no_rh2m}"
 ENVIRONMENT_GRID_ONLY="${ENVIRONMENT_GRID_ONLY:-0}"
 ENVIRONMENT_EVENT_RANK="${ENVIRONMENT_EVENT_RANK:-1}"
 SHP_PATH="${SHP_PATH:-}"
@@ -83,6 +87,14 @@ fi
 if [[ "${EVENT_ENV_INCLUDE_CSI}" == "1" ]]; then
     CMD+=(--event_env_include_csi)
 fi
+if [[ "${EVENT_ENV_WITH_PANGU}" == "1" ]]; then
+    CMD+=(
+        --event_env_with_pangu
+        --event_env_pangu_eval_root "${EVENT_ENV_PANGU_EVAL_ROOT}"
+        --event_env_pangu_seeds "${EVENT_ENV_PANGU_SEEDS}"
+        --event_env_pangu_tag "${EVENT_ENV_PANGU_TAG}"
+    )
+fi
 if [[ "${ENVIRONMENT_GRID_ONLY}" == "1" ]]; then
     CMD+=(--environment_grid_only --environment_event_rank "${ENVIRONMENT_EVENT_RANK}")
 fi
@@ -98,6 +110,8 @@ echo "REPLACE_EVENT=${REPLACE_EVENT:-<none>}"
 echo "EVENT_ENV_SOURCE=${EVENT_ENV_SOURCE}"
 echo "EVENT_ENV_MAX_EVENTS=${EVENT_ENV_MAX_EVENTS}"
 echo "EVENT_ENV_INCLUDE_CSI=${EVENT_ENV_INCLUDE_CSI}"
+echo "EVENT_ENV_WITH_PANGU=${EVENT_ENV_WITH_PANGU}"
+echo "EVENT_ENV_PANGU_EVAL_ROOT=${EVENT_ENV_PANGU_EVAL_ROOT}"
 echo "ENVIRONMENT_GRID_ONLY=${ENVIRONMENT_GRID_ONLY}"
 echo "ENVIRONMENT_EVENT_RANK=${ENVIRONMENT_EVENT_RANK}"
 echo "Command: ${CMD[*]}"

@@ -1633,7 +1633,7 @@ def _draw_visibility_class_panel(
             ax.scatter(sub.loc[~valid, "lon"], sub.loc[~valid, "lat"], s=3.2, color="#D2D6DC", alpha=0.55, linewidths=0, zorder=2)
         plot_df = sub.loc[valid]
     if plot_df.empty:
-        ax.text(0.5, 0.5, "No matched IFS", transform=ax.transAxes, ha="center", va="center", color="#6B7280", fontsize=11)
+        ax.text(0.5, 0.5, "No matched data", transform=ax.transAxes, ha="center", va="center", color="#6B7280", fontsize=11)
         return
     if value_col.endswith("_m"):
         vals = classify_visibility_values(plot_df[value_col].to_numpy(dtype=float))
@@ -1814,22 +1814,43 @@ def plot_event_environment_grid(
     nrows = len(event_times)
     fig_h = max(7.2, 1.18 * nrows + 1.25)
     include_csi = bool(getattr(args, "event_env_include_csi", False))
-    ncols = 6 if include_csi else 5
-    width_ratios = [1.0, 1.0, 1.0, 1.0, 1.0] + ([0.82] if include_csi else [])
+    include_pangu = bool(getattr(args, "event_env_with_pangu", False))
+    if include_pangu:
+        required_pangu_columns = {"pangu_pred", "pangu_valid"}
+        missing_pangu_columns = sorted(required_pangu_columns.difference(df.columns))
+        if missing_pangu_columns:
+            raise ValueError(
+                "Pangu event column requested but prediction columns are missing: "
+                + ", ".join(missing_pangu_columns)
+            )
+
+    col_obs = 0
+    col_viscast = 1
+    col_pangu = 2 if include_pangu else None
+    col_ifs = 3 if include_pangu else 2
+    col_rh2m = col_ifs + 1
+    col_pm10 = col_ifs + 2
+    col_csi = col_pm10 + 1 if include_csi else None
+    ncols = col_pm10 + 1 + int(include_csi)
+    width_ratios = [1.0] * (col_pm10 + 1) + ([0.82] if include_csi else [])
+    if include_pangu:
+        fig_width = 15.15 if include_csi else 13.65
+    else:
+        fig_width = 13.15 if include_csi else 11.65
     fig, axes = plt.subplots(
         nrows,
         ncols,
-        figsize=((13.15 if include_csi else 11.65), fig_h),
+        figsize=(fig_width, fig_h),
         squeeze=False,
         gridspec_kw={"width_ratios": width_ratios},
     )
     col_titles = [
         "Observed visibility",
         "VisCast forecast",
-        "IFS diagnostic VIS",
-        "Tianji RH2m",
-        "CAMS PM10",
     ]
+    if include_pangu:
+        col_titles.append("Pangu-driven\nVisCast")
+    col_titles.extend(["IFS diagnostic VIS", "Tianji RH2m", "CAMS PM10"])
     if include_csi:
         col_titles.append("Low-vis CSI (<1 km)")
     for j, title in enumerate(col_titles):
@@ -1844,21 +1865,31 @@ def plot_event_environment_grid(
         time_label = f"{offset:+d} h\n{valid_time:%m-%d %H:00}"
         if offset == 0:
             time_label = f"Peak\n{valid_time:%m-%d %H:00}"
-        axes[row_idx, 0].text(
+        axes[row_idx, col_obs].text(
             -0.075,
             0.5,
             time_label,
-            transform=axes[row_idx, 0].transAxes,
+            transform=axes[row_idx, col_obs].transAxes,
             ha="right",
             va="center",
             fontsize=10.5,
             color="#364152",
             linespacing=1.08,
         )
-        _draw_visibility_class_panel(axes[row_idx, 0], sub, "vis_raw_m", shp_gdf, extent=focus_extent, context_df=station_context)
-        _draw_visibility_class_panel(axes[row_idx, 1], sub, "pmst_pred", shp_gdf, extent=focus_extent, context_df=station_context)
+        _draw_visibility_class_panel(axes[row_idx, col_obs], sub, "vis_raw_m", shp_gdf, extent=focus_extent, context_df=station_context)
+        _draw_visibility_class_panel(axes[row_idx, col_viscast], sub, "pmst_pred", shp_gdf, extent=focus_extent, context_df=station_context)
+        if include_pangu and col_pangu is not None:
+            _draw_visibility_class_panel(
+                axes[row_idx, col_pangu],
+                sub,
+                "pangu_pred",
+                shp_gdf,
+                valid_col="pangu_valid",
+                extent=focus_extent,
+                context_df=station_context,
+            )
         _draw_visibility_class_panel(
-            axes[row_idx, 2],
+            axes[row_idx, col_ifs],
             sub,
             "ifs_diagnostic_vis_m",
             shp_gdf,
@@ -1866,12 +1897,12 @@ def plot_event_environment_grid(
             extent=focus_extent,
             context_df=station_context,
         )
-        _draw_grid_panel(axes[row_idx, 3], rh_fields.get(valid_time), shp_gdf, "YlGnBu", rh_norm, "RH2m missing", focus_extent)
-        _draw_grid_panel(axes[row_idx, 4], pm10_fields.get(valid_time), shp_gdf, "YlOrRd", pm10_norm, "CAMS PM10 missing", focus_extent)
-        if include_csi:
+        _draw_grid_panel(axes[row_idx, col_rh2m], rh_fields.get(valid_time), shp_gdf, "YlGnBu", rh_norm, "RH2m missing", focus_extent)
+        _draw_grid_panel(axes[row_idx, col_pm10], pm10_fields.get(valid_time), shp_gdf, "YlOrRd", pm10_norm, "CAMS PM10 missing", focus_extent)
+        if include_csi and col_csi is not None:
             pmst_csi, ifs_csi, matched_n = _event_lowvis_csi_pair(sub)
             _draw_event_lowvis_csi_panel(
-                axes[row_idx, 5],
+                axes[row_idx, col_csi],
                 pmst_csi,
                 ifs_csi,
                 matched_n,
@@ -1896,16 +1927,16 @@ def plot_event_environment_grid(
         right = axes[-1, col1].get_position().x1
         return [left, y, right - left, height]
 
-    _draw_visibility_category_legend(fig.add_axes(cbar_span(0, 2, y=0.035, height=0.092)))
-    cb2 = fig.colorbar(rh_sm, cax=fig.add_axes(cbar_span(3, 3)), orientation="horizontal")
+    _draw_visibility_category_legend(fig.add_axes(cbar_span(col_obs, col_ifs, y=0.035, height=0.092)))
+    cb2 = fig.colorbar(rh_sm, cax=fig.add_axes(cbar_span(col_rh2m, col_rh2m)), orientation="horizontal")
     cb2.set_label("RH2m (%)", fontsize=11)
-    cb3 = fig.colorbar(pm10_sm, cax=fig.add_axes(cbar_span(4, 4)), orientation="horizontal", extend="max")
+    cb3 = fig.colorbar(pm10_sm, cax=fig.add_axes(cbar_span(col_pm10, col_pm10)), orientation="horizontal", extend="max")
     cb3.set_label(r"PM10 ($\mu$g m$^{-3}$)", fontsize=11)
 
-    if include_csi:
+    if include_csi and col_csi is not None:
         pooled = df[df["time"].isin(set(pd.DatetimeIndex(event_times)))].copy()
         pooled_pmst_csi, pooled_ifs_csi, pooled_n = _event_lowvis_csi_pair(pooled)
-        csi_pos = cbar_span(5, 5, y=0.038, height=0.090)
+        csi_pos = cbar_span(col_csi, col_csi, y=0.038, height=0.090)
         csi_legend_ax = fig.add_axes(csi_pos)
         csi_legend_ax.axis("off")
         csi_legend_ax.text(0.00, 0.72, "VisCast", color="#1769AA", fontsize=8.0, fontweight="bold", ha="left", va="center")
@@ -1920,13 +1951,23 @@ def plot_event_environment_grid(
     save_fig_pair(
         fig,
         out_dir,
-        f"fig9_event_{rank}_environment_grid",
+        (
+            f"fig9_event_{rank}_environment_grid_with_pangu"
+            if include_pangu
+            else f"fig9_event_{rank}_environment_grid"
+        ),
         manifest,
         all_sources,
         notes=(
             "Rows are UTC hours around the selected widespread Low-vis event. "
-            "The first three columns use shared Ultra-low/Moderate-low/Clear categories; the VisCast panel is categorical. "
-            "RH2m and PM10 are raw gridded forecast fields read only for the displayed valid times. "
+            + (
+                "The first four columns use shared Ultra-low/Moderate-low/Clear categories; the VisCast and "
+                "Pangu-driven VisCast panels are categorical. Pangu-driven VisCast is obtained by argmax after "
+                "equal-weight averaging of class probabilities across the configured formal seeds. "
+                if include_pangu
+                else "The first three columns use shared Ultra-low/Moderate-low/Clear categories; the VisCast panel is categorical. "
+            )
+            + "RH2m and PM10 are raw gridded forecast fields read only for the displayed valid times. "
             + (
                 "The final column reports binary Low-vis CSI for visibility <1000 m; VisCast and IFS use the identical "
                 "IFS-diagnostic-valid station subset within each hour."

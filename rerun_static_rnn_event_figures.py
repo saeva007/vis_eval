@@ -79,6 +79,21 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Add the optional hourly Low-vis CSI column to event environment grids.",
     )
+    p.add_argument(
+        "--event_env_with_pangu",
+        action="store_true",
+        help="Draw an additional event-grid version with Pangu-driven VisCast predictions.",
+    )
+    p.add_argument(
+        "--event_env_pangu_eval_root",
+        default="",
+        help="Q-core fair-evaluation root containing seed_<seed>/per_sample_<tag>.csv.",
+    )
+    p.add_argument("--event_env_pangu_seeds", default="42:2025:20260702")
+    p.add_argument(
+        "--event_env_pangu_tag",
+        default="pangu2025_q_core_t925_no_rh2m",
+    )
     p.add_argument("--event_env_source", choices=["grid", "none"], default="grid")
     p.add_argument("--shp_path", default="/public/home/putianshu/中华人民共和国/中华人民共和国.shp")
     p.add_argument(
@@ -227,6 +242,104 @@ def arrays_from_eval(eval_df: pd.DataFrame):
     return meta, y_cls, y_raw, pmst_pred, ifs_pred, ifs_valid
 
 
+def parse_seed_list(value: str) -> List[int]:
+    values = [item.strip() for item in str(value).replace(",", ":").split(":") if item.strip()]
+    if not values:
+        raise ValueError("At least one Pangu seed is required")
+    return [int(item) for item in values]
+
+
+def normalize_station_key(values: pd.Series) -> pd.Series:
+    return (
+        values.astype(str)
+        .str.strip()
+        .str.replace(r"\.0$", "", regex=True)
+        .str.upper()
+    )
+
+
+def attach_pangu_seed_mean_predictions(
+    eval_df: pd.DataFrame,
+    eval_root: Path,
+    seeds: Sequence[int],
+    source_tag: str,
+) -> tuple[pd.DataFrame, List[str], Dict[str, object]]:
+    """Attach argmax predictions from mean Pangu-driven class probabilities."""
+
+    seed_tables: List[pd.DataFrame] = []
+    source_paths: List[str] = []
+    required = {"time", "station_id", "p_fog", "p_mist", "p_clear"}
+    for seed in seeds:
+        path = eval_root / f"seed_{int(seed)}" / f"per_sample_{source_tag}.csv"
+        if not path.is_file():
+            raise FileNotFoundError(f"Missing Pangu event-prediction source: {path}")
+        frame = pd.read_csv(path)
+        missing = sorted(required - set(frame.columns))
+        if missing:
+            raise KeyError(f"{path}: missing required columns {missing}")
+        time = pd.to_datetime(frame["time"], errors="coerce", utc=True).dt.tz_convert(None).dt.floor("h")
+        if time.isna().any():
+            raise ValueError(f"{path}: invalid event timestamps")
+        table = pd.DataFrame(
+            {
+                "time": time,
+                "station_key": normalize_station_key(frame["station_id"]),
+                f"p_fog_{seed}": pd.to_numeric(frame["p_fog"], errors="coerce"),
+                f"p_mist_{seed}": pd.to_numeric(frame["p_mist"], errors="coerce"),
+                f"p_clear_{seed}": pd.to_numeric(frame["p_clear"], errors="coerce"),
+            }
+        )
+        if table[["time", "station_key"]].duplicated().any():
+            raise ValueError(f"{path}: duplicate (time, station_id) rows")
+        probability_columns = [f"p_fog_{seed}", f"p_mist_{seed}", f"p_clear_{seed}"]
+        if not np.isfinite(table[probability_columns].to_numpy(dtype=float)).all():
+            raise ValueError(f"{path}: non-finite class probabilities")
+        seed_tables.append(table)
+        source_paths.append(str(path))
+
+    combined = seed_tables[0]
+    for table in seed_tables[1:]:
+        combined = combined.merge(
+            table,
+            on=["time", "station_key"],
+            how="inner",
+            validate="one_to_one",
+        )
+    if combined.empty:
+        raise ValueError("Pangu seed outputs have no common (time, station_id) rows")
+
+    mean_probabilities = np.column_stack(
+        [
+            combined[[f"p_{label}_{seed}" for seed in seeds]].mean(axis=1).to_numpy(dtype=float)
+            for label in ("fog", "mist", "clear")
+        ]
+    )
+    combined["pangu_pred"] = np.argmax(mean_probabilities, axis=1).astype(np.int64)
+    combined["pangu_valid"] = True
+
+    out = eval_df.copy()
+    out["station_key"] = normalize_station_key(out["station_id"])
+    out = out.merge(
+        combined[["time", "station_key", "pangu_pred", "pangu_valid"]],
+        on=["time", "station_key"],
+        how="left",
+        validate="many_to_one",
+    )
+    out["pangu_valid"] = out["pangu_valid"].fillna(False).astype(bool)
+    matched = int(out["pangu_valid"].sum())
+    if matched == 0:
+        raise ValueError("Pangu predictions do not overlap the event-evaluation sample table")
+    metadata = {
+        "eval_root": str(eval_root),
+        "source_tag": str(source_tag),
+        "seeds": [int(seed) for seed in seeds],
+        "combination": "argmax_of_equal_weight_mean_class_probabilities",
+        "matched_rows": matched,
+        "total_event_eval_rows": int(len(out)),
+    }
+    return out, source_paths, metadata
+
+
 def main() -> None:
     args = parse_args()
     if args.event_window_hours is None:
@@ -256,6 +369,18 @@ def main() -> None:
             event_df = sort_events_chronologically(event_df)
     event_df.to_csv(out_dir / "event_case_summary.csv", index=False)
 
+    pangu_metadata: Dict[str, object] = {}
+    pangu_sources: List[str] = []
+    if args.event_env_with_pangu:
+        if not str(args.event_env_pangu_eval_root).strip():
+            raise ValueError("--event_env_with_pangu requires --event_env_pangu_eval_root")
+        eval_df, pangu_sources, pangu_metadata = attach_pangu_seed_mean_predictions(
+            eval_df,
+            Path(args.event_env_pangu_eval_root).expanduser().resolve(),
+            parse_seed_list(args.event_env_pangu_seeds),
+            args.event_env_pangu_tag,
+        )
+
     if args.environment_grid_only:
         selected = event_df[
             pd.to_numeric(event_df["event_rank"], errors="coerce")
@@ -272,7 +397,7 @@ def main() -> None:
         sources = [
             str(eval_dir / "per_sample_eval.csv"),
             str(out_dir / "event_case_summary.csv"),
-        ]
+        ] + pangu_sources
         journal.plot_event_environment_grid(
             args,
             base,
@@ -292,6 +417,8 @@ def main() -> None:
             "environment_event_rank": int(args.environment_event_rank),
             "window_hours": int(args.window_hours),
             "event_env_include_csi": bool(args.event_env_include_csi),
+            "event_env_with_pangu": bool(args.event_env_with_pangu),
+            "pangu_prediction_source": pangu_metadata,
         }
         (out_dir / "event_rerun_config.json").write_text(
             json.dumps(run_config, ensure_ascii=False, indent=2),
@@ -307,7 +434,10 @@ def main() -> None:
     meta, y_cls, y_raw, pmst_pred, ifs_pred, ifs_valid = arrays_from_eval(eval_df)
     shp_gdf = journal.read_shapefile(args.shp_path) if args.shp_path else None
     manifest = journal.Manifest(out_dir)
-    sources = [str(eval_dir / "per_sample_eval.csv"), str(out_dir / "event_case_summary.csv")]
+    sources = [
+        str(eval_dir / "per_sample_eval.csv"),
+        str(out_dir / "event_case_summary.csv"),
+    ] + pangu_sources
 
     summary_rows: List[dict] = []
     event_df_top = sort_events_chronologically(event_df).head(3).copy()
@@ -392,6 +522,8 @@ def main() -> None:
         "event_env_source": str(args.event_env_source),
         "event_env_max_events": int(args.event_env_max_events),
         "event_env_include_csi": bool(args.event_env_include_csi),
+        "event_env_with_pangu": bool(args.event_env_with_pangu),
+        "pangu_prediction_source": pangu_metadata,
     }
     (out_dir / "event_rerun_config.json").write_text(json.dumps(run_config, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"[event] wrote {out_dir / 'event_case_summary.csv'}", flush=True)
