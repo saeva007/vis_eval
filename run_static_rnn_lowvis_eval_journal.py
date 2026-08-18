@@ -1817,9 +1817,6 @@ def plot_event_environment_grid(
     offsets = list(range(-int(args.event_window_hours), int(args.event_window_hours) + 1))
     event_times = [center_time + pd.Timedelta(hours=h) for h in offsets]
 
-    rh_fields, rh_sources = load_tianji_event_grid_fields(args, base, event_times)
-    pm10_fields, pm10_sources = load_pm10_event_grid_fields(args, base, event_times)
-
     df = eval_df.copy()
     df["time"] = pd.to_datetime(df["time"], errors="coerce").dt.floor("h")
     focus_extent = _event_focus_extent(df, event_times)
@@ -1848,11 +1845,9 @@ def plot_event_environment_grid(
     col_viscast = 1
     col_pangu = 2 if include_pangu else None
     col_ifs = 3 if include_pangu else 2
-    col_rh2m = col_ifs + 1
-    col_pm10 = col_ifs + 2
-    col_csi = col_pm10 + 1 if include_csi else None
-    ncols = col_pm10 + 1 + int(include_csi)
-    width_ratios = [1.0] * (col_pm10 + 1) + ([0.82] if include_csi else [])
+    col_csi = col_ifs + 1 if include_csi else None
+    ncols = col_ifs + 1 + int(include_csi)
+    width_ratios = [1.0] * (col_ifs + 1) + ([0.82] if include_csi else [])
     if include_pangu:
         fig_width = 15.15 if include_csi else 13.65
     else:
@@ -1870,7 +1865,7 @@ def plot_event_environment_grid(
     ]
     if include_pangu:
         col_titles.append("Pangu-driven VisCast")
-    col_titles.extend(["IFS diagnostic VIS", "Tianji RH2m", "CAMS PM10"])
+    col_titles.append("IFS diagnostic VIS")
     if include_csi:
         col_titles.append("Low-vis CSI (<1 km)")
     for j, title in enumerate(col_titles):
@@ -1879,8 +1874,6 @@ def plot_event_environment_grid(
     for ax in axes.flat:
         ax.grid(False)
 
-    rh_norm = Normalize(vmin=float(args.event_env_rh2m_vmin), vmax=float(args.event_env_rh2m_vmax))
-    pm10_norm = Normalize(vmin=float(args.event_env_pm10_vmin), vmax=float(args.event_env_pm10_vmax))
     for row_idx, (offset, valid_time) in enumerate(zip(offsets, event_times)):
         sub = df[df["time"] == valid_time]
         time_label = f"{offset:+d} h\n{valid_time:%m-%d %H:00}"
@@ -1918,8 +1911,6 @@ def plot_event_environment_grid(
             extent=focus_extent,
             context_df=station_context,
         )
-        _draw_grid_panel(axes[row_idx, col_rh2m], rh_fields.get(valid_time), shp_gdf, "YlGnBu", rh_norm, "RH2m missing", focus_extent)
-        _draw_grid_panel(axes[row_idx, col_pm10], pm10_fields.get(valid_time), shp_gdf, "YlOrRd", pm10_norm, "CAMS PM10 missing", focus_extent)
         if include_csi and col_csi is not None:
             pmst_csi, pangu_csi, ifs_csi = _event_lowvis_csi_pair(sub)
             _draw_event_lowvis_csi_panel(
@@ -1930,14 +1921,10 @@ def plot_event_environment_grid(
                 show_xaxis=(row_idx == nrows - 1),
             )
 
-    rh_sm = plt.cm.ScalarMappable(norm=rh_norm, cmap="YlGnBu")
-    rh_sm.set_array([])
-    pm10_sm = plt.cm.ScalarMappable(norm=pm10_norm, cmap="YlOrRd")
-    pm10_sm.set_array([])
     rank = int(event_row.get("event_rank", 1))
     title = f"{center_time:%Y-%m-%d %H:00 UTC}"
     fig.suptitle(title, x=0.5, y=0.988, fontsize=14, fontweight="bold")
-    fig.subplots_adjust(left=0.077, right=0.994, top=0.94, bottom=0.18, wspace=0.020, hspace=0.035)
+    fig.subplots_adjust(left=0.077, right=0.994, top=0.94, bottom=0.14, wspace=0.025, hspace=0.035)
     fig.canvas.draw()
 
     cbar_y = 0.065
@@ -1949,11 +1936,6 @@ def plot_event_environment_grid(
         return [left, y, right - left, height]
 
     _draw_visibility_category_legend(fig.add_axes(cbar_span(col_obs, col_ifs, y=0.035, height=0.092)))
-    cb2 = fig.colorbar(rh_sm, cax=fig.add_axes(cbar_span(col_rh2m, col_rh2m)), orientation="horizontal")
-    cb2.set_label("RH2m (%)", fontsize=11)
-    cb3 = fig.colorbar(pm10_sm, cax=fig.add_axes(cbar_span(col_pm10, col_pm10)), orientation="horizontal", extend="max")
-    cb3.set_label(r"PM10 ($\mu$g m$^{-3}$)", fontsize=11)
-
     if include_csi and col_csi is not None:
         pooled = df[df["time"].isin(set(pd.DatetimeIndex(event_times)))].copy()
         pooled_pmst_csi, pooled_pangu_csi, pooled_ifs_csi = _event_lowvis_csi_pair(pooled)
@@ -1969,17 +1951,21 @@ def plot_event_environment_grid(
             if np.isfinite(value):
                 csi_legend_ax.text(0.43, y, f"pooled {value:.2f}", color=color, fontsize=7.3, ha="left", va="center")
 
-    all_sources = list(sources) + rh_sources + pm10_sources
+    figure_stem = (
+        f"fig9_event_{rank}_environment_grid_with_pangu"
+        if include_pangu
+        else f"fig9_event_{rank}_environment_grid"
+    )
+    if rank > 1:
+        (out_dir / "supplementary").mkdir(parents=True, exist_ok=True)
+        figure_stem = f"supplementary/{figure_stem}"
+
     save_fig_pair(
         fig,
         out_dir,
-        (
-            f"fig9_event_{rank}_environment_grid_with_pangu"
-            if include_pangu
-            else f"fig9_event_{rank}_environment_grid"
-        ),
+        figure_stem,
         manifest,
-        all_sources,
+        list(sources),
         notes=(
             "Rows are UTC hours around the selected widespread Low-vis event. "
             + (
@@ -1989,7 +1975,6 @@ def plot_event_environment_grid(
                 if include_pangu
                 else "The first three columns use shared Ultra-low/Moderate-low/Clear categories; the VisCast panel is categorical. "
             )
-            + "RH2m and PM10 are raw gridded forecast fields read only for the displayed valid times. "
             + (
                 "The final column reports binary Low-vis CSI for visibility <1000 m; VisCast and IFS use the identical "
                 "IFS-diagnostic-valid station subset within each hour."
