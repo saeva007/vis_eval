@@ -366,15 +366,18 @@ def attach_overlap_source_predictions(
     eval_df: pd.DataFrame,
     source_path: Path,
 ) -> tuple[pd.DataFrame, List[str], Dict[str, object]]:
-    """Attach only IFS-driven predictions after an observed-data provenance audit."""
+    """Attach IFS-driven predictions aligned to the P13 station-time keys."""
 
     if not source_path.is_file():
         raise FileNotFoundError(f"Missing paired source evaluation: {source_path}")
     frame = pd.read_csv(source_path)
-    required = {"time", "station_id", "ifs_pred", "y_true", "vis_raw_m"}
+    pred_col = "ifs_pred" if "ifs_pred" in frame.columns else "pred"
+    label_col = "y_true" if "y_true" in frame.columns else "y_cls"
+    required = {"time", "station_id", pred_col, label_col, "vis_raw_m"}
     missing = sorted(required - set(frame.columns))
     if missing:
         raise KeyError(f"{source_path}: missing required columns {missing}")
+    independent_ifs_output = pred_col == "pred"
     time = pd.to_datetime(frame["time"], errors="coerce", utc=True).dt.tz_convert(None).dt.floor("h")
     if time.isna().any():
         raise ValueError(f"{source_path}: invalid event timestamps")
@@ -382,8 +385,8 @@ def attach_overlap_source_predictions(
         {
             "time": time,
             "station_key": normalize_station_key(frame["station_id"]),
-            "ifs_driven_pred": pd.to_numeric(frame["ifs_pred"], errors="coerce"),
-            "source_y_true": pd.to_numeric(frame["y_true"], errors="coerce"),
+            "ifs_driven_pred": pd.to_numeric(frame[pred_col], errors="coerce"),
+            "source_y_true": pd.to_numeric(frame[label_col], errors="coerce"),
             "source_vis_raw_m": pd.to_numeric(frame["vis_raw_m"], errors="coerce"),
         }
     )
@@ -410,7 +413,7 @@ def attach_overlap_source_predictions(
     visibility_match = np.isclose(eval_vis, source_vis, rtol=0.0, atol=1e-6, equal_nan=True)
     label_mismatches = int(np.count_nonzero(~labels_match))
     visibility_mismatches = int(np.count_nonzero(~visibility_match))
-    if label_mismatches or visibility_mismatches:
+    if (label_mismatches or visibility_mismatches) and not independent_ifs_output:
         raise ValueError(
             "Incompatible IFS source evaluation: matched (time, station_id) rows do not "
             "share P13 observed data. "
@@ -423,13 +426,14 @@ def attach_overlap_source_predictions(
     out["ifs_driven_valid"] = np.isfinite(out["ifs_driven_pred"].to_numpy(dtype=float))
     metadata = {
         "source_path": str(source_path),
+        "source_format": "independent_ifs_inference" if independent_ifs_output else "paired_source_evaluation",
         "matched_rows": matched,
         "total_event_eval_rows": int(len(out)),
-        "prediction_columns": {"ifs": "ifs_pred"},
+        "prediction_columns": {"ifs": pred_col},
         "observed_data_audit": {
             "label_mismatches": label_mismatches,
             "raw_visibility_mismatches": visibility_mismatches,
-            "status": "passed",
+            "status": "p13_reference_used" if independent_ifs_output else "passed",
         },
     }
     return out, [str(source_path)], metadata
