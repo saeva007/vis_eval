@@ -92,12 +92,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--event_env_with_source_models",
         action="store_true",
-        help="Attach IFS-driven and Tianji-driven VisCast predictions from paired overlap evaluation.",
+        help=(
+            "Add IFS-driven VisCast from a provenance-compatible paired source evaluation "
+            "and use the main P13 evaluation prediction for Tianji-driven VisCast."
+        ),
     )
     p.add_argument(
         "--event_env_overlap_eval",
         default="",
-        help="Optional per_sample_paired_eval.csv; defaults to the paired source-evaluation artifact.",
+        help=(
+            "Provenance-compatible per_sample_paired_eval.csv used only for IFS-driven "
+            "predictions. Its matched rows must have identical observed labels and raw "
+            "visibility to --eval_dir/per_sample_eval.csv."
+        ),
     )
     p.add_argument(
         "--event_env_pangu_eval_root",
@@ -359,12 +366,12 @@ def attach_overlap_source_predictions(
     eval_df: pd.DataFrame,
     source_path: Path,
 ) -> tuple[pd.DataFrame, List[str], Dict[str, object]]:
-    """Attach paired IFS-driven and Tianji-driven VisCast predictions."""
+    """Attach only IFS-driven predictions after an observed-data provenance audit."""
 
     if not source_path.is_file():
         raise FileNotFoundError(f"Missing paired source evaluation: {source_path}")
     frame = pd.read_csv(source_path)
-    required = {"time", "station_id", "tianji_pred", "ifs_pred"}
+    required = {"time", "station_id", "ifs_pred", "y_true", "vis_raw_m"}
     missing = sorted(required - set(frame.columns))
     if missing:
         raise KeyError(f"{source_path}: missing required columns {missing}")
@@ -375,8 +382,9 @@ def attach_overlap_source_predictions(
         {
             "time": time,
             "station_key": normalize_station_key(frame["station_id"]),
-            "tianji_driven_pred": pd.to_numeric(frame["tianji_pred"], errors="coerce"),
             "ifs_driven_pred": pd.to_numeric(frame["ifs_pred"], errors="coerce"),
+            "source_y_true": pd.to_numeric(frame["y_true"], errors="coerce"),
+            "source_vis_raw_m": pd.to_numeric(frame["vis_raw_m"], errors="coerce"),
         }
     )
     if table[["time", "station_key"]].duplicated().any():
@@ -389,18 +397,69 @@ def attach_overlap_source_predictions(
         how="left",
         validate="many_to_one",
     )
-    out["tianji_driven_valid"] = np.isfinite(out["tianji_driven_pred"].to_numpy(dtype=float))
-    out["ifs_driven_valid"] = np.isfinite(out["ifs_driven_pred"].to_numpy(dtype=float))
-    matched = int(np.count_nonzero(out["tianji_driven_valid"] & out["ifs_driven_valid"]))
+    matched_mask = np.isfinite(out["source_y_true"].to_numpy(dtype=float))
+    matched = int(np.count_nonzero(matched_mask))
     if matched == 0:
-        raise ValueError("Paired IFS/Tianji predictions do not overlap the event-evaluation sample table")
+        raise ValueError("IFS source predictions do not overlap the event-evaluation sample table")
+
+    eval_y = pd.to_numeric(out.loc[matched_mask, "y_true"], errors="coerce").to_numpy(dtype=float)
+    source_y = out.loc[matched_mask, "source_y_true"].to_numpy(dtype=float)
+    eval_vis = pd.to_numeric(out.loc[matched_mask, "vis_raw_m"], errors="coerce").to_numpy(dtype=float)
+    source_vis = out.loc[matched_mask, "source_vis_raw_m"].to_numpy(dtype=float)
+    labels_match = np.isclose(eval_y, source_y, rtol=0.0, atol=0.0, equal_nan=True)
+    visibility_match = np.isclose(eval_vis, source_vis, rtol=0.0, atol=1e-6, equal_nan=True)
+    label_mismatches = int(np.count_nonzero(~labels_match))
+    visibility_mismatches = int(np.count_nonzero(~visibility_match))
+    if label_mismatches or visibility_mismatches:
+        raise ValueError(
+            "Incompatible IFS source evaluation: matched (time, station_id) rows do not "
+            "share P13 observed data. "
+            f"label mismatches={label_mismatches}/{matched}; "
+            f"raw-visibility mismatches={visibility_mismatches}/{matched}. "
+            "Recompute the paired source evaluation against the exact P13 test sample table; "
+            "do not reuse a historical overlap_forecast_source artifact."
+        )
+
+    out["ifs_driven_valid"] = np.isfinite(out["ifs_driven_pred"].to_numpy(dtype=float))
     metadata = {
         "source_path": str(source_path),
         "matched_rows": matched,
         "total_event_eval_rows": int(len(out)),
-        "prediction_columns": {"ifs": "ifs_pred", "tianji": "tianji_pred"},
+        "prediction_columns": {"ifs": "ifs_pred"},
+        "observed_data_audit": {
+            "label_mismatches": label_mismatches,
+            "raw_visibility_mismatches": visibility_mismatches,
+            "status": "passed",
+        },
     }
     return out, [str(source_path)], metadata
+
+
+def attach_main_tianji_predictions(eval_df: pd.DataFrame) -> tuple[pd.DataFrame, Dict[str, object]]:
+    """Expose the main P13 model as the Tianji-driven VisCast column.
+
+    The P13 evaluation is the authoritative Tianji-driven inference for these
+    event figures.  Reusing it avoids silently replacing it with an older
+    overlap experiment that happens to share station-time keys.
+    """
+
+    if "pmst_pred" not in eval_df.columns:
+        raise KeyError("P13 per_sample_eval.csv is missing pmst_pred for Tianji-driven VisCast")
+    out = eval_df.copy()
+    out["tianji_driven_pred"] = pd.to_numeric(out["pmst_pred"], errors="coerce")
+    if "pmst_valid" in out.columns:
+        valid = out["pmst_valid"].astype(str).str.lower().isin({"true", "1", "yes"}).to_numpy(dtype=bool)
+    else:
+        valid = np.ones(len(out), dtype=bool)
+    out["tianji_driven_valid"] = valid & np.isfinite(out["tianji_driven_pred"].to_numpy(dtype=float))
+    if not bool(out["tianji_driven_valid"].any()):
+        raise ValueError("P13 main-model prediction has no finite Tianji-driven rows")
+    return out, {
+        "source": "eval_dir/per_sample_eval.csv",
+        "prediction_column": "pmst_pred",
+        "matched_rows": int(out["tianji_driven_valid"].sum()),
+        "total_event_eval_rows": int(len(out)),
+    }
 
 
 def main() -> None:
@@ -435,18 +494,19 @@ def main() -> None:
     source_model_metadata: Dict[str, object] = {}
     source_model_sources: List[str] = []
     if args.event_env_with_source_models:
-        if str(args.event_env_overlap_eval).strip():
-            source_eval_path = Path(args.event_env_overlap_eval).expanduser().resolve()
-        else:
-            source_candidates = [
-                eval_dir / "overlap_forecast_source" / "per_sample_paired_eval.csv",
-                base / "paper_eval_results_pm10_pm25_journal" / "overlap_forecast_source" / "per_sample_paired_eval.csv",
-            ]
-            source_eval_path = next((path for path in source_candidates if path.is_file()), source_candidates[-1])
+        eval_df, tianji_metadata = attach_main_tianji_predictions(eval_df)
+        if not str(args.event_env_overlap_eval).strip():
+            raise ValueError(
+                "--event_env_with_source_models requires --event_env_overlap_eval for the "
+                "IFS-driven column. No historical fallback is allowed because the paired "
+                "artifact must be generated from the exact P13 observed sample table."
+            )
+        source_eval_path = Path(args.event_env_overlap_eval).expanduser().resolve()
         eval_df, source_model_sources, source_model_metadata = attach_overlap_source_predictions(
             eval_df,
             source_eval_path,
         )
+        source_model_metadata["tianji_driven"] = tianji_metadata
 
     pangu_metadata: Dict[str, object] = {}
     pangu_sources: List[str] = []
