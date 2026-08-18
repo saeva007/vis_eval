@@ -1676,31 +1676,23 @@ def _draw_grid_panel(
     draw_boundary(ax, shp_gdf, color="#1F2933", linewidth=0.50, zorder=7)
 
 
-def _event_lowvis_csi_pair(sub: pd.DataFrame) -> Tuple[float, float, float]:
-    """Return VisCast/Pangu/IFS Low-vis CSI on matched station subsets.
+def _event_lowvis_csi_values(sub: pd.DataFrame) -> Dict[str, float]:
+    """Return Low-vis CSI for the displayed diagnostic and source models."""
 
-    Low visibility is the binary event ``visibility < 1000 m``.  VisCast and the
-    IFS diagnostic are scored only where the observation and IFS diagnostic are
-    both valid so that the two bars cannot differ because of sample coverage.
-    Pangu is scored on the intersection of that subset and valid Pangu rows.
-    """
-
-    required = {"vis_raw_m", "pmst_pred", "ifs_diagnostic_vis_m"}
+    values = {"ifs_diagnostic": math.nan, "ifs_driven": math.nan, "pangu": math.nan, "tianji": math.nan}
+    required = {"vis_raw_m", "ifs_diagnostic_vis_m"}
     if sub.empty or not required.issubset(sub.columns):
-        return math.nan, math.nan, math.nan
+        return values
 
     obs = pd.to_numeric(sub["vis_raw_m"], errors="coerce").to_numpy(dtype=float)
-    pmst = pd.to_numeric(sub["pmst_pred"], errors="coerce").to_numpy(dtype=float)
     ifs_vis = pd.to_numeric(sub["ifs_diagnostic_vis_m"], errors="coerce").to_numpy(dtype=float)
-    valid = np.isfinite(obs) & np.isfinite(pmst) & np.isfinite(ifs_vis) & (obs >= 0.0) & (ifs_vis >= 0.0)
+    valid = np.isfinite(obs) & np.isfinite(ifs_vis) & (obs >= 0.0) & (ifs_vis >= 0.0)
     if "ifs_diagnostic_valid" in sub.columns:
         valid &= sub["ifs_diagnostic_valid"].fillna(False).astype(bool).to_numpy()
     if not bool(valid.any()):
-        return math.nan, math.nan, math.nan
+        return values
 
     truth = obs[valid] < 1000.0
-    pmst_event = pmst[valid].astype(int) != 2
-    ifs_event = ifs_vis[valid] < 1000.0
 
     def _csi(truth_values: np.ndarray, pred_event: np.ndarray) -> float:
         hits = int(np.count_nonzero(truth_values & pred_event))
@@ -1709,31 +1701,39 @@ def _event_lowvis_csi_pair(sub: pd.DataFrame) -> Tuple[float, float, float]:
         denominator = hits + misses + false_alarms
         return float(hits / denominator) if denominator > 0 else math.nan
 
-    pangu_csi = math.nan
-    if {"pangu_pred", "pangu_valid"}.issubset(sub.columns):
-        pangu = pd.to_numeric(sub["pangu_pred"], errors="coerce").to_numpy(dtype=float)
-        pangu_valid = sub["pangu_valid"].fillna(False).astype(bool).to_numpy()
-        pangu_mask = valid & np.isfinite(pangu) & pangu_valid
-        if bool(pangu_mask.any()):
-            pangu_truth = obs[pangu_mask] < 1000.0
-            pangu_event = pangu[pangu_mask].astype(int) != 2
-            pangu_csi = _csi(pangu_truth, pangu_event)
-
-    return _csi(truth, pmst_event), pangu_csi, _csi(truth, ifs_event)
+    values["ifs_diagnostic"] = _csi(truth, ifs_vis[valid] < 1000.0)
+    model_specs = {
+        "ifs_driven": ("ifs_driven_pred", "ifs_driven_valid"),
+        "pangu": ("pangu_pred", "pangu_valid"),
+        "tianji": ("tianji_driven_pred", "tianji_driven_valid"),
+    }
+    if "tianji_driven_pred" not in sub.columns and "pmst_pred" in sub.columns:
+        model_specs["tianji"] = ("pmst_pred", "pmst_valid")
+    for name, (pred_col, valid_col) in model_specs.items():
+        if pred_col not in sub.columns:
+            continue
+        pred = pd.to_numeric(sub[pred_col], errors="coerce").to_numpy(dtype=float)
+        mask = valid & np.isfinite(pred)
+        if valid_col in sub.columns:
+            mask &= sub[valid_col].fillna(False).astype(bool).to_numpy()
+        if bool(mask.any()):
+            values[name] = _csi(obs[mask] < 1000.0, pred[mask].astype(int) != 2)
+    return values
 
 
 def _draw_event_lowvis_csi_panel(
     ax,
-    pmst_csi: float,
-    pangu_csi: float,
-    ifs_csi: float,
+    csi_values: Dict[str, float],
     show_xaxis: bool,
 ) -> None:
     """Draw a compact, directly labelled CSI comparison for one valid hour."""
 
-    viscast_color = "#1769AA"
-    pangu_color = "#8E6BBE"
-    ifs_color = "#6B7280"
+    csi_specs = [
+        ("ifs_diagnostic", "IFS diagnostic", "#6B7280"),
+        ("ifs_driven", "IFS-driven", "#2A9D8F"),
+        ("pangu", "Pangu", "#8E6BBE"),
+        ("tianji", "Tianji-driven", "#2E5A87"),
+    ]
     csi_axis_max = 0.5
     label_offset = 0.035 * csi_axis_max
     ax.set_xlim(0.0, csi_axis_max)
@@ -1747,7 +1747,7 @@ def _draw_event_lowvis_csi_panel(
     ax.spines["bottom"].set_color("#CBD1D8")
     ax.spines["bottom"].set_linewidth(0.6)
 
-    bar_height = 0.26
+    bar_height = 0.18
 
     def _draw_bar(value: float, y: float, color: str) -> None:
         if not np.isfinite(value):
@@ -1777,14 +1777,12 @@ def _draw_event_lowvis_csi_panel(
             zorder=3,
         )
 
-    if np.isfinite(pangu_csi):
-        _draw_bar(pmst_csi, 0.76, viscast_color)
-        _draw_bar(pangu_csi, 0.50, pangu_color)
-        _draw_bar(ifs_csi, 0.24, ifs_color)
+    finite_specs = [(key, label, color) for key, label, color in csi_specs if np.isfinite(csi_values.get(key, math.nan))]
+    if finite_specs:
+        y_positions = np.linspace(0.84, 0.16, len(finite_specs))
+        for (key, _label, color), y in zip(finite_specs, y_positions):
+            _draw_bar(csi_values[key], float(y), color)
     else:
-        _draw_bar(pmst_csi, 0.70, viscast_color)
-        _draw_bar(ifs_csi, 0.27, ifs_color)
-    if not any(np.isfinite(value) for value in (pmst_csi, pangu_csi, ifs_csi)):
         ax.text(0.50, 0.50, "No matched data", transform=ax.transAxes, ha="center", va="center", fontsize=7.5, color="#6B7280")
 
     if show_xaxis:
@@ -1832,6 +1830,20 @@ def plot_event_environment_grid(
     fig_h = max(7.2, 1.18 * nrows + 1.25)
     include_csi = bool(getattr(args, "event_env_include_csi", False))
     include_pangu = bool(getattr(args, "event_env_with_pangu", False))
+    include_source_models = bool(getattr(args, "event_env_with_source_models", False))
+    if include_source_models:
+        required_source_columns = {
+            "ifs_driven_pred",
+            "ifs_driven_valid",
+            "tianji_driven_pred",
+            "tianji_driven_valid",
+        }
+        missing_source_columns = sorted(required_source_columns.difference(df.columns))
+        if missing_source_columns:
+            raise ValueError(
+                "IFS/Tianji source columns requested but missing: "
+                + ", ".join(missing_source_columns)
+            )
     if include_pangu:
         required_pangu_columns = {"pangu_pred", "pangu_valid"}
         missing_pangu_columns = sorted(required_pangu_columns.difference(df.columns))
@@ -1842,16 +1854,27 @@ def plot_event_environment_grid(
             )
 
     col_obs = 0
-    col_viscast = 1
-    col_pangu = 2 if include_pangu else None
-    col_ifs = 3 if include_pangu else 2
-    col_csi = col_ifs + 1 if include_csi else None
-    ncols = col_ifs + 1 + int(include_csi)
-    width_ratios = [1.0] * (col_ifs + 1) + ([0.82] if include_csi else [])
-    if include_pangu:
-        fig_width = 15.15 if include_csi else 13.65
+    col_ifs_diag = 1
+    col_viscast = None
+    col_ifs_driven = None
+    col_pangu = None
+    col_tianji = None
+    if include_source_models:
+        col_ifs_driven = 2
+        col_pangu = 3 if include_pangu else None
+        col_tianji = 4 if include_pangu else 3
+        col_csi = col_tianji + 1 if include_csi else None
+        ncols = col_tianji + 1 + int(include_csi)
+        width_ratios = [1.0] * (col_tianji + 1) + ([0.82] if include_csi else [])
+        fig_width = 18.0 if include_csi else 16.0
     else:
-        fig_width = 13.15 if include_csi else 11.65
+        col_viscast = 1
+        col_pangu = 2 if include_pangu else None
+        col_ifs_diag = 3 if include_pangu else 2
+        col_csi = col_ifs_diag + 1 if include_csi else None
+        ncols = col_ifs_diag + 1 + int(include_csi)
+        width_ratios = [1.0] * (col_ifs_diag + 1) + ([0.82] if include_csi else [])
+        fig_width = 15.15 if include_pangu and include_csi else 13.15 if include_csi else 13.65 if include_pangu else 11.65
     fig, axes = plt.subplots(
         nrows,
         ncols,
@@ -1859,17 +1882,27 @@ def plot_event_environment_grid(
         squeeze=False,
         gridspec_kw={"width_ratios": width_ratios},
     )
-    col_titles = [
-        "Observed visibility",
-        "VisCast forecast",
-    ]
-    if include_pangu:
-        col_titles.append("Pangu-driven VisCast")
-    col_titles.append("IFS diagnostic VIS")
+    if include_source_models:
+        col_titles = [
+            "Observed visibility",
+            "IFS diagnostic VIS",
+            "IFS-driven VisCast",
+        ]
+        if include_pangu:
+            col_titles.append("Pangu-driven VisCast")
+        col_titles.append("Tianji-driven VisCast")
+    else:
+        col_titles = [
+            "Observed visibility",
+            "VisCast forecast",
+        ]
+        if include_pangu:
+            col_titles.append("Pangu-driven VisCast")
+        col_titles.append("IFS diagnostic VIS")
     if include_csi:
         col_titles.append("Low-vis CSI (<1 km)")
     for j, title in enumerate(col_titles):
-        title_size = 10.5 if include_pangu and j == col_pangu else 12.5
+        title_size = 10.2 if "driven" in title.lower() else 12.5
         axes[0, j].set_title(title, fontsize=title_size, fontweight="bold", pad=4)
     for ax in axes.flat:
         ax.grid(False)
@@ -1891,19 +1924,8 @@ def plot_event_environment_grid(
             linespacing=1.08,
         )
         _draw_visibility_class_panel(axes[row_idx, col_obs], sub, "vis_raw_m", shp_gdf, extent=focus_extent, context_df=station_context)
-        _draw_visibility_class_panel(axes[row_idx, col_viscast], sub, "pmst_pred", shp_gdf, extent=focus_extent, context_df=station_context)
-        if include_pangu and col_pangu is not None:
-            _draw_visibility_class_panel(
-                axes[row_idx, col_pangu],
-                sub,
-                "pangu_pred",
-                shp_gdf,
-                valid_col="pangu_valid",
-                extent=focus_extent,
-                context_df=station_context,
-            )
         _draw_visibility_class_panel(
-            axes[row_idx, col_ifs],
+            axes[row_idx, col_ifs_diag],
             sub,
             "ifs_diagnostic_vis_m",
             shp_gdf,
@@ -1911,13 +1933,51 @@ def plot_event_environment_grid(
             extent=focus_extent,
             context_df=station_context,
         )
+        if include_source_models:
+            _draw_visibility_class_panel(
+                axes[row_idx, col_ifs_driven],
+                sub,
+                "ifs_driven_pred",
+                shp_gdf,
+                valid_col="ifs_driven_valid",
+                extent=focus_extent,
+                context_df=station_context,
+            )
+            if include_pangu and col_pangu is not None:
+                _draw_visibility_class_panel(
+                    axes[row_idx, col_pangu],
+                    sub,
+                    "pangu_pred",
+                    shp_gdf,
+                    valid_col="pangu_valid",
+                    extent=focus_extent,
+                    context_df=station_context,
+                )
+            _draw_visibility_class_panel(
+                axes[row_idx, col_tianji],
+                sub,
+                "tianji_driven_pred",
+                shp_gdf,
+                valid_col="tianji_driven_valid",
+                extent=focus_extent,
+                context_df=station_context,
+            )
+        else:
+            _draw_visibility_class_panel(axes[row_idx, col_viscast], sub, "pmst_pred", shp_gdf, extent=focus_extent, context_df=station_context)
+            if include_pangu and col_pangu is not None:
+                _draw_visibility_class_panel(
+                    axes[row_idx, col_pangu],
+                    sub,
+                    "pangu_pred",
+                    shp_gdf,
+                    valid_col="pangu_valid",
+                    extent=focus_extent,
+                    context_df=station_context,
+                )
         if include_csi and col_csi is not None:
-            pmst_csi, pangu_csi, ifs_csi = _event_lowvis_csi_pair(sub)
             _draw_event_lowvis_csi_panel(
                 axes[row_idx, col_csi],
-                pmst_csi,
-                pangu_csi,
-                ifs_csi,
+                _event_lowvis_csi_values(sub),
                 show_xaxis=(row_idx == nrows - 1),
             )
 
@@ -1935,18 +1995,23 @@ def plot_event_environment_grid(
         right = axes[-1, col1].get_position().x1
         return [left, y, right - left, height]
 
-    _draw_visibility_category_legend(fig.add_axes(cbar_span(col_obs, col_ifs, y=0.035, height=0.092)))
+    legend_end = col_tianji if include_source_models else col_ifs_diag
+    _draw_visibility_category_legend(fig.add_axes(cbar_span(col_obs, legend_end, y=0.035, height=0.092)))
     if include_csi and col_csi is not None:
         pooled = df[df["time"].isin(set(pd.DatetimeIndex(event_times)))].copy()
-        pooled_pmst_csi, pooled_pangu_csi, pooled_ifs_csi = _event_lowvis_csi_pair(pooled)
+        pooled_csi = _event_lowvis_csi_values(pooled)
         csi_pos = cbar_span(col_csi, col_csi, y=0.038, height=0.090)
         csi_legend_ax = fig.add_axes(csi_pos)
         csi_legend_ax.axis("off")
-        csi_legend_rows = [(0.80, "VisCast", pooled_pmst_csi, "#1769AA")]
-        if include_pangu:
-            csi_legend_rows.append((0.50, "Pangu", pooled_pangu_csi, "#8E6BBE"))
-        csi_legend_rows.append((0.20, "IFS", pooled_ifs_csi, "#6B7280"))
-        for y, label, value, color in csi_legend_rows:
+        csi_legend_rows = [
+            ("ifs_diagnostic", "IFS diagnostic", "#6B7280"),
+            ("ifs_driven", "IFS-driven", "#2A9D8F"),
+            ("pangu", "Pangu-driven", "#8E6BBE"),
+            ("tianji", "Tianji-driven", "#2E5A87"),
+        ]
+        y_positions = np.linspace(0.86, 0.14, len(csi_legend_rows))
+        for (key, label, color), y in zip(csi_legend_rows, y_positions):
+            value = pooled_csi.get(key, math.nan)
             csi_legend_ax.text(0.00, y, label, color=color, fontsize=8.0, fontweight="bold", ha="left", va="center")
             if np.isfinite(value):
                 csi_legend_ax.text(0.43, y, f"pooled {value:.2f}", color=color, fontsize=7.3, ha="left", va="center")
@@ -1969,14 +2034,15 @@ def plot_event_environment_grid(
         notes=(
             "Rows are UTC hours around the selected widespread Low-vis event. "
             + (
-                "The first four columns use shared Ultra-low/Moderate-low/Clear categories; the VisCast and "
-                "Pangu-driven VisCast panels are categorical. Pangu-driven VisCast is obtained by argmax after "
+                "The columns are Observation, IFS diagnostic, IFS-driven VisCast, "
+                "Pangu-driven VisCast, and Tianji-driven VisCast; all map panels use shared "
+                "Ultra-low/Moderate-low/Clear categories. Pangu-driven VisCast is obtained by argmax after "
                 "equal-weight averaging of class probabilities across the configured formal seeds. "
                 if include_pangu
-                else "The first three columns use shared Ultra-low/Moderate-low/Clear categories; the VisCast panel is categorical. "
+                else "The event maps use shared Ultra-low/Moderate-low/Clear categories. "
             )
             + (
-                "The final column reports binary Low-vis CSI for visibility <1000 m; VisCast and IFS use the identical "
+                "The final column reports binary Low-vis CSI for visibility <1000 m on the shared "
                 "IFS-diagnostic-valid station subset within each hour."
                 if include_csi
                 else ""

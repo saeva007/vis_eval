@@ -69,6 +69,11 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     p.add_argument(
+        "--environment_grids_only",
+        action="store_true",
+        help="Draw only all selected 7-hour event-environment grids; skip every other event figure.",
+    )
+    p.add_argument(
         "--environment_event_rank",
         type=int,
         default=1,
@@ -83,6 +88,16 @@ def parse_args() -> argparse.Namespace:
         "--event_env_with_pangu",
         action="store_true",
         help="Draw an additional event-grid version with Pangu-driven VisCast predictions.",
+    )
+    p.add_argument(
+        "--event_env_with_source_models",
+        action="store_true",
+        help="Attach IFS-driven and Tianji-driven VisCast predictions from paired overlap evaluation.",
+    )
+    p.add_argument(
+        "--event_env_overlap_eval",
+        default="",
+        help="Optional per_sample_paired_eval.csv; defaults to <eval_dir>/overlap_forecast_source/.",
     )
     p.add_argument(
         "--event_env_pangu_eval_root",
@@ -340,6 +355,54 @@ def attach_pangu_seed_mean_predictions(
     return out, source_paths, metadata
 
 
+def attach_overlap_source_predictions(
+    eval_df: pd.DataFrame,
+    source_path: Path,
+) -> tuple[pd.DataFrame, List[str], Dict[str, object]]:
+    """Attach paired IFS-driven and Tianji-driven VisCast predictions."""
+
+    if not source_path.is_file():
+        raise FileNotFoundError(f"Missing paired source evaluation: {source_path}")
+    frame = pd.read_csv(source_path)
+    required = {"time", "station_id", "tianji_pred", "ifs_pred"}
+    missing = sorted(required - set(frame.columns))
+    if missing:
+        raise KeyError(f"{source_path}: missing required columns {missing}")
+    time = pd.to_datetime(frame["time"], errors="coerce", utc=True).dt.tz_convert(None).dt.floor("h")
+    if time.isna().any():
+        raise ValueError(f"{source_path}: invalid event timestamps")
+    table = pd.DataFrame(
+        {
+            "time": time,
+            "station_key": normalize_station_key(frame["station_id"]),
+            "tianji_driven_pred": pd.to_numeric(frame["tianji_pred"], errors="coerce"),
+            "ifs_driven_pred": pd.to_numeric(frame["ifs_pred"], errors="coerce"),
+        }
+    )
+    if table[["time", "station_key"]].duplicated().any():
+        raise ValueError(f"{source_path}: duplicate (time, station_id) rows")
+    out = eval_df.copy()
+    out["station_key"] = normalize_station_key(out["station_id"])
+    out = out.merge(
+        table,
+        on=["time", "station_key"],
+        how="left",
+        validate="many_to_one",
+    )
+    out["tianji_driven_valid"] = np.isfinite(out["tianji_driven_pred"].to_numpy(dtype=float))
+    out["ifs_driven_valid"] = np.isfinite(out["ifs_driven_pred"].to_numpy(dtype=float))
+    matched = int(np.count_nonzero(out["tianji_driven_valid"] & out["ifs_driven_valid"]))
+    if matched == 0:
+        raise ValueError("Paired IFS/Tianji predictions do not overlap the event-evaluation sample table")
+    metadata = {
+        "source_path": str(source_path),
+        "matched_rows": matched,
+        "total_event_eval_rows": int(len(out)),
+        "prediction_columns": {"ifs": "ifs_pred", "tianji": "tianji_pred"},
+    }
+    return out, [str(source_path)], metadata
+
+
 def main() -> None:
     args = parse_args()
     if args.event_window_hours is None:
@@ -369,6 +432,19 @@ def main() -> None:
             event_df = sort_events_chronologically(event_df)
     event_df.to_csv(out_dir / "event_case_summary.csv", index=False)
 
+    source_model_metadata: Dict[str, object] = {}
+    source_model_sources: List[str] = []
+    if args.event_env_with_source_models:
+        source_eval_path = (
+            Path(args.event_env_overlap_eval).expanduser().resolve()
+            if str(args.event_env_overlap_eval).strip()
+            else eval_dir / "overlap_forecast_source" / "per_sample_paired_eval.csv"
+        )
+        eval_df, source_model_sources, source_model_metadata = attach_overlap_source_predictions(
+            eval_df,
+            source_eval_path,
+        )
+
     pangu_metadata: Dict[str, object] = {}
     pangu_sources: List[str] = []
     if args.event_env_with_pangu:
@@ -397,7 +473,7 @@ def main() -> None:
         sources = [
             str(eval_dir / "per_sample_eval.csv"),
             str(out_dir / "event_case_summary.csv"),
-        ] + pangu_sources
+        ] + source_model_sources + pangu_sources
         journal.plot_event_environment_grid(
             args,
             base,
@@ -417,6 +493,8 @@ def main() -> None:
             "environment_event_rank": int(args.environment_event_rank),
             "window_hours": int(args.window_hours),
             "event_env_include_csi": bool(args.event_env_include_csi),
+            "event_env_with_source_models": bool(args.event_env_with_source_models),
+            "source_model_prediction_source": source_model_metadata,
             "event_env_with_pangu": bool(args.event_env_with_pangu),
             "pangu_prediction_source": pangu_metadata,
         }
@@ -431,13 +509,51 @@ def main() -> None:
         )
         return
 
+    if args.environment_grids_only:
+        shp_gdf = journal.read_shapefile(args.shp_path) if args.shp_path else None
+        manifest = journal.Manifest(out_dir)
+        sources = [
+            str(eval_dir / "per_sample_eval.csv"),
+            str(out_dir / "event_case_summary.csv"),
+        ] + source_model_sources + pangu_sources
+        journal.plot_event_environment_grids(
+            args,
+            base,
+            eval_df,
+            event_df,
+            out_dir,
+            manifest,
+            sources,
+            shp_gdf=shp_gdf,
+        )
+        manifest.write()
+        run_config = {
+            "eval_dir": str(eval_dir),
+            "out_dir": str(out_dir),
+            "base": str(base),
+            "environment_grids_only": True,
+            "event_env_max_events": int(args.event_env_max_events),
+            "window_hours": int(args.window_hours),
+            "event_env_include_csi": bool(args.event_env_include_csi),
+            "event_env_with_source_models": bool(args.event_env_with_source_models),
+            "source_model_prediction_source": source_model_metadata,
+            "event_env_with_pangu": bool(args.event_env_with_pangu),
+            "pangu_prediction_source": pangu_metadata,
+        }
+        (out_dir / "event_rerun_config.json").write_text(
+            json.dumps(run_config, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"[event] 7-hour environment grids complete: out={out_dir}", flush=True)
+        return
+
     meta, y_cls, y_raw, pmst_pred, ifs_pred, ifs_valid = arrays_from_eval(eval_df)
     shp_gdf = journal.read_shapefile(args.shp_path) if args.shp_path else None
     manifest = journal.Manifest(out_dir)
     sources = [
         str(eval_dir / "per_sample_eval.csv"),
         str(out_dir / "event_case_summary.csv"),
-    ] + pangu_sources
+    ] + source_model_sources + pangu_sources
 
     summary_rows: List[dict] = []
     event_df_top = sort_events_chronologically(event_df).head(3).copy()
@@ -522,6 +638,8 @@ def main() -> None:
         "event_env_source": str(args.event_env_source),
         "event_env_max_events": int(args.event_env_max_events),
         "event_env_include_csi": bool(args.event_env_include_csi),
+        "event_env_with_source_models": bool(args.event_env_with_source_models),
+        "source_model_prediction_source": source_model_metadata,
         "event_env_with_pangu": bool(args.event_env_with_pangu),
         "pangu_prediction_source": pangu_metadata,
     }
