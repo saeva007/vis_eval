@@ -2307,7 +2307,7 @@ def plot_event_peak_grid(
     n_cols = len(events)
     if n_cols == 0:
         return
-    fig, axes = plt.subplots(3, n_cols, figsize=(3.65 * n_cols, 9.2), squeeze=False)
+    fig, axes = plt.subplots(3, n_cols, figsize=(4.3 * n_cols, 9.6), squeeze=False)
     row_specs = [
         ("Observed class", "y_true"),
         ("PMST", "pmst_pred"),
@@ -2350,7 +2350,7 @@ def plot_event_peak_grid(
                 ax.text(-0.18, 0.5, row_label, transform=ax.transAxes, rotation=90, va="center", ha="center", fontsize=13, fontweight="bold")
     handles = [Patch(facecolor=CLASS_COLORS[i], edgecolor=CLASS_EDGE_COLOR, linewidth=0.45, label=CLASS_NAMES[i]) for i in range(3)]
     fig.legend(handles=handles, loc="lower center", ncol=3, frameon=False)
-    finish_figure_layout(fig, rect=(0.02, 0.09, 0.98, 0.98), h_pad=1.1, w_pad=0.25)
+    finish_figure_layout(fig, rect=(0.02, 0.09, 0.98, 0.98), h_pad=1.1, w_pad=0.7)
     save_fig_pair(
         fig,
         out_dir,

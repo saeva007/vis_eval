@@ -1156,8 +1156,8 @@ def plot_three_events_footprint_row(
     vis_cmap = build_event_visibility_cmap()
     vis_mappable = None
 
-    fig = plt.figure(figsize=(max(13.0, n_h * n_ev * 0.78), 7.2))
-    gs_outer = fig.add_gridspec(1, n_ev, wspace=0.08, left=0.04, right=0.98, top=0.82, bottom=0.24)
+    fig = plt.figure(figsize=(max(15.0, n_h * n_ev * 0.98), 7.2))
+    gs_outer = fig.add_gridspec(1, n_ev, wspace=0.26, left=0.04, right=0.98, top=0.82, bottom=0.24)
 
     for ei, (_, er) in enumerate(event_df.iterrows()):
         center_time = pd.Timestamp(er["peak_time"])
@@ -1233,7 +1233,7 @@ def plot_three_events_footprint_row(
     fig.text(0.02, 0.22, "VisCast\n(3-class)", rotation=90, va="center", ha="center", fontsize=12, fontweight="600")
 
     if vis_mappable is not None:
-        cax = fig.add_axes([0.20, 0.155, 0.60, 0.026])
+        cax = fig.add_axes([0.24, 0.155, 0.52, 0.026])
         cb = fig.colorbar(vis_mappable, cax=cax, orientation="horizontal")
         cb.set_ticks([VIS_MIN_EVENT, 500.0, 1000.0, VIS_MAX_EVENT])
         cb.set_ticklabels(["50", "500", "1000", "2000"])
@@ -1283,7 +1283,7 @@ def plot_three_events_peak_row(
     vis_cmap = build_event_visibility_cmap()
     vis_mappable = None
 
-    fig, axes = plt.subplots(1, 3, figsize=(12.4, 5.6), constrained_layout=False)
+    fig, axes = plt.subplots(1, 3, figsize=(14.8, 5.8), constrained_layout=False)
     axes = np.atleast_1d(axes).ravel()
 
     for ax, (_, er) in zip(axes, event_df.iterrows()):
@@ -1315,7 +1315,7 @@ def plot_three_events_peak_row(
             ax.set_xlabel(
                 "VisCast peak counts\n"
                 f"Ultra-low={(pmst == 0).sum()} | Moderate-low={(pmst == 1).sum()} | Clear={(pmst == 2).sum()}",
-                fontsize=9.5,
+                fontsize=10,
                 color="#4b5563",
                 linespacing=1.15,
             )
@@ -1329,9 +1329,9 @@ def plot_three_events_peak_row(
 
     # A manually placed colorbar is part of this fixed three-panel layout;
     # keep all subplot geometry explicit rather than invoking tight_layout.
-    fig.subplots_adjust(left=0.04, right=0.98, top=0.80, bottom=0.30, wspace=0.05)
+    fig.subplots_adjust(left=0.04, right=0.98, top=0.80, bottom=0.30, wspace=0.10)
     if vis_mappable is not None:
-        cax = fig.add_axes([0.16, 0.07, 0.68, 0.03])
+        cax = fig.add_axes([0.2, 0.07, 0.6, 0.03])
         cb = fig.colorbar(vis_mappable, cax=cax, orientation="horizontal")
         cb.set_ticks([VIS_MIN_EVENT, 500.0, 1000.0, VIS_MAX_EVENT])
         cb.set_ticklabels(["50", "500", "1000", "2000"])
