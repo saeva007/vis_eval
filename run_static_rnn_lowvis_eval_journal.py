@@ -1803,6 +1803,8 @@ def plot_event_environment_grid(
     manifest: Manifest,
     sources: Sequence[str],
     shp_gdf=None,
+    row_offsets: Optional[Sequence[int]] = None,
+    stem_suffix: str = "",
 ) -> None:
     if str(getattr(args, "event_env_source", "grid")).lower() == "none":
         return
@@ -1812,7 +1814,10 @@ def plot_event_environment_grid(
     # journal-style Cartesian grid lines must not leak into any panel.
     plt.rcParams["axes.grid"] = False
     center_time = _event_timestamp(event_row["peak_time"])
-    offsets = list(range(-int(args.event_window_hours), int(args.event_window_hours) + 1))
+    if row_offsets is None:
+        offsets = list(range(-int(args.event_window_hours), int(args.event_window_hours) + 1))
+    else:
+        offsets = [int(value) for value in row_offsets]
     event_times = [center_time + pd.Timedelta(hours=h) for h in offsets]
 
     df = eval_df.copy()
@@ -1987,7 +1992,7 @@ def plot_event_environment_grid(
     rank = int(event_row.get("event_rank", 1))
     title = f"{center_time:%Y-%m-%d %H:00 UTC}"
     fig.suptitle(title, x=0.5, y=0.988, fontsize=14, fontweight="bold")
-    fig.subplots_adjust(left=0.077, right=0.994, top=0.94, bottom=0.14, wspace=0.025, hspace=0.035)
+    fig.subplots_adjust(left=0.077, right=0.994, top=0.94, bottom=0.14, wspace=0.012, hspace=0.035)
     fig.canvas.draw()
 
     cbar_y = 0.065
@@ -2000,30 +2005,12 @@ def plot_event_environment_grid(
 
     legend_end = col_tianji if include_source_models else col_ifs_diag
     _draw_visibility_category_legend(fig.add_axes(cbar_span(col_obs, legend_end, y=0.035, height=0.092)))
-    if include_csi and col_csi is not None:
-        pooled = df[df["time"].isin(set(pd.DatetimeIndex(event_times)))].copy()
-        pooled_csi = _event_lowvis_csi_values(pooled)
-        csi_pos = cbar_span(col_csi, col_csi, y=0.038, height=0.090)
-        csi_legend_ax = fig.add_axes(csi_pos)
-        csi_legend_ax.axis("off")
-        csi_legend_rows = [
-            ("ifs_diagnostic", "IFS diagnostic", "#6B7280"),
-            ("ifs_driven", "IFS-driven", "#2A9D8F"),
-            ("pangu", "Pangu-driven", "#8E6BBE"),
-            ("tianji", "Tianji-driven", "#2E5A87"),
-        ]
-        y_positions = np.linspace(0.86, 0.14, len(csi_legend_rows))
-        for (key, label, color), y in zip(csi_legend_rows, y_positions):
-            value = pooled_csi.get(key, math.nan)
-            csi_legend_ax.text(0.00, y, label, color=color, fontsize=8.0, fontweight="bold", ha="left", va="center")
-            if np.isfinite(value):
-                csi_legend_ax.text(0.43, y, f"pooled {value:.2f}", color=color, fontsize=7.3, ha="left", va="center")
-
-    figure_stem = (
+    base_stem = (
         f"fig9_event_{rank}_environment_grid_with_pangu"
         if include_pangu
         else f"fig9_event_{rank}_environment_grid"
     )
+    figure_stem = f"{base_stem}{stem_suffix}"
     if rank > 1:
         (out_dir / "supplementary").mkdir(parents=True, exist_ok=True)
         figure_stem = f"supplementary/{figure_stem}"
@@ -2078,11 +2065,29 @@ def plot_event_environment_grids(
         events = events.sort_values("__peak_time_sort").drop(columns=["__peak_time_sort"]).head(max_events).reset_index(drop=True)
         events["event_rank"] = np.arange(1, len(events) + 1)
     for _, event_row in events.iterrows():
-        try:
-            plot_event_environment_grid(args, base, eval_df, event_row, out_dir, manifest, sources, shp_gdf=shp_gdf)
-        except Exception as exc:
-            rank = event_row.get("event_rank", "?")
-            print(f"[events] environment grid failed for event {rank}: {exc}", flush=True)
+        for row_offsets, stem_suffix in (
+            (None, ""),
+            ([-3, 0, 3], "_3rows"),
+        ):
+            try:
+                plot_event_environment_grid(
+                    args,
+                    base,
+                    eval_df,
+                    event_row,
+                    out_dir,
+                    manifest,
+                    sources,
+                    shp_gdf=shp_gdf,
+                    row_offsets=row_offsets,
+                    stem_suffix=stem_suffix,
+                )
+            except Exception as exc:
+                rank = event_row.get("event_rank", "?")
+                print(
+                    f"[events] environment grid failed for event {rank}{stem_suffix}: {exc}",
+                    flush=True,
+                )
 
 
 def run_event_plots(
