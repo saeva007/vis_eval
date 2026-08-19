@@ -1832,9 +1832,6 @@ def plot_event_environment_grid(
             station_context = station_context.drop_duplicates(["lon", "lat"])
 
     nrows = len(event_times)
-    # Size rows from the event's actual map extent so the equal-aspect map
-    # boxes fill their cells; otherwise the boxes shrink and leave uneven
-    # whitespace between rows/columns regardless of wspace/hspace.
     map_col_width = 1.55
     if focus_extent is not None:
         lon_span = max(float(focus_extent[1] - focus_extent[0]), 1e-6)
@@ -1844,9 +1841,6 @@ def plot_event_environment_grid(
         data_aspect = max(0.45, min(2.2, lon_span / lat_span))
     else:
         data_aspect = 1.35
-    row_height = map_col_width / data_aspect
-    fig_h = (nrows * row_height + (nrows - 1) * 0.04 * row_height) / (0.94 - 0.14)
-    fig_h = max(4.2, fig_h)
     include_csi = bool(getattr(args, "event_env_include_csi", False))
     include_pangu = bool(getattr(args, "event_env_with_pangu", False))
     include_source_models = bool(getattr(args, "event_env_with_source_models", False))
@@ -1896,6 +1890,16 @@ def plot_event_environment_grid(
     # fixed by the number of hourly rows), so the equal-aspect maps fill their
     # cells instead of leaving wide horizontal gaps between columns.
     fig_width = (sum(width_ratios) * map_col_width) / (0.994 - 0.077)
+    # The column gaps consume part of the axes width, so derive the row height
+    # from the width actually allocated to one map column.  This keeps the
+    # equal-aspect map boxes and the CSI panels exactly the same height.
+    mean_ratio = sum(width_ratios) / len(width_ratios)
+    unit_width = fig_width * (0.994 - 0.077) / (
+        sum(width_ratios) + 0.14 * (len(width_ratios) - 1) * mean_ratio
+    )
+    row_height = unit_width / data_aspect
+    fig_h = (nrows * row_height + (nrows - 1) * 0.02 * row_height) / (0.94 - 0.14)
+    fig_h = max(4.2, fig_h)
     fig, axes = plt.subplots(
         nrows,
         ncols,
@@ -2027,12 +2031,12 @@ def plot_event_environment_grid(
             ("pangu", "Pangu-driven", "#8E6BBE"),
             ("tianji", "Tianji-driven", "#2E5A87"),
         ]
-        y_positions = np.linspace(0.86, 0.14, len(csi_legend_rows))
+        y_positions = np.linspace(0.82, 0.10, len(csi_legend_rows))
         for (key, label, color), y in zip(csi_legend_rows, y_positions):
             csi_legend_ax.add_patch(
                 Rectangle(
                     (0.00, y - 0.055),
-                    0.055,
+                    0.075,
                     0.11,
                     transform=csi_legend_ax.transAxes,
                     facecolor=color,
@@ -2041,7 +2045,7 @@ def plot_event_environment_grid(
                 )
             )
             csi_legend_ax.text(
-                0.075,
+                0.105,
                 y,
                 label,
                 color="#1F2937",
