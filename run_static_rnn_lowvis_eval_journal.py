@@ -1898,7 +1898,8 @@ def plot_event_environment_grid(
         sum(width_ratios) + 0.14 * (len(width_ratios) - 1) * mean_ratio
     )
     row_height = unit_width / data_aspect
-    fig_h = (nrows * row_height + (nrows - 1) * 0.02 * row_height) / (0.94 - 0.14)
+    fig_h = (nrows * row_height + (nrows - 1) * 0.02 * row_height) / (0.955 - 0.18)
+    fig_h *= 1.05
     fig_h = max(4.2, fig_h)
     fig, axes = plt.subplots(
         nrows,
@@ -1933,9 +1934,7 @@ def plot_event_environment_grid(
 
     for row_idx, (offset, valid_time) in enumerate(zip(offsets, event_times)):
         sub = df[df["time"] == valid_time]
-        time_label = f"{offset:+d} h\n{valid_time:%m-%d %H:00}"
-        if offset == 0:
-            time_label = f"Peak\n{valid_time:%m-%d %H:00}"
+        time_label = "Peak" if offset == 0 else f"{offset:+d} h"
         axes[row_idx, col_obs].text(
             -0.075,
             0.5,
@@ -2008,7 +2007,7 @@ def plot_event_environment_grid(
     rank = int(event_row.get("event_rank", 1))
     title = f"{center_time:%Y-%m-%d %H:00 UTC}"
     fig.suptitle(title, x=0.5, y=0.988, fontsize=14, fontweight="bold")
-    fig.subplots_adjust(left=0.077, right=0.994, top=0.94, bottom=0.14, wspace=0.14, hspace=0.02)
+    fig.subplots_adjust(left=0.077, right=0.994, top=0.955, bottom=0.18, wspace=0.14, hspace=0.02)
     fig.canvas.draw()
 
     cbar_y = 0.065
