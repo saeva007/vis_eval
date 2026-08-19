@@ -1866,7 +1866,6 @@ def plot_event_environment_grid(
         col_csi = col_tianji + 1 if include_csi else None
         ncols = col_tianji + 1 + int(include_csi)
         width_ratios = [1.0] * (col_tianji + 1) + ([0.82] if include_csi else [])
-        fig_width = 18.0 if include_csi else 16.0
     else:
         col_viscast = 1
         col_pangu = 2 if include_pangu else None
@@ -1874,7 +1873,11 @@ def plot_event_environment_grid(
         col_csi = col_ifs_diag + 1 if include_csi else None
         ncols = col_ifs_diag + 1 + int(include_csi)
         width_ratios = [1.0] * (col_ifs_diag + 1) + ([0.82] if include_csi else [])
-        fig_width = 15.15 if include_pangu and include_csi else 13.15 if include_csi else 13.65 if include_pangu else 11.65
+    # Keep each map column close to the map's natural aspect (its height is
+    # fixed by the number of hourly rows), so the equal-aspect maps fill their
+    # cells instead of leaving wide horizontal gaps between columns.
+    map_col_width = 1.55
+    fig_width = (sum(width_ratios) * map_col_width) / (0.994 - 0.077)
     fig, axes = plt.subplots(
         nrows,
         ncols,
