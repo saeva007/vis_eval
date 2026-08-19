@@ -1910,8 +1910,7 @@ def plot_event_environment_grid(
     if include_csi:
         col_titles.append("Low-vis CSI (<1 km)")
     for j, title in enumerate(col_titles):
-        title_size = 10.2 if "driven" in title.lower() else 12.5
-        axes[0, j].set_title(title, fontsize=title_size, fontweight="bold", pad=4)
+        axes[0, j].set_title(title, fontsize=10.5, fontweight="bold", pad=4)
     for ax in axes.flat:
         ax.grid(False)
 
@@ -1992,7 +1991,7 @@ def plot_event_environment_grid(
     rank = int(event_row.get("event_rank", 1))
     title = f"{center_time:%Y-%m-%d %H:00 UTC}"
     fig.suptitle(title, x=0.5, y=0.988, fontsize=14, fontweight="bold")
-    fig.subplots_adjust(left=0.077, right=0.994, top=0.94, bottom=0.14, wspace=0.012, hspace=0.035)
+    fig.subplots_adjust(left=0.077, right=0.994, top=0.94, bottom=0.14, wspace=0.020, hspace=0.008)
     fig.canvas.draw()
 
     cbar_y = 0.065
