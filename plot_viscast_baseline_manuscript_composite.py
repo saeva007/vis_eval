@@ -312,19 +312,6 @@ def draw_station_map(
     cax.patch.set_alpha(0.97)
     better = int((values > 0).sum())
     worse = int((values < 0).sum())
-    ax.set_title("Station-level Low-vis recall difference", loc="left", fontweight="bold", pad=5)
-    ax.text(
-        0.015,
-        0.985,
-        f"VisCast better: {100 * better / len(source):.0f}%\nIFS better: {100 * worse / len(source):.0f}%\nmedian Δ={np.nanmedian(values):+.2f}",
-        transform=ax.transAxes,
-        ha="left",
-        va="top",
-        fontsize=7.5,
-        color="#1F2937",
-        bbox={"facecolor": "white", "edgecolor": "#B8B8B8", "linewidth": 0.35, "alpha": 0.88, "pad": 2.2},
-        zorder=8,
-    )
     hlo, hhi = nice_hist_limits(values, lim)
     bins = np.linspace(hlo, hhi, 18)
     density, edges = np.histogram(values, bins=bins, density=True)
@@ -347,7 +334,7 @@ def draw_station_map(
         spine.set_linewidth(0.55)
     cb = ax.figure.colorbar(sc, cax=cax, orientation="horizontal", extend="both")
     cb.set_label("")
-    cax.set_title("VisCast − IFS recall", fontsize=6.8, pad=1)
+    cax.set_title("Δ recall", fontsize=6.8, pad=1)
     cb.ax.tick_params(labelsize=6.8)
     return source
 
@@ -385,7 +372,7 @@ def draw_metric_pair(
     ax.bar(x + width / 2, ifs_values, width, color=IFS, label="IFS diagnostic VIS")
     ax.set_xticks(x, [label for _, label in specs])
     ax.set_ylim(0, 1.0)
-    ax.set_title(title, loc="left", fontweight="bold", pad=3)
+    ax.set_xlabel(f"{title} skill")
     ax.grid(False)
     if add_legend:
         ax.legend(loc="upper left", bbox_to_anchor=(0.0, 1.02), handlelength=1.3)
@@ -429,6 +416,13 @@ def lead_edges(leads: np.ndarray) -> np.ndarray:
 def draw_lead_heatmap(ax, cax, lead: pd.DataFrame) -> pd.DataFrame:
     lead_axis = "display_lead_hour" if "display_lead_hour" in lead.columns else "lead_hour"
     table = lead.copy().sort_values(lead_axis)
+    # The model consumes a t-11..t input window, so display leads 0-11 were
+    # filled from the previous initialization and are unreliable.  Start the
+    # manuscript heatmap at 12 h.
+    table[lead_axis] = pd.to_numeric(table[lead_axis], errors="coerce")
+    table = table[table[lead_axis] >= 12.0].copy()
+    if table.empty:
+        raise ValueError(f"{lead_axis} has no rows at or above 12 h")
     specs = [
         ("Fog_CSI", "Ultra-low CSI"),
         ("Mist_CSI", "Moderate-low CSI"),
@@ -474,13 +468,12 @@ def draw_lead_heatmap(ax, cax, lead: pd.DataFrame) -> pd.DataFrame:
     )
     ax.set_ylim(len(specs) - 0.5, -0.5)
     ax.set_yticks(np.arange(len(specs)), [label for _, label in specs])
-    ticks = [value for value in (0, 6, 12, 24, 36, 48) if np.nanmin(leads) <= value <= np.nanmax(leads)]
+    ticks = [value for value in (12, 24, 36, 48) if np.nanmin(leads) <= value <= np.nanmax(leads)]
     ax.set_xticks(ticks)
     ax.set_xlabel("Display lead time (h)")
-    ax.set_title("48 h skill gain over IFS", loc="left", fontweight="bold", pad=5)
     cb = ax.figure.colorbar(mesh, cax=cax, orientation="horizontal")
     cb.set_ticks(np.linspace(-1.0, 1.0, 5))
-    cb.set_label("Within-metric normalized VisCast − IFS skill gain", fontsize=7.3)
+    cb.set_label("Skill gain", fontsize=7.3)
     cax.tick_params(labelsize=6.8)
     return pd.DataFrame(raw_rows)
 
