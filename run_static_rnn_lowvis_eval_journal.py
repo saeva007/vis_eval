@@ -1731,7 +1731,7 @@ def _draw_event_lowvis_csi_panel(
     csi_specs = [
         ("ifs_diagnostic", "IFS diagnostic", "#6B7280"),
         ("ifs_driven", "IFS-driven", "#1F1F1F"),
-        ("pangu", "Pangu", "#8E6BBE"),
+        ("pangu", "Pangu-driven", "#8E6BBE"),
         ("tianji", "Tianji-driven", "#2E5A87"),
     ]
     csi_axis_max = 0.5
@@ -1839,8 +1839,9 @@ def plot_event_environment_grid(
     if focus_extent is not None:
         lon_span = max(float(focus_extent[1] - focus_extent[0]), 1e-6)
         lat_span = max(float(focus_extent[3] - focus_extent[2]), 1e-6)
-        mean_lat = np.deg2rad((float(focus_extent[2]) + float(focus_extent[3])) / 2.0)
-        data_aspect = max(0.45, min(2.2, (lon_span * np.cos(mean_lat)) / lat_span))
+        # matplotlib equal-aspect maps treat one degree of longitude equal to
+        # one degree of latitude, so match that ratio exactly.
+        data_aspect = max(0.45, min(2.2, lon_span / lat_span))
     else:
         data_aspect = 1.35
     row_height = map_col_width / data_aspect
@@ -2003,7 +2004,7 @@ def plot_event_environment_grid(
     rank = int(event_row.get("event_rank", 1))
     title = f"{center_time:%Y-%m-%d %H:00 UTC}"
     fig.suptitle(title, x=0.5, y=0.988, fontsize=14, fontweight="bold")
-    fig.subplots_adjust(left=0.077, right=0.994, top=0.94, bottom=0.14, wspace=0.10, hspace=0.04)
+    fig.subplots_adjust(left=0.077, right=0.994, top=0.94, bottom=0.14, wspace=0.14, hspace=0.02)
     fig.canvas.draw()
 
     cbar_y = 0.065
@@ -2023,16 +2024,27 @@ def plot_event_environment_grid(
         csi_legend_rows = [
             ("ifs_diagnostic", "IFS diagnostic", "#6B7280"),
             ("ifs_driven", "IFS-driven", "#1F1F1F"),
-            ("pangu", "Pangu", "#8E6BBE"),
+            ("pangu", "Pangu-driven", "#8E6BBE"),
             ("tianji", "Tianji-driven", "#2E5A87"),
         ]
         y_positions = np.linspace(0.86, 0.14, len(csi_legend_rows))
         for (key, label, color), y in zip(csi_legend_rows, y_positions):
+            csi_legend_ax.add_patch(
+                Rectangle(
+                    (0.00, y - 0.055),
+                    0.055,
+                    0.11,
+                    transform=csi_legend_ax.transAxes,
+                    facecolor=color,
+                    edgecolor="#2F3437",
+                    linewidth=0.45,
+                )
+            )
             csi_legend_ax.text(
-                0.00,
+                0.075,
                 y,
                 label,
-                color=color,
+                color="#1F2937",
                 fontsize=8.0,
                 fontweight="bold",
                 ha="left",
