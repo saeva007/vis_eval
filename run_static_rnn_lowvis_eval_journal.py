@@ -1730,7 +1730,7 @@ def _draw_event_lowvis_csi_panel(
 
     csi_specs = [
         ("ifs_diagnostic", "IFS diagnostic", "#6B7280"),
-        ("ifs_driven", "IFS-driven", "#2A9D8F"),
+        ("ifs_driven", "IFS-driven", "#1F1F1F"),
         ("pangu", "Pangu", "#8E6BBE"),
         ("tianji", "Tianji-driven", "#2E5A87"),
     ]
@@ -1747,7 +1747,7 @@ def _draw_event_lowvis_csi_panel(
     ax.spines["bottom"].set_color("#CBD1D8")
     ax.spines["bottom"].set_linewidth(0.6)
 
-    bar_height = 0.18
+    bar_height = 0.12
 
     def _draw_bar(value: float, y: float, color: str) -> None:
         if not np.isfinite(value):
@@ -1832,7 +1832,20 @@ def plot_event_environment_grid(
             station_context = station_context.drop_duplicates(["lon", "lat"])
 
     nrows = len(event_times)
-    fig_h = max(7.2, 1.18 * nrows + 1.25)
+    # Size rows from the event's actual map extent so the equal-aspect map
+    # boxes fill their cells; otherwise the boxes shrink and leave uneven
+    # whitespace between rows/columns regardless of wspace/hspace.
+    map_col_width = 1.55
+    if focus_extent is not None:
+        lon_span = max(float(focus_extent[1] - focus_extent[0]), 1e-6)
+        lat_span = max(float(focus_extent[3] - focus_extent[2]), 1e-6)
+        mean_lat = np.deg2rad((float(focus_extent[2]) + float(focus_extent[3])) / 2.0)
+        data_aspect = max(0.45, min(2.2, (lon_span * np.cos(mean_lat)) / lat_span))
+    else:
+        data_aspect = 1.35
+    row_height = map_col_width / data_aspect
+    fig_h = (nrows * row_height + (nrows - 1) * 0.04 * row_height) / (0.94 - 0.14)
+    fig_h = max(4.2, fig_h)
     include_csi = bool(getattr(args, "event_env_include_csi", False))
     include_pangu = bool(getattr(args, "event_env_with_pangu", False))
     include_source_models = bool(getattr(args, "event_env_with_source_models", False))
@@ -1881,7 +1894,6 @@ def plot_event_environment_grid(
     # Keep each map column close to the map's natural aspect (its height is
     # fixed by the number of hourly rows), so the equal-aspect maps fill their
     # cells instead of leaving wide horizontal gaps between columns.
-    map_col_width = 1.55
     fig_width = (sum(width_ratios) * map_col_width) / (0.994 - 0.077)
     fig, axes = plt.subplots(
         nrows,
@@ -1991,7 +2003,7 @@ def plot_event_environment_grid(
     rank = int(event_row.get("event_rank", 1))
     title = f"{center_time:%Y-%m-%d %H:00 UTC}"
     fig.suptitle(title, x=0.5, y=0.988, fontsize=14, fontweight="bold")
-    fig.subplots_adjust(left=0.077, right=0.994, top=0.94, bottom=0.14, wspace=0.020, hspace=0.008)
+    fig.subplots_adjust(left=0.077, right=0.994, top=0.94, bottom=0.14, wspace=0.10, hspace=0.04)
     fig.canvas.draw()
 
     cbar_y = 0.065
@@ -2004,6 +2016,28 @@ def plot_event_environment_grid(
 
     legend_end = col_tianji if include_source_models else col_ifs_diag
     _draw_visibility_category_legend(fig.add_axes(cbar_span(col_obs, legend_end, y=0.035, height=0.092)))
+    if include_csi and col_csi is not None:
+        csi_pos = cbar_span(col_csi, col_csi, y=0.038, height=0.090)
+        csi_legend_ax = fig.add_axes(csi_pos)
+        csi_legend_ax.axis("off")
+        csi_legend_rows = [
+            ("ifs_diagnostic", "IFS diagnostic", "#6B7280"),
+            ("ifs_driven", "IFS-driven", "#1F1F1F"),
+            ("pangu", "Pangu", "#8E6BBE"),
+            ("tianji", "Tianji-driven", "#2E5A87"),
+        ]
+        y_positions = np.linspace(0.86, 0.14, len(csi_legend_rows))
+        for (key, label, color), y in zip(csi_legend_rows, y_positions):
+            csi_legend_ax.text(
+                0.00,
+                y,
+                label,
+                color=color,
+                fontsize=8.0,
+                fontweight="bold",
+                ha="left",
+                va="center",
+            )
     base_stem = (
         f"fig9_event_{rank}_environment_grid_with_pangu"
         if include_pangu
